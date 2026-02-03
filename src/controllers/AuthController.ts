@@ -105,6 +105,9 @@ export const loginAdmin = async (req: Request, res: Response) => {
         const isMatch = await bcrypt.compare(password, admin.password);
         if (!isMatch) return res.status(400).json({ error: "Invalid password", status: false });
 
+        admin.is_login = true;
+        await admin.save();
+
         const accessToken = generateAccessToken(admin._id);
         const refreshToken = generateRefreshToken(admin._id);
 
@@ -186,6 +189,40 @@ export const loginUser = async (req: Request, res: Response) => {
             refresh: { token: refreshToken, issued_at: new Date() },
         });
 
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: err.message, status: false });
+    }
+}
+
+export const logoutAdmin = async (req: Request, res: Response) => {
+    try {
+        const adminId = (req as any).id;
+        if (!adminId) return res.status(401).json({ error: "Unauthorized", status: false });
+
+        await Admin.findByIdAndUpdate(adminId, { is_login: false });
+
+        res.status(200).json({
+            message: "Admin logged out successfully!",
+            status: true
+        });
+    } catch (err: any) {
+        console.error(err);
+        res.status(500).json({ error: err.message, status: false });
+    }
+}
+
+export const logoutUser = async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).id;
+        if (!userId) return res.status(401).json({ error: "Unauthorized", status: false });
+
+        await User.findByIdAndUpdate(userId, { is_login: false });
+
+        res.status(200).json({
+            message: "User logged out successfully!",
+            status: true
+        });
     } catch (err: any) {
         console.error(err);
         res.status(500).json({ error: err.message, status: false });

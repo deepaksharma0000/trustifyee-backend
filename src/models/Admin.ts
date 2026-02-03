@@ -19,6 +19,7 @@ export interface IAdmin extends Document {
     role: 'admin' | 'sub-admin';
     status: 'active' | 'inactive';
     profile_img?: string;
+    is_login: boolean;
     created_at: Date;
     updated_at: Date;
 }
@@ -42,6 +43,7 @@ const AdminSchema: Schema = new Schema({
     role: { type: String, enum: ['admin', 'sub-admin'], default: 'sub-admin' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     profile_img: { type: String },
+    is_login: { type: Boolean, default: false },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IAdmin>('Admin', AdminSchema);
