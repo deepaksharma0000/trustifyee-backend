@@ -1,7 +1,9 @@
 import { Request, Response } from "express";
 import { Position } from "../models/Position.model";
-// import { checkAngelOrderStatus } from "../services/angel.service";
 import { placeAngelOrder } from "../services/angel.service";
+import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
+import AngelTokensModel from "../models/AngelTokens";
+import InstrumentModel from "../models/Instrument";
 
 export const getOrderStatus = async (req: Request, res: Response) => {
   const { orderid } = req.params;
@@ -25,6 +27,7 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
       side,
       quantity,
       price,
+      symboltoken
     } = req.body;
 
     await Position.create({
@@ -34,8 +37,9 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
       exchange,
       side,
       quantity,
-      entryPrice: price,
-      status: "PENDING",
+      entryPrice: price || 0,
+      symboltoken,
+      status: "OPEN",
     });
 
     res.json({ ok: true });
@@ -44,6 +48,50 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
     res.status(500).json({ ok: false, message: "Save order failed", error: err.message });
   }
 };
+export const getActivePositions = async (req: Request, res: Response) => {
+  try {
+    const { clientcode } = req.params;
+    const positions = await Position.find({ clientcode, status: "OPEN" }).sort({ createdAt: -1 }).lean();
+
+    if (positions.length === 0) {
+      return res.json({ ok: true, data: [] });
+    }
+
+    const tokens = await AngelTokensModel.findOne({ clientcode });
+    if (!tokens?.jwtToken) {
+      return res.status(401).json({ ok: false, message: "No active session for client" });
+    }
+
+    const adapter = new AngelOneAdapter();
+    const positionsWithLtp = await Promise.all(positions.map(async (p) => {
+      try {
+        let currentSymbolToken = p.symboltoken;
+        if (!currentSymbolToken) {
+          const inst = await InstrumentModel.findOne({ tradingsymbol: p.tradingsymbol, exchange: p.exchange });
+          currentSymbolToken = inst?.symboltoken;
+        }
+
+        if (currentSymbolToken) {
+          const ltpResp = await adapter.getLtp(tokens.jwtToken, p.exchange, p.tradingsymbol, currentSymbolToken);
+          const ltp = ltpResp?.data?.ltp || 0;
+          const pnl = p.side === "BUY"
+            ? (ltp - p.entryPrice) * p.quantity
+            : (p.entryPrice - ltp) * p.quantity;
+
+          return { ...p, ltp, pnl };
+        }
+        return { ...p, ltp: 0, pnl: 0 };
+      } catch (err) {
+        return { ...p, ltp: 0, pnl: 0 };
+      }
+    }));
+
+    res.json({ ok: true, data: positionsWithLtp });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, message: err.message });
+  }
+};
+
 export const closeOrder = async (req: Request, res: Response) => {
   try {
     const { clientcode, orderid } = req.body;
@@ -74,15 +122,16 @@ export const closeOrder = async (req: Request, res: Response) => {
     });
 
     if (!angelResp?.ok) {
+      // Check if it's already closed or failed
       return res.status(400).json({
         ok: false,
-        message: "Angel exit order failed",
+        message: angelResp?.error || "Angel exit order failed",
       });
     }
 
     // ✅ DB UPDATE
     position.status = "CLOSED";
-    position.exitOrderId = angelResp.resp.data.orderid;
+    position.exitOrderId = angelResp.resp?.data?.orderid || "MANUAL";
     position.exitAt = new Date();
 
     await position.save();
@@ -90,13 +139,31 @@ export const closeOrder = async (req: Request, res: Response) => {
     res.json({
       ok: true,
       message: "Position squared off successfully",
+      orderid: position.exitOrderId
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error("Close order error:", err);
     res.status(500).json({
       ok: false,
-      message: "Failed to close position",
+      message: "Failed to close position: " + err.message,
     });
+  }
+};
+
+export const getTradeHistory = async (req: Request, res: Response) => {
+  try {
+    const { clientcode } = req.params;
+    // Fetch closed positions, latest first
+    const history = await Position.find({ clientcode, status: "CLOSED" }).sort({ exitAt: -1 }).lean();
+
+    // In a real scenario, you might also want to fetch exit LTP to show P&L 
+    // but since they are closed, entryPrice and exitPrice (which we should store) are enough.
+    // Note: Our model currently doesn't have 'exitPrice'. Let's assume we use entryPrice of the exit order or just the P&L at close.
+    // For now, let's just return what we have.
+
+    res.json({ ok: true, data: history });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, message: err.message });
   }
 };
 

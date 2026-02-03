@@ -10,6 +10,7 @@ export interface IPosition extends Document {
   side: "BUY" | "SELL";
   quantity: number;
   entryPrice: number;
+  symboltoken?: string;
   status: "PENDING" | "COMPLETE" | "REJECTED" | "OPEN" | "CLOSED";
   createdAt: Date;
 }
@@ -23,6 +24,7 @@ const PositionSchema = new Schema<IPosition>(
     side: { type: String, enum: ["BUY", "SELL"], required: true },
     quantity: { type: Number, required: true },
     entryPrice: { type: Number, required: true },
+    symboltoken: { type: String },
     status: { type: String, enum: ["PENDING", "COMPLETE", "REJECTED", "OPEN", "CLOSED"], default: "PENDING" },
     exitOrderId: { type: String },
     exitAt: { type: Date }
