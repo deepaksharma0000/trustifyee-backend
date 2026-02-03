@@ -11,6 +11,7 @@ import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly } from "./services/Instr
 import instrumentRoutes from "./routes/instruments";
 import niftyRoutes from "./routes/nifty";
 import pnlRoutes from "./routes/pnl.routes";
+import webhookRoutes from "./routes/webhook.routes";
 
 import appAuthRoutes from "./routes/appAuth.routes";
 import adminRoutes from "./routes/admin.routes";
@@ -73,6 +74,7 @@ async function start() {
   app.use("/api/orders", orderRoutess);
   app.use("/api/positions", positionRoutes);
   app.use("/api/pnl", pnlRoutes);
+  app.use("/api/webhook", webhookRoutes);
   setInterval(() => {
     syncPendingOrders();
   }, 5000);

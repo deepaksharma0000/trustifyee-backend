@@ -4,33 +4,44 @@ import { log } from "../utils/logger";
 
 const adapter = new AngelOneAdapter();
 
-export async function getLiveNiftyLtp(): Promise<number> {
+export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY"): Promise<number> {
     try {
-        // 1. Get a valid session from DB
         const session: any = await AngelTokensModel.findOne({}).sort({ updatedAt: -1 }).lean();
 
         if (!session || !session.jwtToken) {
-            log.error("No active AngelOne session found for Live LTP");
+            log.error(`No active AngelOne session found for Live ${indexName} LTP`);
             return 0;
         }
 
-        // 2. Fetch LTP for Nifty 50 Index
-        // Exchange: NSE, TradingSymbol: Nifty 50, SymbolToken: 99926000
+        // Index Config
+        const indexConfig: Record<string, { symbol: string, token: string }> = {
+            "NIFTY": { symbol: "Nifty 50", token: "99926000" },
+            "BANKNIFTY": { symbol: "Nifty Bank", token: "99926001" },
+            "FINNIFTY": { symbol: "Nifty Fin Service", token: "99926037" }
+        };
+
+        const config = indexConfig[indexName];
+
         const resp = await adapter.getLtp(
             session.jwtToken,
             "NSE",
-            "Nifty 50",
-            "99926000"
+            config.symbol,
+            config.token
         );
 
         if (resp && resp.status === true && resp.data) {
             return Number(resp.data.ltp);
         }
 
-        log.error("Failed to fetch Nifty LTP from AngelOne", resp);
+        log.error(`Failed to fetch ${indexName} LTP from AngelOne`, resp);
         return 0;
     } catch (err: any) {
-        log.error("getLiveNiftyLtp error:", err.message || err);
+        log.error(`getLiveIndexLtp (${indexName}) error:`, err.message || err);
         return 0;
     }
+}
+
+// Keep backward compatibility for now
+export async function getLiveNiftyLtp(): Promise<number> {
+    return getLiveIndexLtp("NIFTY");
 }

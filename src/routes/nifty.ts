@@ -1,15 +1,14 @@
 // src/routes/nifty.ts
 import express from "express";
-import { getNiftyOptionChain } from "../services/NiftyOptionService";
+import { getOptionChain } from "../services/NiftyOptionService";
 
 const router = express.Router();
 
 router.get("/option-chain", async (req, res) => {
-  console.log("✅ Nifty routes loaded");
+  const ltp = req.query.ltp ? Number(req.query.ltp) : undefined;
+  const symbol = (req.query.symbol as any) || "NIFTY";
 
-  const niftyLtp = req.query.ltp ? Number(req.query.ltp) : undefined;
-
-  const chain = await getNiftyOptionChain(niftyLtp);
+  const chain = await getOptionChain(symbol, ltp);
   return res.json({ ok: true, data: chain });
 });
 
