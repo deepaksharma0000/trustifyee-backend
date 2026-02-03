@@ -35,12 +35,13 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
       side,
       quantity,
       entryPrice: price,
-     status: "PENDING", 
+      status: "PENDING",
     });
 
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ ok: false, message: "Save order failed" });
+  } catch (err: any) {
+    console.error("Save order error:", err);
+    res.status(500).json({ ok: false, message: "Save order failed", error: err.message });
   }
 };
 export const closeOrder = async (req: Request, res: Response) => {

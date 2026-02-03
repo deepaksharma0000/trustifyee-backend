@@ -1,5 +1,6 @@
 import InstrumentModel from "../models/Instrument";
 import { getATMStrike } from "../utils/optionUtils";
+import { getLiveNiftyLtp } from "./MarketDataService";
 
 function getNearestStrike(strikes: number[], atm: number) {
   return strikes.reduce((prev, curr) =>
@@ -7,8 +8,20 @@ function getNearestStrike(strikes: number[], atm: number) {
   );
 }
 
-export async function getNiftyOptionChain(niftyLtp: number) {
-  const atm = getATMStrike(niftyLtp);
+export async function getNiftyOptionChain(niftyLtp?: number) {
+  let currentLtp = niftyLtp || 0;
+
+  // Fetch live LTP if not provided
+  if (currentLtp <= 0) {
+    currentLtp = await getLiveNiftyLtp();
+  }
+
+  // Fallback if still 0 (e.g., market closed or session expired)
+  if (currentLtp <= 0) {
+    currentLtp = 25000; // Default fallback for safety
+  }
+
+  const atm = getATMStrike(currentLtp);
 
   // 1️⃣ All future NIFTY option strikes
   const strikes: number[] = await InstrumentModel.distinct("strike", {

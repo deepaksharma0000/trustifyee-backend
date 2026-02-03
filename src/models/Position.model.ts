@@ -3,14 +3,14 @@ import { Schema, model, Document } from "mongoose";
 export interface IPosition extends Document {
   clientcode: string;
   orderid: string;
-  exitOrderId: string;
+  exitOrderId?: string;
   tradingsymbol: string;
-  exitAt: Date;
+  exitAt?: Date;
   exchange: string;
   side: "BUY" | "SELL";
   quantity: number;
   entryPrice: number;
-  status: "OPEN" | "CLOSED";
+  status: "PENDING" | "COMPLETE" | "REJECTED" | "OPEN" | "CLOSED";
   createdAt: Date;
 }
 
@@ -23,9 +23,9 @@ const PositionSchema = new Schema<IPosition>(
     side: { type: String, enum: ["BUY", "SELL"], required: true },
     quantity: { type: Number, required: true },
     entryPrice: { type: Number, required: true },
-    status: { type: String, enum: ["OPEN", "CLOSED"], default: "OPEN" },
-    exitOrderId : {type: String, required: true },
-    exitAt : {type: Date, required: true}
+    status: { type: String, enum: ["PENDING", "COMPLETE", "REJECTED", "OPEN", "CLOSED"], default: "PENDING" },
+    exitOrderId: { type: String },
+    exitAt: { type: Date }
   },
   { timestamps: true }
 );

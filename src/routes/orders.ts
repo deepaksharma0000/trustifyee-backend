@@ -38,6 +38,12 @@ router.post("/place", async (req, res) => {
     log.debug("Incoming place order:", { clientcode, orderPayload });
 
     const resp = await placeOrderForClient(clientcode, orderPayload);
+
+    if (resp && resp.status === false) {
+      log.error("AngelOne order placement failed:", resp);
+      return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
+    }
+
     return res.json({ ok: true, resp });
   } catch (err: any) {
     log.error("place order error", err.message || err);
