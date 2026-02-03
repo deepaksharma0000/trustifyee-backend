@@ -6,11 +6,16 @@ import { config } from "./config";
 import authRoutes from "./routes/auth";
 import orderRoutes from "./routes/orders";
 import orderRoutess from "./routes/order.routes";
-import positionRoutes from "./routes/position.routes";   
+import positionRoutes from "./routes/position.routes";
 import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly } from "./services/InstrumentService";
 import instrumentRoutes from "./routes/instruments";
 import niftyRoutes from "./routes/nifty";
 import pnlRoutes from "./routes/pnl.routes";
+
+import appAuthRoutes from "./routes/appAuth.routes";
+import adminRoutes from "./routes/admin.routes";
+import userRoutes from "./routes/user.routes";
+import adminModuleRoutes from "./routes/admin_modules.routes";
 
 import upstoxAuthRoutes from "./routes/upstoxAuth";
 import upstoxOrder from "./routes/upstoxOrders";
@@ -46,10 +51,20 @@ async function start() {
 
   // Angel One
   await syncNiftyOptionsOnly();
-console.log("✅ Clean NIFTY OPTIDX sync done");
+  console.log("✅ Clean NIFTY OPTIDX sync done");
 
-await syncBankNiftyOptionsOnly();
-console.log("✅ Clean BANKNIFTY OPTIDX sync done");
+  await syncBankNiftyOptionsOnly();
+  console.log("✅ Clean BANKNIFTY OPTIDX sync done");
+
+  // Static
+  app.use("/uploads", express.static("uploads"));
+
+  // App Routes (Migrated)
+  app.use("/api", appAuthRoutes);
+  app.use("/api", adminRoutes);
+  app.use("/api", userRoutes);
+  app.use("/api", adminModuleRoutes);
+
   app.use("/api/auth", authRoutes);
   app.use("/api/orders", orderRoutes);
   app.use("/api/instruments", instrumentRoutes);
@@ -59,8 +74,8 @@ console.log("✅ Clean BANKNIFTY OPTIDX sync done");
   app.use("/api/positions", positionRoutes);
   app.use("/api/pnl", pnlRoutes);
   setInterval(() => {
-      syncPendingOrders();
-    }, 5000);
+    syncPendingOrders();
+  }, 5000);
 
   // Upstox
   app.use("/api/upstox/auth", upstoxAuthRoutes);
@@ -69,10 +84,10 @@ console.log("✅ Clean BANKNIFTY OPTIDX sync done");
   app.use("/api/upstox/instruments", upstoxInstrumentSyncRoutes);
   app.use("/api/upstox", upstoxAlgoOrderRoutes);
   app.use("/api/upstox/ltp", upstoxLtpRoutes);
-  
-  
+
+
   // Alice Blue
-  
+
   app.use("/api/alice", aliceAuthRoutes);
   app.use("/api/alice/orders", aliceOrderRoutes);
   app.use("/api/alice/ins", aliceInstrumentsRoutes);

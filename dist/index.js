@@ -16,6 +16,10 @@ const InstrumentService_1 = require("./services/InstrumentService");
 const instruments_1 = __importDefault(require("./routes/instruments"));
 const nifty_1 = __importDefault(require("./routes/nifty"));
 const pnl_routes_1 = __importDefault(require("./routes/pnl.routes"));
+const appAuth_routes_1 = __importDefault(require("./routes/appAuth.routes"));
+const admin_routes_1 = __importDefault(require("./routes/admin.routes"));
+const user_routes_1 = __importDefault(require("./routes/user.routes"));
+const admin_modules_routes_1 = __importDefault(require("./routes/admin_modules.routes"));
 const upstoxAuth_1 = __importDefault(require("./routes/upstoxAuth"));
 const upstoxOrders_1 = __importDefault(require("./routes/upstoxOrders"));
 const upstoxAlgoOrderRoutes_1 = __importDefault(require("./routes/upstoxAlgoOrderRoutes"));
@@ -43,6 +47,13 @@ async function start() {
     console.log("✅ Clean NIFTY OPTIDX sync done");
     await (0, InstrumentService_1.syncBankNiftyOptionsOnly)();
     console.log("✅ Clean BANKNIFTY OPTIDX sync done");
+    // Static
+    app.use("/uploads", express_1.default.static("uploads"));
+    // App Routes (Migrated)
+    app.use("/api", appAuth_routes_1.default);
+    app.use("/api", admin_routes_1.default);
+    app.use("/api", user_routes_1.default);
+    app.use("/api", admin_modules_routes_1.default);
     app.use("/api/auth", auth_1.default);
     app.use("/api/orders", orders_1.default);
     app.use("/api/instruments", instruments_1.default);
