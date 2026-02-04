@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.loginUser = exports.registerUser = exports.loginAdmin = exports.registerAdmin = void 0;
+exports.logoutUser = exports.logoutAdmin = exports.loginUser = exports.registerUser = exports.loginAdmin = exports.registerAdmin = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const joi_1 = __importDefault(require("joi"));
 const User_1 = __importDefault(require("../models/User"));
@@ -101,6 +101,8 @@ const loginAdmin = async (req, res) => {
         const isMatch = await bcryptjs_1.default.compare(password, admin.password);
         if (!isMatch)
             return res.status(400).json({ error: "Invalid password", status: false });
+        admin.is_login = true;
+        await admin.save();
         const accessToken = (0, tokens_1.generateAccessToken)(admin._id);
         const refreshToken = (0, tokens_1.generateRefreshToken)(admin._id);
         res.status(200).json({
@@ -178,3 +180,37 @@ const loginUser = async (req, res) => {
     }
 };
 exports.loginUser = loginUser;
+const logoutAdmin = async (req, res) => {
+    try {
+        const adminId = req.id;
+        if (!adminId)
+            return res.status(401).json({ error: "Unauthorized", status: false });
+        await Admin_1.default.findByIdAndUpdate(adminId, { is_login: false });
+        res.status(200).json({
+            message: "Admin logged out successfully!",
+            status: true
+        });
+    }
+    catch (err) {
+        console.error(err);
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+exports.logoutAdmin = logoutAdmin;
+const logoutUser = async (req, res) => {
+    try {
+        const userId = req.id;
+        if (!userId)
+            return res.status(401).json({ error: "Unauthorized", status: false });
+        await User_1.default.findByIdAndUpdate(userId, { is_login: false });
+        res.status(200).json({
+            message: "User logged out successfully!",
+            status: true
+        });
+    }
+    catch (err) {
+        console.error(err);
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+exports.logoutUser = logoutUser;

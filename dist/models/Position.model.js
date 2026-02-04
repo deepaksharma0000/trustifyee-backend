@@ -10,8 +10,9 @@ const PositionSchema = new mongoose_1.Schema({
     side: { type: String, enum: ["BUY", "SELL"], required: true },
     quantity: { type: Number, required: true },
     entryPrice: { type: Number, required: true },
-    status: { type: String, enum: ["OPEN", "CLOSED"], default: "OPEN" },
-    exitOrderId: { type: String, required: true },
-    exitAt: { type: Date, required: true }
+    symboltoken: { type: String },
+    status: { type: String, enum: ["PENDING", "COMPLETE", "REJECTED", "OPEN", "CLOSED"], default: "PENDING" },
+    exitOrderId: { type: String },
+    exitAt: { type: Date }
 }, { timestamps: true });
 exports.Position = (0, mongoose_1.model)("Position", PositionSchema);

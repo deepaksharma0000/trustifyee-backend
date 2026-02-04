@@ -16,6 +16,7 @@ const InstrumentService_1 = require("./services/InstrumentService");
 const instruments_1 = __importDefault(require("./routes/instruments"));
 const nifty_1 = __importDefault(require("./routes/nifty"));
 const pnl_routes_1 = __importDefault(require("./routes/pnl.routes"));
+const webhook_routes_1 = __importDefault(require("./routes/webhook.routes"));
 const appAuth_routes_1 = __importDefault(require("./routes/appAuth.routes"));
 const admin_routes_1 = __importDefault(require("./routes/admin.routes"));
 const user_routes_1 = __importDefault(require("./routes/user.routes"));
@@ -62,6 +63,7 @@ async function start() {
     app.use("/api/orders", order_routes_1.default);
     app.use("/api/positions", position_routes_1.default);
     app.use("/api/pnl", pnl_routes_1.default);
+    app.use("/api/webhook", webhook_routes_1.default);
     setInterval(() => {
         (0, orderSync_job_1.syncPendingOrders)();
     }, 5000);

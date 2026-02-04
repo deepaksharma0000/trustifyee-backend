@@ -1,9 +1,14 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.closeOrder = exports.savePlacedOrder = exports.getOrderStatus = void 0;
+exports.getTradeHistory = exports.closeOrder = exports.getActivePositions = exports.savePlacedOrder = exports.getOrderStatus = void 0;
 const Position_model_1 = require("../models/Position.model");
-// import { checkAngelOrderStatus } from "../services/angel.service";
 const angel_service_1 = require("../services/angel.service");
+const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
+const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
+const Instrument_1 = __importDefault(require("../models/Instrument"));
 const getOrderStatus = async (req, res) => {
     const { orderid } = req.params;
     const order = await Position_model_1.Position.findOne({ orderid });
@@ -17,7 +22,7 @@ const getOrderStatus = async (req, res) => {
 exports.getOrderStatus = getOrderStatus;
 const savePlacedOrder = async (req, res) => {
     try {
-        const { clientcode, orderid, tradingsymbol, exchange, side, quantity, price, } = req.body;
+        const { clientcode, orderid, tradingsymbol, exchange, side, quantity, price, symboltoken } = req.body;
         await Position_model_1.Position.create({
             clientcode,
             orderid,
@@ -25,16 +30,58 @@ const savePlacedOrder = async (req, res) => {
             exchange,
             side,
             quantity,
-            entryPrice: price,
-            status: "PENDING",
+            entryPrice: price || 0,
+            symboltoken,
+            status: "OPEN",
         });
         res.json({ ok: true });
     }
     catch (err) {
-        res.status(500).json({ ok: false, message: "Save order failed" });
+        console.error("Save order error:", err);
+        res.status(500).json({ ok: false, message: "Save order failed", error: err.message });
     }
 };
 exports.savePlacedOrder = savePlacedOrder;
+const getActivePositions = async (req, res) => {
+    try {
+        const { clientcode } = req.params;
+        const positions = await Position_model_1.Position.find({ clientcode, status: "OPEN" }).sort({ createdAt: -1 }).lean();
+        if (positions.length === 0) {
+            return res.json({ ok: true, data: [] });
+        }
+        const tokens = await AngelTokens_1.default.findOne({ clientcode });
+        if (!tokens?.jwtToken) {
+            return res.status(401).json({ ok: false, message: "No active session for client" });
+        }
+        const adapter = new AngelOneAdapter_1.AngelOneAdapter();
+        const positionsWithLtp = await Promise.all(positions.map(async (p) => {
+            try {
+                let currentSymbolToken = p.symboltoken;
+                if (!currentSymbolToken) {
+                    const inst = await Instrument_1.default.findOne({ tradingsymbol: p.tradingsymbol, exchange: p.exchange });
+                    currentSymbolToken = inst?.symboltoken;
+                }
+                if (currentSymbolToken) {
+                    const ltpResp = await adapter.getLtp(tokens.jwtToken, p.exchange, p.tradingsymbol, currentSymbolToken);
+                    const ltp = ltpResp?.data?.ltp || 0;
+                    const pnl = p.side === "BUY"
+                        ? (ltp - p.entryPrice) * p.quantity
+                        : (p.entryPrice - ltp) * p.quantity;
+                    return { ...p, ltp, pnl };
+                }
+                return { ...p, ltp: 0, pnl: 0 };
+            }
+            catch (err) {
+                return { ...p, ltp: 0, pnl: 0 };
+            }
+        }));
+        res.json({ ok: true, data: positionsWithLtp });
+    }
+    catch (err) {
+        res.status(500).json({ ok: false, message: err.message });
+    }
+};
+exports.getActivePositions = getActivePositions;
 const closeOrder = async (req, res) => {
     try {
         const { clientcode, orderid } = req.body;
@@ -60,27 +107,45 @@ const closeOrder = async (req, res) => {
             ordertype: "MARKET",
         });
         if (!angelResp?.ok) {
+            // Check if it's already closed or failed
             return res.status(400).json({
                 ok: false,
-                message: "Angel exit order failed",
+                message: angelResp?.error || "Angel exit order failed",
             });
         }
         // ✅ DB UPDATE
         position.status = "CLOSED";
-        position.exitOrderId = angelResp.resp.data.orderid;
+        position.exitOrderId = angelResp.resp?.data?.orderid || "MANUAL";
         position.exitAt = new Date();
         await position.save();
         res.json({
             ok: true,
             message: "Position squared off successfully",
+            orderid: position.exitOrderId
         });
     }
     catch (err) {
         console.error("Close order error:", err);
         res.status(500).json({
             ok: false,
-            message: "Failed to close position",
+            message: "Failed to close position: " + err.message,
         });
     }
 };
 exports.closeOrder = closeOrder;
+const getTradeHistory = async (req, res) => {
+    try {
+        const { clientcode } = req.params;
+        // Fetch closed positions, latest first
+        const history = await Position_model_1.Position.find({ clientcode, status: "CLOSED" }).sort({ exitAt: -1 }).lean();
+        // In a real scenario, you might also want to fetch exit LTP to show P&L 
+        // but since they are closed, entryPrice and exitPrice (which we should store) are enough.
+        // Note: Our model currently doesn't have 'exitPrice'. Let's assume we use entryPrice of the exit order or just the P&L at close.
+        // For now, let's just return what we have.
+        res.json({ ok: true, data: history });
+    }
+    catch (err) {
+        res.status(500).json({ ok: false, message: err.message });
+    }
+};
+exports.getTradeHistory = getTradeHistory;

@@ -122,6 +122,16 @@ class AngelOneAdapter {
         const path = `/rest/secure/angelbroking/order/v1/getOrder?orderId=${encodeURIComponent(brokerOrderId)}`;
         return await this.authGet(jwtToken, path);
     }
+    // ------------ LTP / MARKET DATA ------------
+    async getLtp(jwtToken, exchange, tradingsymbol, symboltoken) {
+        const path = "/rest/secure/angelbroking/order/v1/getLtpData";
+        const body = {
+            exchange,
+            tradingsymbol,
+            symboltoken
+        };
+        return await this.authPost(jwtToken, path, body);
+    }
     // ------------ REFRESH TOKEN (OPTIONAL) ------------
     async generateTokensUsingRefresh(refreshToken) {
         const body = { refreshToken };

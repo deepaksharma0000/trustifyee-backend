@@ -53,5 +53,6 @@ const AdminSchema = new mongoose_1.Schema({
     role: { type: String, enum: ['admin', 'sub-admin'], default: 'sub-admin' },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     profile_img: { type: String },
+    is_login: { type: Boolean, default: false },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 exports.default = mongoose_1.default.model('Admin', AdminSchema);
