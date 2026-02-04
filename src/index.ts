@@ -41,8 +41,13 @@ async function start() {
   log.info("Starting server...");
   await mongoose.connect(config.mongoUri);
   log.info("Connected to MongoDB");
-  const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
-  console.log(result);
+
+  try {
+    const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
+    console.log("✅ Upstox Options Sync:", result);
+  } catch (err: any) {
+    console.warn("⚠️ Upstox Options Sync skipped/failed (Non-critical):", err.message);
+  }
 
   const app = express();
 

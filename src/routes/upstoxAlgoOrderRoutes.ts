@@ -1,13 +1,21 @@
 // src/routes/upstoxAlgoOrderRoutes.ts
 import { Router } from "express";
 import { placeAlgoOptionOrder } from "../services/orderServices";
+import UpstoxTokensModel from "../models/UpstoxTokens";
 
 const router = Router();
+
+async function getAccessToken(userId: string) {
+  const doc = await UpstoxTokensModel.findOne({ userId }).exec();
+  if (!doc || !doc.accessToken) throw new Error("No active Upstox session for userId");
+  return doc.accessToken;
+}
 
 /**
  * POST /api/upstox/option/algo-order
  * Body:
  * {
+ *   "userId": "admin",
  *   "underlyingSymbol": "NIFTY",
  *   "ltp": 24210,
  *   "side": "BUY",
@@ -21,6 +29,7 @@ const router = Router();
 router.post("/option/algo-order", async (req, res) => {
   try {
     const {
+      userId,
       underlyingSymbol,
       ltp,
       side,
@@ -31,6 +40,12 @@ router.post("/option/algo-order", async (req, res) => {
       expiryMode,
       price,
     } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required to identify Upstox session" });
+    }
+
+    const accessToken = await getAccessToken(userId);
 
     if (!underlyingSymbol || typeof underlyingSymbol !== "string") {
       return res
@@ -54,6 +69,7 @@ router.post("/option/algo-order", async (req, res) => {
       strikesAway: strikesAway ? Number(strikesAway) : 0,
       expiryMode: expiryMode || "NEAREST",
       price: price ? Number(price) : undefined,
+      accessToken,
     });
 
     res.json(resp);
