@@ -17,6 +17,7 @@ export class AngelOneAdapter {
   // official SmartAPI paths
   private loginPath = "/rest/auth/angelbroking/user/v1/loginByPassword";
   private tokenPath = "/rest/auth/angelbroking/jwt/v1/generateTokens";
+  private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
 
   constructor() {
     this.apiKey = config.angelApiKey;
@@ -24,6 +25,8 @@ export class AngelOneAdapter {
       baseURL: config.angelBaseUrl,
       timeout: 15000
     });
+    this.tokenPath = config.genPath || this.tokenPath;
+    this.refreshTokenPath = config.refreshPath || this.refreshTokenPath;
   }
 
   // common headers
@@ -191,7 +194,7 @@ export class AngelOneAdapter {
   async generateTokensUsingRefresh(refreshToken: string) {
     const body = { refreshToken };
     try {
-      const resp = await this.client.post(this.tokenPath, body, {
+      const resp = await this.client.post(this.refreshTokenPath, body, {
         headers: this.baseHeaders()
       });
       return resp.data;
