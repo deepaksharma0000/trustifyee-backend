@@ -1,5 +1,6 @@
 // src/index.ts
 import express from "express";
+import http from "http";
 import bodyParser from "body-parser";
 import mongoose from "mongoose";
 import { config } from "./config";
@@ -36,6 +37,7 @@ import { syncPendingOrders } from "./jobs/orderSync.job";
 
 import { log } from "./utils/logger";
 import cors from "cors";
+import { startMarketStream } from "./services/marketStream";
 
 
 async function start() {
@@ -117,7 +119,10 @@ async function start() {
     res.send("AngelOne + Upstox + AliceBlue TypeScript adapter running")
   );
 
-  app.listen(config.port, () =>
+  const server = http.createServer(app);
+  startMarketStream(server);
+
+  server.listen(config.port, () =>
     log.info(`Server listening on port ${config.port}`)
   );
 }
