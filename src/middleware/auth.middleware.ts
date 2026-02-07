@@ -11,11 +11,16 @@ const ACCESS_SECRET = process.env.accessSecret || 'access_secret_key_123';
 interface AuthRequest extends Request {
     id?: string;
     user?: any;
+    userType?: 'admin' | 'user';
 }
 
 export const auth = async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
-        const access = req.header("x-access-token");
+        const authHeader = req.header("authorization");
+        const bearerToken = authHeader?.startsWith("Bearer ")
+            ? authHeader.slice(7).trim()
+            : undefined;
+        const access = bearerToken || req.header("x-access-token");
 
         if (!access) {
             return res.status(401).json({ error: "Access token is missing" });
@@ -40,6 +45,7 @@ export const auth = async (req: AuthRequest, res: Response, next: NextFunction) 
 
         req.id = decoded.user_id;
         req.user = user;
+        req.userType = (user as any)?.role ? 'admin' : 'user';
 
         next();
 
@@ -54,4 +60,12 @@ export const auth = async (req: AuthRequest, res: Response, next: NextFunction) 
             return res.status(500).json({ error: "Internal server error" });
         }
     }
+};
+
+export const adminOnly = (req: AuthRequest, res: Response, next: NextFunction) => {
+    const role = (req.user as any)?.role;
+    if (role !== 'admin') {
+        return res.status(403).json({ error: "Admin access required" });
+    }
+    return next();
 };

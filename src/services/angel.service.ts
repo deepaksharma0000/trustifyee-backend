@@ -1,4 +1,5 @@
 import axios from "axios";
+import { config } from "../config";
 
 interface PlaceOrderPayload {
   clientcode: string;
@@ -12,8 +13,11 @@ interface PlaceOrderPayload {
 export const placeAngelOrder = async (
   payload: PlaceOrderPayload
 ) => {
+  if (!config.appBaseUrl) {
+    throw new Error("APP_BASE_URL is not set");
+  }
   const res = await axios.post(
-    "http://localhost:4000/api/orders/place",
+    `${config.appBaseUrl}/api/orders/place`,
     payload
   );
 
@@ -25,8 +29,11 @@ export const checkAngelOrderStatus = async (
   clientcode: string,
   orderid: string
 ): Promise<boolean> => {
+  if (!config.appBaseUrl) {
+    throw new Error("APP_BASE_URL is not set");
+  }
   const res = await axios.get(
-    `http://localhost:4000/api/orders/status/${clientcode}/${orderid}`
+    `${config.appBaseUrl}/api/orders/status/${clientcode}/${orderid}`
   );
 
   return res.data === true;

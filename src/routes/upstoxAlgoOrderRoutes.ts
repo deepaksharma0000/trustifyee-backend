@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { placeAlgoOptionOrder } from "../services/orderServices";
 import UpstoxTokensModel from "../models/UpstoxTokens";
+import { auth, adminOnly } from "../middleware/auth.middleware";
 
 const router = Router();
 
@@ -26,7 +27,7 @@ async function getAccessToken(userId: string) {
  *   "expiryMode": "NEAREST"
  * }
  */
-router.post("/option/algo-order", async (req, res) => {
+router.post("/option/algo-order", auth, adminOnly, async (req, res) => {
   try {
     const {
       userId,

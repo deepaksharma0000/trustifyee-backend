@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { placeOptionOrder } from "../services/orderServices";
 import UpstoxTokensModel from "../models/UpstoxTokens";
+import { auth, adminOnly } from "../middleware/auth.middleware";
 
 const router = Router();
 
@@ -10,7 +11,7 @@ async function getAccessToken(userId: string) {
   return doc.accessToken;
 }
 
-router.post("/order/place", async (req, res) => {
+router.post("/order/place", auth, adminOnly, async (req, res) => {
   try {
     const {
       userId,

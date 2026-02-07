@@ -68,7 +68,7 @@ let finalQuantity = orderInput.quantity;
 
 if (
   symbol.instrumenttype === "OPTIDX" &&
-  (symbol.name === "NIFTY" || symbol.name === "BANKNIFTY")
+  (symbol.name === "NIFTY" || symbol.name === "BANKNIFTY" || symbol.name === "FINNIFTY")
 ) {
   if (!symbol.lotSize) {
     throw new Error("Lot size not found for index option");

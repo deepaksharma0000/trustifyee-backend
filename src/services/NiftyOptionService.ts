@@ -1,6 +1,18 @@
 import InstrumentModel from "../models/Instrument";
+import { config } from "../config";
 import { getATMStrike } from "../utils/optionUtils";
-import { getLiveIndexLtp } from "./MarketDataService";
+import { getLiveIndexLtp, getLastIndexLtp } from "./MarketDataService";
+
+function formatIstDate(date: Date) {
+  return date.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
+function getIstDayRange(dateStr: string) {
+  const start = new Date(`${dateStr}T00:00:00+05:30`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
 
 function getNearestStrike(strikes: number[], atm: number) {
   if (!strikes.length) return 0;
@@ -9,40 +21,74 @@ function getNearestStrike(strikes: number[], atm: number) {
   );
 }
 
-export async function getOptionChain(symbol: "NIFTY" | "BANKNIFTY" = "NIFTY", ltp?: number) {
-  let currentLtp = ltp || 0;
-
-  // Fetch live LTP if not provided
-  if (currentLtp <= 0) {
-    currentLtp = await getLiveIndexLtp(symbol);
+export async function getOptionChain(
+  symbol: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY",
+  expiry?: string,
+  strikeRange: number = 5
+) {
+  let currentLtp = await getLiveIndexLtp(symbol);
+  if (currentLtp <= 0 && config.nodeEnv !== "production") {
+    const last = getLastIndexLtp(symbol);
+    if (last > 0) {
+      currentLtp = last;
+    }
   }
-
-  // Fallback if still 0
   if (currentLtp <= 0) {
-    currentLtp = symbol === "NIFTY" ? 25000 : 52000;
+    throw new Error(`Live LTP unavailable for ${symbol}`);
   }
 
   const atm = getATMStrike(currentLtp);
 
-  // 1️⃣ Future option strikes for specific index
-  const strikes: number[] = await InstrumentModel.distinct("strike", {
+  const baseQuery = {
     name: symbol,
     instrumenttype: "OPTIDX",
     expiry: { $gte: new Date() }
-  });
+  };
+
+  const expiries: Date[] = await InstrumentModel.distinct("expiry", baseQuery);
+  let targetRange: { start: Date; end: Date } | undefined;
+
+  if (expiry) {
+    targetRange = getIstDayRange(expiry);
+  } else if (expiries.length) {
+    const istDates = expiries
+      .map((d) => formatIstDate(new Date(d)))
+      .filter((d) => d >= formatIstDate(new Date()))
+      .sort();
+    if (istDates.length) {
+      targetRange = getIstDayRange(istDates[0]);
+    }
+  }
+
+  const strikeQuery = {
+    ...baseQuery,
+    ...(targetRange
+      ? {
+          expiry: {
+            $gte: targetRange.start,
+            $lt: targetRange.end,
+          },
+        }
+      : {}),
+  };
+
+  const strikes: number[] = await InstrumentModel.distinct("strike", strikeQuery);
 
   if (!strikes.length) {
     return { ltp: currentLtp, atmStrike: atm, options: [] };
   }
 
-  // 2️⃣ Nearest tradable strike
   const usedStrike = getNearestStrike(strikes, atm);
+  const sorted = strikes.sort((a, b) => a - b);
+  const idx = sorted.findIndex((s) => s === usedStrike);
+  const otmStrike = idx >= 0 ? sorted[idx + 1] : undefined;
+  const minIdx = Math.max(0, idx - strikeRange);
+  const maxIdx = Math.min(sorted.length - 1, idx + strikeRange);
+  const strikeSet = sorted.slice(minIdx, maxIdx + 1);
 
-  // 3️⃣ Fetch CE + PE
   const options = await InstrumentModel.find({
-    name: symbol,
-    instrumenttype: "OPTIDX",
-    strike: usedStrike
+    ...strikeQuery,
+    strike: { $in: strikeSet }
   })
     .sort({ expiry: 1 })
     .select("tradingsymbol strike optiontype expiry symboltoken")
@@ -53,11 +99,19 @@ export async function getOptionChain(symbol: "NIFTY" | "BANKNIFTY" = "NIFTY", lt
     ltp: currentLtp,
     atmStrike: atm,
     usedStrike,
-    options
+    options,
+    expiries: Array.from(
+      new Set(
+        expiries
+          .map((d) => formatIstDate(new Date(d)))
+          .filter((d) => d >= formatIstDate(new Date()))
+      )
+    ).sort()
   };
 }
 
 // Backward compatibility
 export async function getNiftyOptionChain(niftyLtp?: number) {
-  return getOptionChain("NIFTY", niftyLtp);
+  void niftyLtp;
+  return getOptionChain("NIFTY");
 }

@@ -2,6 +2,7 @@ import express from "express";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { log } from "../utils/logger";
+import { auth, adminOnly } from "../middleware/auth.middleware";
 
 const router = express.Router();
 const adapter = new UpstoxAdapter();
@@ -11,7 +12,7 @@ async function getAccessToken(userId: string) {
   if (!doc || !doc.accessToken) throw new Error("No active Upstox session for userId");
   return doc.accessToken;
 }
-router.post("/place-option", async (req, res) => {
+router.post("/place-option", auth, adminOnly, async (req, res) => {
   try {
     const {
       userId,

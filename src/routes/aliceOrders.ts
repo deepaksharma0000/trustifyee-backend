@@ -6,10 +6,11 @@ import {
   AlicePlaceOrderInput
 } from "../services/AliceOrderService";
 import { log } from "../utils/logger";
+import { auth, adminOnly } from "../middleware/auth.middleware";
 
 const router = express.Router();
 
-router.post("/place", async (req, res) => {
+router.post("/place", auth, adminOnly, async (req, res) => {
   const { clientcode } = req.body;
   if (!clientcode) {
     return res.status(400).json({ error: "clientcode required" });

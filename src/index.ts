@@ -25,6 +25,7 @@ import { fetchAndStoreOptionChain } from "./services/optionService";
 import upstoxOrderRoutes from "./routes/upstoxOrderRoutes";
 import upstoxInstrumentSyncRoutes from "./routes/upstoxInstrumentSyncRoutes";
 import upstoxLtpRoutes from "./routes/upstoxLtpRoutes";
+import algoRoutes from "./routes/algo.routes";
 
 
 
@@ -51,7 +52,17 @@ async function start() {
 
   const app = express();
 
-  app.use(cors());
+  const allowedOrigins =
+    config.corsOrigins.length > 0
+      ? config.corsOrigins
+      : ["http://localhost:8080", "http://localhost:3000"];
+
+  app.use(
+    cors({
+      origin: allowedOrigins,
+      credentials: true,
+    })
+  );
   app.use(bodyParser.json());
 
 
@@ -91,6 +102,9 @@ async function start() {
   app.use("/api/upstox/instruments", upstoxInstrumentSyncRoutes);
   app.use("/api/upstox", upstoxAlgoOrderRoutes);
   app.use("/api/upstox/ltp", upstoxLtpRoutes);
+
+  // Algo engine
+  app.use("/api/algo", algoRoutes);
 
 
   // Alice Blue
