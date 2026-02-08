@@ -1,6 +1,7 @@
 import { Server as WebSocketServer, WebSocket } from "ws";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
+import { config } from "../config";
 import { log } from "../utils/logger";
 
 type QuoteRequestItem = {
@@ -70,6 +71,10 @@ export function startMarketStream(server: any) {
     const startTimer = () => {
       stopTimer();
       if (!state.items.length) return;
+      if (config.disableLiveLtp) {
+        ws.send(JSON.stringify({ type: "error", message: "Live market stream disabled for demo" }));
+        return;
+      }
       state.timer = setInterval(async () => {
         try {
           const session: any = await AngelTokensModel.findOne({}).sort({ updatedAt: -1 }).lean();

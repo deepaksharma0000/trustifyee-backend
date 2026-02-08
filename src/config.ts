@@ -14,6 +14,7 @@ export const config = {
   fallbackNiftyLtp: process.env.FALLBACK_NIFTY_LTP ? Number(process.env.FALLBACK_NIFTY_LTP) : 0,
   fallbackBankNiftyLtp: process.env.FALLBACK_BANKNIFTY_LTP ? Number(process.env.FALLBACK_BANKNIFTY_LTP) : 0,
   fallbackFinNiftyLtp: process.env.FALLBACK_FINNIFTY_LTP ? Number(process.env.FALLBACK_FINNIFTY_LTP) : 0,
+  disableLiveLtp: process.env.DISABLE_LIVE_LTP === "true",
 
   angelIndexSymbolNifty: process.env.ANGEL_INDEX_SYMBOL_NIFTY || "NIFTY 50",
   angelIndexSymbolBankNifty: process.env.ANGEL_INDEX_SYMBOL_BANKNIFTY || "NIFTY BANK",

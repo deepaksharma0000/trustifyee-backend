@@ -1,4 +1,3 @@
-// src/routes/nifty.ts
 import express from "express";
 import { config } from "../config";
 import { getOptionChain } from "../services/NiftyOptionService";

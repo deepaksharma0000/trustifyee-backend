@@ -14,6 +14,12 @@ function getIstDayRange(dateStr: string) {
   return { start, end };
 }
 
+const OPTION_CHAIN_CACHE_MS = 5000;
+const optionChainCache = new Map<
+  string,
+  { ts: number; data: any }
+>();
+
 function getNearestStrike(strikes: number[], atm: number) {
   if (!strikes.length) return 0;
   return strikes.reduce((prev, curr) =>
@@ -26,6 +32,15 @@ export async function getOptionChain(
   expiry?: string,
   strikeRange: number = 5
 ) {
+  const cacheKey = `${symbol}|${expiry || "NEAREST"}|${strikeRange}`;
+  const now = Date.now();
+  if (optionChainCache.has(cacheKey)) {
+    const cached = optionChainCache.get(cacheKey)!;
+    if (now - cached.ts < OPTION_CHAIN_CACHE_MS) {
+      return cached.data;
+    }
+  }
+
   let currentLtp = await getLiveIndexLtp(symbol);
   if (currentLtp <= 0 && config.nodeEnv !== "production") {
     const last = getLastIndexLtp(symbol);
@@ -94,7 +109,7 @@ export async function getOptionChain(
     .select("tradingsymbol strike optiontype expiry symboltoken")
     .lean();
 
-  return {
+  const response = {
     symbol,
     ltp: currentLtp,
     atmStrike: atm,
@@ -108,6 +123,8 @@ export async function getOptionChain(
       )
     ).sort()
   };
+  optionChainCache.set(cacheKey, { ts: Date.now(), data: response });
+  return response;
 }
 
 // Backward compatibility

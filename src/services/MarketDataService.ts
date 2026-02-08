@@ -5,6 +5,8 @@ import { log } from "../utils/logger";
 
 const adapter = new AngelOneAdapter();
 const lastIndexLtp = new Map<string, number>();
+const lastIndexTs = new Map<string, number>();
+const LTP_CACHE_MS = 5000;
 
 function isInvalidTokenResponse(resp: any) {
     const code = resp?.errorcode || resp?.errorCode;
@@ -43,6 +45,25 @@ async function refreshAngelSession(session: any) {
 
 export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY"): Promise<number> {
     try {
+        if (config.disableLiveLtp) {
+            const cached = lastIndexLtp.get(indexName);
+            if (cached) return cached;
+            if (config.nodeEnv !== "production") {
+                const fallback =
+                    indexName === "NIFTY"
+                        ? config.fallbackNiftyLtp
+                        : indexName === "BANKNIFTY"
+                        ? config.fallbackBankNiftyLtp
+                        : config.fallbackFinNiftyLtp;
+                return fallback || 0;
+            }
+        }
+
+        const cached = lastIndexLtp.get(indexName);
+        const cachedTs = lastIndexTs.get(indexName) || 0;
+        if (cached && Date.now() - cachedTs < LTP_CACHE_MS) {
+            return cached;
+        }
         const session: any = await AngelTokensModel.findOne({}).sort({ updatedAt: -1 }).lean();
 
         if (!session || !session.jwtToken) {
@@ -80,6 +101,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
             const ltp = Number(resp.data.ltp);
             if (!Number.isNaN(ltp) && ltp > 0) {
                 lastIndexLtp.set(indexName, ltp);
+                lastIndexTs.set(indexName, Date.now());
                 return ltp;
             }
         }
@@ -109,6 +131,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                     const ltp = Number(resp.data.ltp);
                     if (!Number.isNaN(ltp) && ltp > 0) {
                         lastIndexLtp.set(indexName, ltp);
+                        lastIndexTs.set(indexName, Date.now());
                         return ltp;
                     }
                 }
