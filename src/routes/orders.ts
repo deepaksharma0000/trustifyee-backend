@@ -42,6 +42,17 @@ router.post("/place", auth, adminOnly, async (req, res) => {
 
     log.debug("Incoming place order:", { clientcode, orderPayload });
 
+    // Fetch instrument for symboltoken if not provided or just to be safe for Position record
+    const instrument = await InstrumentModel.findOne({
+      tradingsymbol: orderPayload.tradingsymbol,
+      exchange: "NFO"
+    }).lean();
+
+    if (!instrument) {
+      return res.status(400).json({ error: "Instrument not found" });
+    }
+    const symboltoken = instrument.symboltoken;
+
     const resp = await placeOrderForClient(clientcode, orderPayload);
 
     if (resp && resp.status === false) {
@@ -49,7 +60,28 @@ router.post("/place", auth, adminOnly, async (req, res) => {
       return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
     }
 
-    return res.json({ ok: true, resp });
+    // Extract order ID
+    const orderid =
+      (resp as any)?.data?.orderid ||
+      (resp as any)?.data?.uniqueorderid ||
+      (resp as any)?.data?.data?.orderid ||
+      (resp as any)?.data?.orderId ||
+      `BROKER-${uuidv4()}`;
+
+    // Create Position Record
+    await Position.create({
+      clientcode,
+      orderid,
+      tradingsymbol: orderPayload.tradingsymbol,
+      exchange: orderPayload.exchange,
+      side: orderPayload.side,
+      quantity: orderPayload.quantity, // We store LOT quantity here currently based on schema usage in getActivePositions
+      entryPrice: Number(orderPayload.price ?? 0), // Market order might not have price, will be 0 initially
+      symboltoken,
+      status: "OPEN",
+    });
+
+    return res.json({ ok: true, resp, orderid });
   } catch (err: any) {
     log.error("place order error", err.message || err);
     return res.status(500).json({ error: err.message || err });
