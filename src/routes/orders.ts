@@ -76,8 +76,11 @@ router.post("/place", auth, adminOnly, async (req, res) => {
       exchange: orderPayload.exchange,
       side: orderPayload.side,
       quantity: orderPayload.quantity, // We store LOT quantity here currently based on schema usage in getActivePositions
-      entryPrice: Number(orderPayload.price ?? 0), // Market order might not have price, will be 0 initially
+      entryPrice: Number(orderPayload.price ?? 0), 
       symboltoken,
+      stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
+      targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+      strategy: req.body.strategy || "Manual",
       status: "OPEN",
     });
 
@@ -142,6 +145,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           quantity: orderPayload.quantity,
           entryPrice: Number(orderPayload.price ?? 0),
           symboltoken,
+          stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
+          targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+          strategy: req.body.strategy || "Manual",
           status: "OPEN",
         });
         return { userId: user._id, status: "paper", orderid: paperOrderId };
@@ -165,6 +171,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           quantity: orderPayload.quantity,
           entryPrice: Number(orderPayload.price ?? 0),
           symboltoken,
+          stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
+          targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+          strategy: req.body.strategy || "Manual",
           status: "OPEN",
         });
 

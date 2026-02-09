@@ -27,6 +27,7 @@ import upstoxOrderRoutes from "./routes/upstoxOrderRoutes";
 import upstoxInstrumentSyncRoutes from "./routes/upstoxInstrumentSyncRoutes";
 import upstoxLtpRoutes from "./routes/upstoxLtpRoutes";
 import algoRoutes from "./routes/algo.routes";
+import strategyHelperRoutes from "./routes/strategyHelper.routes";
 
 
 
@@ -40,10 +41,15 @@ import cors from "cors";
 import { startMarketStream } from "./services/marketStream";
 
 
+import { startPositionWatchdog } from "./services/PositionManager";
+
 async function start() {
   log.info("Starting server...");
   await mongoose.connect(config.mongoUri);
   log.info("Connected to MongoDB");
+
+  // Start Watchdog
+  startPositionWatchdog();
 
   try {
     const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
@@ -107,6 +113,9 @@ async function start() {
 
   // Algo engine
   app.use("/api/algo", algoRoutes);
+
+  // Strategy helper (for manual control with auto-selection)
+  app.use("/api/strategy", strategyHelperRoutes);
 
 
   // Alice Blue

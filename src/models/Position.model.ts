@@ -16,6 +16,8 @@ export interface IPosition extends Document {
   strategy?: string;
   mode?: "live" | "paper";
   status: "PENDING" | "COMPLETE" | "REJECTED" | "OPEN" | "CLOSED";
+  stopLossPrice?: number;
+  targetPrice?: number;
   createdAt: Date;
 }
 
@@ -29,6 +31,8 @@ const PositionSchema = new Schema<IPosition>(
     quantity: { type: Number, required: true },
     entryPrice: { type: Number, required: true },
     exitPrice: { type: Number },
+    stopLossPrice: { type: Number },
+    targetPrice: { type: Number },
     symboltoken: { type: String },
     runId: { type: String, index: true },
     strategy: { type: String },

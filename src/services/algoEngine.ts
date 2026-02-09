@@ -8,6 +8,13 @@ import { getATMStrike, getNearestStrike } from "../utils/optionUtils";
 import { placeOrderForClient } from "./OrderService";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
+import {
+  resolveStrategyLegs,
+  getStrategyConfig,
+  StrategyName,
+  ResolvedStrategyLeg
+} from "./StrategyEngine";
+import { log } from "../utils/logger";
 
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
 
@@ -193,8 +200,8 @@ async function placeTradesForRun(run: any) {
 
   const optionList =
     run.optionSide === "CE" ? [ce] :
-    run.optionSide === "PE" ? [pe] :
-    [ce, pe];
+      run.optionSide === "PE" ? [pe] :
+        [ce, pe];
 
   const batchId = `BATCH-${Date.now()}`;
   const users = await User.find({

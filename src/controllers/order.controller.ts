@@ -39,6 +39,8 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
       quantity,
       entryPrice: price || 0,
       symboltoken,
+      stopLossPrice: (req.body as any).stopLossPrice,
+      targetPrice: (req.body as any).targetPrice,
       status: "OPEN",
     });
 

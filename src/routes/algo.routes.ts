@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { auth, adminOnly } from "../middleware/auth.middleware";
-import { startRun, stopRun, getStatus, getRuns, getTrades, getSummary } from "../services/algoEngine";
+import { startRun, stopRun, getStatus, getRuns, getTrades, getSummary } from "../services/algoEngineV2";
+import { getAllStrategies, validateStrategy } from "../services/StrategyEngine";
 import { AlgoTrade } from "../models/AlgoTrade";
 
 const router = Router();
@@ -30,6 +31,30 @@ function toCsv(rows: any[]) {
 router.get("/status", auth, adminOnly, async (_req, res) => {
   const run = await getStatus();
   return res.json({ ok: true, run });
+});
+
+// 🔥 NEW: Get all available strategies
+router.get("/strategies", auth, async (_req, res) => {
+  try {
+    const strategies = getAllStrategies();
+    return res.json({ ok: true, strategies });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 🔥 NEW: Validate strategy
+router.post("/strategies/validate", auth, adminOnly, async (req, res) => {
+  try {
+    const { strategyName } = req.body;
+    if (!strategyName) {
+      return res.status(400).json({ ok: false, error: "strategyName required" });
+    }
+    const validation = validateStrategy(strategyName);
+    return res.json({ ok: true, ...validation });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 router.get("/runs", auth, adminOnly, async (req, res) => {
@@ -75,7 +100,7 @@ router.get("/summary", auth, adminOnly, async (req, res) => {
 });
 
 router.post("/start", auth, adminOnly, async (req, res) => {
-  const { symbol, expiry, strategy, optionSide } = req.body;
+  const { symbol, expiry, strategy } = req.body;
   if (!symbol || !expiry || !strategy) {
     return res.status(400).json({ error: "symbol, expiry, strategy required" });
   }
@@ -85,7 +110,6 @@ router.post("/start", auth, adminOnly, async (req, res) => {
     symbol,
     expiry: new Date(expiry),
     strategy,
-    optionSide,
     createdBy,
   });
 

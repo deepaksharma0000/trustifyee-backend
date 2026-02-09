@@ -49,7 +49,8 @@ export async function getOptionChain(
     }
   }
   if (currentLtp <= 0) {
-    throw new Error(`Live LTP unavailable for ${symbol}`);
+    // If LTP is somehow still 0, we can't show a valid chain, but don't crash
+    return { symbol, ltp: 0, atmStrike: 0, usedStrike: 0, options: [], expiries: [] };
   }
 
   const atm = getATMStrike(currentLtp);
@@ -79,11 +80,11 @@ export async function getOptionChain(
     ...baseQuery,
     ...(targetRange
       ? {
-          expiry: {
-            $gte: targetRange.start,
-            $lt: targetRange.end,
-          },
-        }
+        expiry: {
+          $gte: targetRange.start,
+          $lt: targetRange.end,
+        },
+      }
       : {}),
   };
 

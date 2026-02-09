@@ -4,9 +4,19 @@ import { config } from "../config";
 import { log } from "../utils/logger";
 
 const adapter = new AngelOneAdapter();
-const lastIndexLtp = new Map<string, number>();
-const lastIndexTs = new Map<string, number>();
-const LTP_CACHE_MS = 5000;
+const ltpCache = new Map<string, { ltp: number, ts: number }>();
+const CACHE_MS = 5000;
+let cooldownUntil = 0;
+let lastRequestTime = 0;
+const MIN_INTERVAL_MS = 350; // Proactive throttling (~3 requests per second)
+
+async function throttledFetch<T>(fn: () => Promise<T>): Promise<T> {
+    const now = Date.now();
+    const wait = Math.max(0, lastRequestTime + MIN_INTERVAL_MS - now);
+    lastRequestTime = now + wait;
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    return await fn();
+}
 
 function isInvalidTokenResponse(resp: any) {
     const code = resp?.errorcode || resp?.errorCode;
@@ -17,6 +27,18 @@ function isInvalidTokenResponse(resp: any) {
 function isInvalidTokenError(err: any) {
     const msg = String(err?.message || err || "").toLowerCase();
     return msg.includes("ag8001") || msg.includes("invalid token");
+}
+
+function isRateLimitError(err: any) {
+    const msg = String(err?.message || err?.data?.message || err?.errorcode || err || "").toLowerCase();
+    return (
+        msg.includes("403") ||
+        msg.includes("429") ||
+        msg.includes("access denied") ||
+        msg.includes("exceeding access rate") ||
+        msg.includes("rate limit") ||
+        msg.includes("ag8002")
+    );
 }
 
 async function refreshAngelSession(session: any) {
@@ -43,112 +65,116 @@ async function refreshAngelSession(session: any) {
     return { jwtToken };
 }
 
+async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string) {
+    return await throttledFetch(() => adapter.getLtp(jwtToken, exchange, symbol, token));
+}
+
 export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY"): Promise<number> {
-    try {
-        if (config.disableLiveLtp) {
-            const cached = lastIndexLtp.get(indexName);
-            if (cached) return cached;
-            if (config.nodeEnv !== "production") {
-                const fallback =
-                    indexName === "NIFTY"
-                        ? config.fallbackNiftyLtp
-                        : indexName === "BANKNIFTY"
+    const cacheKey = `INDEX:${indexName}`;
+    const now = Date.now();
+    const cached = ltpCache.get(cacheKey);
+
+    // 1. Return cache if fresh
+    if (cached && (now - cached.ts < CACHE_MS)) {
+        return cached.ltp;
+    }
+
+    // 2. Cooling down or disabled? Return last value or fallback
+    if (now < cooldownUntil || config.disableLiveLtp) {
+        if (cached?.ltp) return cached.ltp;
+        if (config.nodeEnv !== "production") {
+            const fallback =
+                indexName === "NIFTY"
+                    ? config.fallbackNiftyLtp
+                    : indexName === "BANKNIFTY"
                         ? config.fallbackBankNiftyLtp
                         : config.fallbackFinNiftyLtp;
-                return fallback || 0;
-            }
+            return fallback || 0;
         }
+        return 0;
+    }
 
-        const cached = lastIndexLtp.get(indexName);
-        const cachedTs = lastIndexTs.get(indexName) || 0;
-        if (cached && Date.now() - cachedTs < LTP_CACHE_MS) {
-            return cached;
-        }
-        const session: any = await AngelTokensModel.findOne({}).sort({ updatedAt: -1 }).lean();
-
+    try {
+        const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
         if (!session || !session.jwtToken) {
-            throw new Error(`No active AngelOne session for ${indexName} LTP`);
+            throw new Error(`No session for ${indexName} LTP`);
         }
 
-        // Index Config
         const indexConfig: Record<string, { symbol: string, token: string }> = {
             "NIFTY": { symbol: config.angelIndexSymbolNifty, token: config.angelIndexTokenNifty },
             "BANKNIFTY": { symbol: config.angelIndexSymbolBankNifty, token: config.angelIndexTokenBankNifty },
             "FINNIFTY": { symbol: config.angelIndexSymbolFinNifty, token: config.angelIndexTokenFinNifty }
         };
-
         const index = indexConfig[indexName];
 
-        let resp = await adapter.getLtp(
-            session.jwtToken,
-            "NSE",
-            index.symbol,
-            index.token
-        );
+        let resp = await getLtpInternal(session.jwtToken, "NSE", index.symbol, index.token);
 
         if (isInvalidTokenResponse(resp)) {
-            log.error(`getLiveIndexLtp (${indexName}) invalid token. Refreshing...`);
             const refreshed = await refreshAngelSession(session);
-            resp = await adapter.getLtp(
-                refreshed.jwtToken,
-                "NSE",
-                index.symbol,
-                index.token
-            );
+            resp = await getLtpInternal(refreshed.jwtToken, "NSE", index.symbol, index.token);
         }
 
         if (resp && resp.status === true && resp.data) {
             const ltp = Number(resp.data.ltp);
             if (!Number.isNaN(ltp) && ltp > 0) {
-                lastIndexLtp.set(indexName, ltp);
-                lastIndexTs.set(indexName, Date.now());
+                ltpCache.set(cacheKey, { ltp, ts: now });
                 return ltp;
             }
         }
 
-        log.error(`getLiveIndexLtp (${indexName}) bad response:`, JSON.stringify(resp, null, 2));
-        throw new Error(`Failed to fetch ${indexName} LTP from AngelOne`);
+        if (resp?.status === false && isRateLimitError(resp)) {
+            cooldownUntil = now + 60000;
+            log.warn(`Index LTP Rate limited (${indexName}). Cooling down 60s.`);
+        }
     } catch (err: any) {
-        if (isInvalidTokenError(err)) {
-            try {
-                const session: any = await AngelTokensModel.findOne({}).sort({ updatedAt: -1 }).lean();
-                if (!session) throw err;
-                log.error(`getLiveIndexLtp (${indexName}) retry after refresh...`);
-                const refreshed = await refreshAngelSession(session);
-                const indexConfig: Record<string, { symbol: string, token: string }> = {
-                    "NIFTY": { symbol: config.angelIndexSymbolNifty, token: config.angelIndexTokenNifty },
-                    "BANKNIFTY": { symbol: config.angelIndexSymbolBankNifty, token: config.angelIndexTokenBankNifty },
-                    "FINNIFTY": { symbol: config.angelIndexSymbolFinNifty, token: config.angelIndexTokenFinNifty }
-                };
-                const index = indexConfig[indexName];
-                const resp = await adapter.getLtp(
-                    refreshed.jwtToken,
-                    "NSE",
-                    index.symbol,
-                    index.token
-                );
-                if (resp && resp.status === true && resp.data) {
-                    const ltp = Number(resp.data.ltp);
-                    if (!Number.isNaN(ltp) && ltp > 0) {
-                        lastIndexLtp.set(indexName, ltp);
-                        lastIndexTs.set(indexName, Date.now());
-                        return ltp;
-                    }
-                }
-            } catch (refreshErr: any) {
-                log.error(`getLiveIndexLtp (${indexName}) refresh failed:`, refreshErr.message || refreshErr);
+        if (isRateLimitError(err)) {
+            cooldownUntil = now + 60000;
+            log.warn(`Index LTP Rate limit hit (${indexName}). Cooling down 60s.`);
+        }
+    }
+
+    return cached?.ltp || 0;
+}
+
+export async function getInstrumentLtp(exchange: string, tradingsymbol: string, symboltoken: string): Promise<number> {
+    const cacheKey = `${exchange}:${symboltoken}`;
+    const now = Date.now();
+    const cached = ltpCache.get(cacheKey);
+
+    if (cached && (now - cached.ts < CACHE_MS)) return cached.ltp;
+    if (now < cooldownUntil) return cached?.ltp || 0;
+
+    try {
+        const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
+        if (!session?.jwtToken) return cached?.ltp || 0;
+
+        const resp = await getLtpInternal(session.jwtToken, exchange, tradingsymbol, symboltoken);
+
+        if (resp && resp.status === true && resp.data) {
+            const ltp = Number(resp.data.ltp);
+            if (!Number.isNaN(ltp) && ltp > 0) {
+                ltpCache.set(cacheKey, { ltp, ts: now });
+                return ltp;
             }
         }
-        log.error(`getLiveIndexLtp (${indexName}) error:`, err.message || err);
-        throw err;
+
+        if (resp?.status === false && isRateLimitError(resp)) {
+            cooldownUntil = now + 60000;
+            log.warn(`Instrument LTP Rate limited (${tradingsymbol}). Cooling down 60s.`);
+        }
+    } catch (err: any) {
+        if (isRateLimitError(err)) {
+            cooldownUntil = now + 60000;
+            log.warn(`Instrument LTP Rate limited (${tradingsymbol}). Cooling down 60s.`);
+        }
     }
+    return cached?.ltp || 0;
 }
 
 export function getLastIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY") {
-    return lastIndexLtp.get(indexName) || 0;
+    return ltpCache.get(`INDEX:${indexName}`)?.ltp || 0;
 }
 
-// Keep backward compatibility for now
 export async function getLiveNiftyLtp(): Promise<number> {
     return getLiveIndexLtp("NIFTY");
 }
