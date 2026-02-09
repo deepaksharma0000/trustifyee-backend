@@ -90,11 +90,12 @@ export class AngelOneAdapter {
       const status = err?.response?.status;
       const data = err?.response?.data ?? err.message;
 
-      log.error("authPost error status:", status);
-      log.error("authPost error body:", JSON.stringify(data, null, 2));
-      log.error("authPost raw error:", err?.toString?.() || err);
+      if (status !== 403 && status !== 429) {
+        log.error("authPost error status:", status);
+        log.error("authPost error body:", JSON.stringify(data, null, 2));
+        log.error("authPost raw error:", err?.toString?.() || err);
+      }
 
-      // SmartAPI ka exact error upar log ho chuka hai, ab message wrap karke throw
       throw new Error(
         `authPost error [${status}]: ${JSON.stringify(data)}`
       );

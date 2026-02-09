@@ -1,5 +1,5 @@
 import express from "express";
-import { syncNiftyOptionsOnly, findSymbolToken,findSymbol } from "../services/InstrumentService";
+import { syncNiftyOptionsOnly, syncBankNiftyOptionsOnly, syncFinNiftyOptionsOnly, findSymbolToken, findSymbol } from "../services/InstrumentService";
 import { log } from "../utils/logger";
 
 const router = express.Router();
@@ -8,6 +8,8 @@ const router = express.Router();
 router.post("/sync", async (_req, res) => {
   try {
     await syncNiftyOptionsOnly();
+    await syncBankNiftyOptionsOnly();
+    await syncFinNiftyOptionsOnly();
     return res.json({ ok: true });
   } catch (err: any) {
     log.error("instrument sync error", err.message || err);

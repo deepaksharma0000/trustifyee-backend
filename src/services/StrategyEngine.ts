@@ -203,7 +203,8 @@ export async function resolveStrategyLegs(
     // Get current LTP
     const ltp = await getLiveIndexLtp(symbol);
     if (ltp <= 0) {
-        throw new Error(`Live LTP unavailable for ${symbol}`);
+        log.warn(`Strategy ${strategyName}: Live LTP unavailable for ${symbol}. Skipping resolution.`);
+        return [];
     }
 
     const atmStrike = getATMStrike(ltp);

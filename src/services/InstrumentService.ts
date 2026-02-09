@@ -19,19 +19,9 @@ export async function syncNiftyOptionsOnly() {
       !isNaN(Number(r.strike))
     )
     .map(r => {
-           const lotSizeFromAngel = r.lotsize;
-
-            if (r.name === "NIFTY" && r.instrumenttype === "OPTIDX") {
-              console.log("🧪 LOTSIZE CHECK:", {
-                symbol: r.symbol,
-                lotsize: lotSizeFromAngel,
-                type: typeof lotSizeFromAngel
-              });
-            }
-
-      const rawStrike = Number(r.strike);        // e.g. 2550000
-      const normalizedStrike = rawStrike / 100; // e.g. 25500
-      const lotSize = Number(r.lotsize) || 75;  // 🔥 FROM ANGEL DOCS
+      const rawStrike = Number(r.strike);
+      const normalizedStrike = rawStrike / 100;
+      const lotSize = Number(r.lotsize) || 50; // Updated default for Nifty
 
       return {
         updateOne: {
@@ -56,8 +46,10 @@ export async function syncNiftyOptionsOnly() {
 
   if (bulk.length) {
     await InstrumentModel.bulkWrite(bulk);
+    log.info(`[Sync] NIFTY sync done: ${bulk.length} instruments.`);
   }
 }
+
 export async function syncBankNiftyOptionsOnly() {
   const { data } = await axios.get<any[]>(MASTER_URL);
 
@@ -70,19 +62,9 @@ export async function syncBankNiftyOptionsOnly() {
       !isNaN(Number(r.strike))
     )
     .map(r => {
-      const lotSizeFromAnge = r.lotsize;
-
-            if (r.name === "BANKNIFTY" && r.instrumenttype === "OPTIDX") {
-              console.log("🧪 LOTSIZE CHECK:", {
-                symbol: r.symbol,
-                lotsize: lotSizeFromAnge,
-                type: typeof lotSizeFromAnge
-              });
-            }
-
       const rawStrike = Number(r.strike);
       const normalizedStrike = rawStrike / 100;
-      const lotSize = Number(r.lotsize) || 30; // 🔥 BANKNIFTY LOT
+      const lotSize = Number(r.lotsize) || 15; // Updated default for BankNifty
 
       return {
         updateOne: {
@@ -107,6 +89,50 @@ export async function syncBankNiftyOptionsOnly() {
 
   if (bulk.length) {
     await InstrumentModel.bulkWrite(bulk);
+    log.info(`[Sync] BANKNIFTY sync done: ${bulk.length} instruments.`);
+  }
+}
+
+export async function syncFinNiftyOptionsOnly() {
+  const { data } = await axios.get<any[]>(MASTER_URL);
+
+  const bulk = data
+    .filter(r =>
+      r.exch_seg === "NFO" &&
+      r.instrumenttype === "OPTIDX" &&
+      r.name === "FINNIFTY" &&
+      r.strike &&
+      !isNaN(Number(r.strike))
+    )
+    .map(r => {
+      const rawStrike = Number(r.strike);
+      const normalizedStrike = rawStrike / 100;
+      const lotSize = Number(r.lotsize) || 25; // Default for FinNifty
+
+      return {
+        updateOne: {
+          filter: { symboltoken: r.token },
+          update: {
+            $set: {
+              symboltoken: r.token,
+              tradingsymbol: r.symbol,
+              name: r.name,
+              exchange: r.exch_seg,
+              instrumenttype: r.instrumenttype,
+              strike: normalizedStrike,
+              expiry: new Date(r.expiry),
+              optiontype: r.symbol.endsWith("CE") ? "CE" : "PE",
+              lotSize: lotSize
+            }
+          },
+          upsert: true
+        }
+      };
+    });
+
+  if (bulk.length) {
+    await InstrumentModel.bulkWrite(bulk);
+    log.info(`[Sync] FINNIFTY sync done: ${bulk.length} instruments.`);
   }
 }
 

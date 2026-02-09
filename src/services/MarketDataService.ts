@@ -5,16 +5,22 @@ import { log } from "../utils/logger";
 
 const adapter = new AngelOneAdapter();
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
-const CACHE_MS = 5000;
+const CACHE_MS = 10000; // Increased to 10s to further reduce API load
 let cooldownUntil = 0;
 let lastRequestTime = 0;
-const MIN_INTERVAL_MS = 350; // Proactive throttling (~3 requests per second)
+const MIN_INTERVAL_MS = 800; // 800ms (~1.25 requests/sec)
 
 async function throttledFetch<T>(fn: () => Promise<T>): Promise<T> {
     const now = Date.now();
     const wait = Math.max(0, lastRequestTime + MIN_INTERVAL_MS - now);
     lastRequestTime = now + wait;
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
+
+    // Check cooldown again AFTER wait to catch requests that were queued before a rate limit was hit
+    if (Date.now() < cooldownUntil) {
+        throw new Error("RATE_LIMIT_COOLDOWN");
+    }
+
     return await fn();
 }
 
@@ -37,7 +43,8 @@ function isRateLimitError(err: any) {
         msg.includes("access denied") ||
         msg.includes("exceeding access rate") ||
         msg.includes("rate limit") ||
-        msg.includes("ag8002")
+        msg.includes("ag8002") ||
+        msg.includes("rate_limit_cooldown")
     );
 }
 

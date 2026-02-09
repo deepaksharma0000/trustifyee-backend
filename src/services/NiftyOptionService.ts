@@ -41,38 +41,49 @@ export async function getOptionChain(
     }
   }
 
+  // 1. Fetch live or fallback LTP
   let currentLtp = await getLiveIndexLtp(symbol);
   if (currentLtp <= 0 && config.nodeEnv !== "production") {
     const last = getLastIndexLtp(symbol);
-    if (last > 0) {
-      currentLtp = last;
-    }
-  }
-  if (currentLtp <= 0) {
-    // If LTP is somehow still 0, we can't show a valid chain, but don't crash
-    return { symbol, ltp: 0, atmStrike: 0, usedStrike: 0, options: [], expiries: [] };
+    if (last > 0) currentLtp = last;
   }
 
-  const atm = getATMStrike(currentLtp);
-
+  // 2. Fetch all available expiries for this symbol regardless of LTP
   const baseQuery = {
     name: symbol,
     instrumenttype: "OPTIDX",
     expiry: { $gte: new Date() }
   };
 
-  const expiries: Date[] = await InstrumentModel.distinct("expiry", baseQuery);
+  const expiriesData: Date[] = await InstrumentModel.distinct("expiry", baseQuery);
+  const expiryList = Array.from(
+    new Set(
+      expiriesData
+        .map((d) => formatIstDate(new Date(d)))
+        .filter((d) => d >= formatIstDate(new Date()))
+    )
+  ).sort();
+
+  // 3. If LTP is still 0, return what we have (expiries) but empty options
+  if (currentLtp <= 0) {
+    return {
+      symbol,
+      ltp: 0,
+      atmStrike: 0,
+      usedStrike: 0,
+      options: [],
+      expiries: expiryList
+    };
+  }
+
+  const atm = getATMStrike(currentLtp);
   let targetRange: { start: Date; end: Date } | undefined;
 
   if (expiry) {
     targetRange = getIstDayRange(expiry);
-  } else if (expiries.length) {
-    const istDates = expiries
-      .map((d) => formatIstDate(new Date(d)))
-      .filter((d) => d >= formatIstDate(new Date()))
-      .sort();
-    if (istDates.length) {
-      targetRange = getIstDayRange(istDates[0]);
+  } else if (expiriesData.length) {
+    if (expiryList.length) {
+      targetRange = getIstDayRange(expiryList[0]);
     }
   }
 
@@ -91,13 +102,18 @@ export async function getOptionChain(
   const strikes: number[] = await InstrumentModel.distinct("strike", strikeQuery);
 
   if (!strikes.length) {
-    return { ltp: currentLtp, atmStrike: atm, options: [] };
+    return {
+      symbol,
+      ltp: currentLtp,
+      atmStrike: atm,
+      options: [],
+      expiries: expiryList
+    };
   }
 
   const usedStrike = getNearestStrike(strikes, atm);
   const sorted = strikes.sort((a, b) => a - b);
   const idx = sorted.findIndex((s) => s === usedStrike);
-  const otmStrike = idx >= 0 ? sorted[idx + 1] : undefined;
   const minIdx = Math.max(0, idx - strikeRange);
   const maxIdx = Math.min(sorted.length - 1, idx + strikeRange);
   const strikeSet = sorted.slice(minIdx, maxIdx + 1);
@@ -116,13 +132,7 @@ export async function getOptionChain(
     atmStrike: atm,
     usedStrike,
     options,
-    expiries: Array.from(
-      new Set(
-        expiries
-          .map((d) => formatIstDate(new Date(d)))
-          .filter((d) => d >= formatIstDate(new Date()))
-      )
-    ).sort()
+    expiries: expiryList
   };
   optionChainCache.set(cacheKey, { ts: Date.now(), data: response });
   return response;
