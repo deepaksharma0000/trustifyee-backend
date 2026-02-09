@@ -5,7 +5,7 @@ exports.placeAlgoOptionOrder = placeAlgoOptionOrder;
 const OptionContract_1 = require("../models/OptionContract");
 const upstoxClient_1 = require("../clients/upstoxClient");
 const optionChainService_1 = require("./optionChainService");
-async function placeOptionOrder(instrument_key, lots, side, type, price) {
+async function placeOptionOrder(instrument_key, lots, side, type, price, accessToken) {
     if (!instrument_key || typeof instrument_key !== "string") {
         throw new Error("instrument_key is required and must be a string");
     }
@@ -51,7 +51,7 @@ async function placeOptionOrder(instrument_key, lots, side, type, price) {
     if (type === "LIMIT" && (!price || price <= 0)) {
         throw new Error("Limit order requires valid price > 0");
     }
-    const response = await (0, upstoxClient_1.placeUpstoxOrder)(orderPayload);
+    const response = await (0, upstoxClient_1.placeUpstoxOrder)(orderPayload, accessToken);
     return {
         message: "Order Placed Successfully",
         request: orderPayload,
@@ -65,7 +65,7 @@ async function placeOptionOrder(instrument_key, lots, side, type, price) {
  *  - place order via Upstox
  */
 async function placeAlgoOptionOrder(params) {
-    const { underlyingSymbol, ltp, side, optionSide, type, lots, strikesAway = 0, expiryMode = "NEAREST", price, } = params;
+    const { underlyingSymbol, ltp, side, optionSide, type, lots, strikesAway = 0, expiryMode = "NEAREST", price, accessToken, } = params;
     if (lots <= 0) {
         throw new Error("lots must be > 0");
     }
@@ -100,7 +100,7 @@ async function placeAlgoOptionOrder(params) {
     if (type === "LIMIT" && (!price || price <= 0)) {
         throw new Error("Limit order requires valid price > 0");
     }
-    const response = await (0, upstoxClient_1.placeUpstoxOrder)(orderPayload);
+    const response = await (0, upstoxClient_1.placeUpstoxOrder)(orderPayload, accessToken);
     return {
         message: "Algo order placed",
         instrument: {

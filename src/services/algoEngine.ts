@@ -16,6 +16,20 @@ import {
 } from "./StrategyEngine";
 import { log } from "../utils/logger";
 
+type LeanInstrument = {
+  tradingsymbol: string;
+  strike: number;
+  optiontype: "CE" | "PE";
+  expiry: Date;
+  symboltoken: string;
+};
+
+type LeanSession = {
+  jwtToken: string;
+} | null;
+
+
+
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
 
 const RUNNERS = new Map<string, NodeJS.Timeout>();
@@ -64,7 +78,8 @@ async function resolveOptions(symbol: AlgoSymbol, expiry: Date) {
       optiontype,
     })
       .select("tradingsymbol strike optiontype expiry symboltoken")
-      .lean();
+      .lean<LeanInstrument>();
+
 
     if (opt) return opt;
 
@@ -83,7 +98,8 @@ async function resolveOptions(symbol: AlgoSymbol, expiry: Date) {
       optiontype,
     })
       .select("tradingsymbol strike optiontype expiry symboltoken")
-      .lean();
+      .lean<LeanInstrument>();
+
 
     return opt || null;
   };
@@ -116,7 +132,9 @@ async function squareOffPosition(position: any) {
     ordertype: "MARKET",
   });
 
-  const session = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean();
+  const session = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean<LeanSession>();
+
+
   const exitPrice =
     session?.jwtToken && position.symboltoken
       ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
@@ -144,7 +162,7 @@ async function enforceRisk(run: any) {
   let totalPnl = 0;
 
   for (const p of openPositions) {
-    const session = await AngelTokensModel.findOne({ clientcode: p.clientcode }).lean();
+    const session = await AngelTokensModel.findOne({ clientcode: p.clientcode }).lean<LeanSession>();
     if (!session?.jwtToken || !p.symboltoken) continue;
     const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
 
@@ -207,7 +225,8 @@ async function placeTradesForRun(run: any) {
   const users = await User.find({
     status: "active",
     trading_status: "enabled",
-  }).lean();
+  }).lean<any[]>();
+
 
   for (const user of users) {
     const clientcode = user.client_key;
@@ -263,7 +282,7 @@ async function placeTradesForRun(run: any) {
           resp?.data?.data?.orderid ||
           `BROKER-${Date.now()}-${Math.random()}`;
 
-        const session = await AngelTokensModel.findOne({ clientcode }).lean();
+        const session = await AngelTokensModel.findOne({ clientcode }).lean<LeanSession>();
         const entryPrice = session?.jwtToken && opt.symboltoken
           ? await getEntryPrice(session.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
           : 0;
@@ -309,7 +328,7 @@ async function placeTradesForRun(run: any) {
           strike: opt.strike,
           side: "BUY",
           quantity: 1,
-          mode: user.licence === "Demo" ? "paper" : "live",
+          mode: String(user.licence) === "Demo" ? "paper" : "live",
           status: "error",
           error: err?.message || String(err),
         });

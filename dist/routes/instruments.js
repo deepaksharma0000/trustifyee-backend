@@ -10,6 +10,8 @@ const router = express_1.default.Router();
 router.post("/sync", async (_req, res) => {
     try {
         await (0, InstrumentService_1.syncNiftyOptionsOnly)();
+        await (0, InstrumentService_1.syncBankNiftyOptionsOnly)();
+        await (0, InstrumentService_1.syncFinNiftyOptionsOnly)();
         return res.json({ ok: true });
     }
     catch (err) {

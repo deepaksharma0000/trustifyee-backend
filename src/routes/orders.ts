@@ -46,12 +46,14 @@ router.post("/place", auth, adminOnly, async (req, res) => {
     const instrument = await InstrumentModel.findOne({
       tradingsymbol: orderPayload.tradingsymbol,
       exchange: "NFO"
-    }).lean();
+    }).lean() as any;
 
     if (!instrument) {
       return res.status(400).json({ error: "Instrument not found" });
     }
-    const symboltoken = instrument.symboltoken;
+
+    const symboltoken = instrument.symboltoken as string;
+
 
     const resp = await placeOrderForClient(clientcode, orderPayload);
 
@@ -124,8 +126,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const instrument = await InstrumentModel.findOne({
       tradingsymbol: orderPayload.tradingsymbol,
       exchange: "NFO"
-    }).lean();
-    const symboltoken = instrument?.symboltoken;
+    }).lean() as any;
+
+    const symboltoken = instrument?.symboltoken as string | undefined;
 
     const results = await Promise.all(users.map(async (user: any) => {
       const clientcode = user.client_key;

@@ -2,9 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const order_controller_1 = require("../controllers/order.controller");
+const auth_middleware_1 = require("../middleware/auth.middleware");
 const router = (0, express_1.Router)();
-router.post("/save", order_controller_1.savePlacedOrder);
-router.post("/close", order_controller_1.closeOrder);
+router.post("/save", auth_middleware_1.auth, auth_middleware_1.adminOnly, order_controller_1.savePlacedOrder);
+router.post("/close", auth_middleware_1.auth, auth_middleware_1.adminOnly, order_controller_1.closeOrder);
 router.get("/active-positions/:clientcode", order_controller_1.getActivePositions);
 router.get("/trade-history/:clientcode", order_controller_1.getTradeHistory);
 router.get("/status/:clientcode/:orderid", order_controller_1.getOrderStatus);

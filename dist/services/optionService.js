@@ -4,8 +4,10 @@ exports.fetchAndStoreOptionChain = fetchAndStoreOptionChain;
 // src/services/optionService.ts
 const upstoxClient_1 = require("../clients/upstoxClient");
 const optionRepo_1 = require("../repositories/optionRepo");
-async function fetchAndStoreOptionChain(underlying = "NSE_INDEX|Nifty 50") {
-    const resp = await upstoxClient_1.upstoxApi.get(`/option/contract?instrument_key=${encodeURIComponent(underlying)}`);
+async function fetchAndStoreOptionChain(underlying = "NSE_INDEX|Nifty 50", accessToken) {
+    const client = accessToken ? (0, upstoxClient_1.createUpstoxClient)(accessToken) : upstoxClient_1.upstoxApi;
+    // If using default client and no env token, this might fail with 401, which is expected if not configured.
+    const resp = await client.get(`/option/contract?instrument_key=${encodeURIComponent(underlying)}`);
     if (resp.data.status !== "success") {
         throw new Error("Upstox returned non-success status");
     }

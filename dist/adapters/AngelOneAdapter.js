@@ -13,11 +13,14 @@ class AngelOneAdapter {
         // official SmartAPI paths
         this.loginPath = "/rest/auth/angelbroking/user/v1/loginByPassword";
         this.tokenPath = "/rest/auth/angelbroking/jwt/v1/generateTokens";
+        this.refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
         this.apiKey = config_1.config.angelApiKey;
         this.client = axios_1.default.create({
             baseURL: config_1.config.angelBaseUrl,
             timeout: 15000
         });
+        this.tokenPath = config_1.config.genPath || this.tokenPath;
+        this.refreshTokenPath = config_1.config.refreshPath || this.refreshTokenPath;
     }
     // common headers
     baseHeaders(jwtToken) {
@@ -68,10 +71,11 @@ class AngelOneAdapter {
         catch (err) {
             const status = err?.response?.status;
             const data = err?.response?.data ?? err.message;
-            logger_1.log.error("authPost error status:", status);
-            logger_1.log.error("authPost error body:", JSON.stringify(data, null, 2));
-            logger_1.log.error("authPost raw error:", err?.toString?.() || err);
-            // SmartAPI ka exact error upar log ho chuka hai, ab message wrap karke throw
+            if (status !== 403 && status !== 429) {
+                logger_1.log.error("authPost error status:", status);
+                logger_1.log.error("authPost error body:", JSON.stringify(data, null, 2));
+                logger_1.log.error("authPost raw error:", err?.toString?.() || err);
+            }
             throw new Error(`authPost error [${status}]: ${JSON.stringify(data)}`);
         }
     }
@@ -136,7 +140,7 @@ class AngelOneAdapter {
     async generateTokensUsingRefresh(refreshToken) {
         const body = { refreshToken };
         try {
-            const resp = await this.client.post(this.tokenPath, body, {
+            const resp = await this.client.post(this.refreshTokenPath, body, {
                 headers: this.baseHeaders()
             });
             return resp.data;

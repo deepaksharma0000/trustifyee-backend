@@ -6,5 +6,6 @@ exports.log = {
     info: (...args) => console.log("[INFO]", ...args),
     debug: (...args) => { if (process.env.NODE_ENV !== "production")
         console.debug("[DEBUG]", ...args); },
+    warn: (...args) => console.warn("[WARN]", ...args),
     error: (...args) => console.error("[ERROR]", ...args)
 };

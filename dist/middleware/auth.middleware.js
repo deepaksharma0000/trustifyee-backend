@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.auth = void 0;
+exports.adminOnly = exports.auth = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const User_1 = __importDefault(require("../models/User"));
@@ -12,7 +12,11 @@ dotenv_1.default.config();
 const ACCESS_SECRET = process.env.accessSecret || 'access_secret_key_123';
 const auth = async (req, res, next) => {
     try {
-        const access = req.header("x-access-token");
+        const authHeader = req.header("authorization");
+        const bearerToken = authHeader?.startsWith("Bearer ")
+            ? authHeader.slice(7).trim()
+            : undefined;
+        const access = bearerToken || req.header("x-access-token");
         if (!access) {
             return res.status(401).json({ error: "Access token is missing" });
         }
@@ -31,6 +35,7 @@ const auth = async (req, res, next) => {
         }
         req.id = decoded.user_id;
         req.user = user;
+        req.userType = user?.role ? 'admin' : 'user';
         next();
     }
     catch (error) {
@@ -47,3 +52,11 @@ const auth = async (req, res, next) => {
     }
 };
 exports.auth = auth;
+const adminOnly = (req, res, next) => {
+    const role = req.user?.role;
+    if (role !== 'admin') {
+        return res.status(403).json({ error: "Admin access required" });
+    }
+    return next();
+};
+exports.adminOnly = adminOnly;

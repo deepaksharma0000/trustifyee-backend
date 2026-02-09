@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 // src/index.ts
 const express_1 = __importDefault(require("express"));
+const http_1 = __importDefault(require("http"));
 const body_parser_1 = __importDefault(require("body-parser"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const config_1 = require("./config");
@@ -28,20 +29,37 @@ const optionService_1 = require("./services/optionService");
 const upstoxOrderRoutes_1 = __importDefault(require("./routes/upstoxOrderRoutes"));
 const upstoxInstrumentSyncRoutes_1 = __importDefault(require("./routes/upstoxInstrumentSyncRoutes"));
 const upstoxLtpRoutes_1 = __importDefault(require("./routes/upstoxLtpRoutes"));
+const algo_routes_1 = __importDefault(require("./routes/algo.routes"));
+const strategyHelper_routes_1 = __importDefault(require("./routes/strategyHelper.routes"));
 const aliceAuth_1 = __importDefault(require("./routes/aliceAuth"));
 const aliceOrders_1 = __importDefault(require("./routes/aliceOrders"));
 const aliceInstruments_1 = __importDefault(require("./routes/aliceInstruments"));
 const orderSync_job_1 = require("./jobs/orderSync.job");
 const logger_1 = require("./utils/logger");
 const cors_1 = __importDefault(require("cors"));
+const marketStream_1 = require("./services/marketStream");
+const PositionManager_1 = require("./services/PositionManager");
 async function start() {
     logger_1.log.info("Starting server...");
     await mongoose_1.default.connect(config_1.config.mongoUri);
     logger_1.log.info("Connected to MongoDB");
-    const result = await (0, optionService_1.fetchAndStoreOptionChain)("NSE_INDEX|Nifty 50");
-    console.log(result);
+    // Start Watchdog
+    (0, PositionManager_1.startPositionWatchdog)();
+    try {
+        const result = await (0, optionService_1.fetchAndStoreOptionChain)("NSE_INDEX|Nifty 50");
+        console.log("✅ Upstox Options Sync:", result);
+    }
+    catch (err) {
+        console.warn("⚠️ Upstox Options Sync skipped/failed (Non-critical):", err.message);
+    }
     const app = (0, express_1.default)();
-    app.use((0, cors_1.default)());
+    const allowedOrigins = config_1.config.corsOrigins.length > 0
+        ? config_1.config.corsOrigins
+        : ["http://localhost:8080", "http://localhost:3000"];
+    app.use((0, cors_1.default)({
+        origin: allowedOrigins,
+        credentials: true,
+    }));
     app.use(body_parser_1.default.json());
     // Angel One
     await (0, InstrumentService_1.syncNiftyOptionsOnly)();
@@ -74,12 +92,18 @@ async function start() {
     app.use("/api/upstox/instruments", upstoxInstrumentSyncRoutes_1.default);
     app.use("/api/upstox", upstoxAlgoOrderRoutes_1.default);
     app.use("/api/upstox/ltp", upstoxLtpRoutes_1.default);
+    // Algo engine
+    app.use("/api/algo", algo_routes_1.default);
+    // Strategy helper (for manual control with auto-selection)
+    app.use("/api/strategy", strategyHelper_routes_1.default);
     // Alice Blue
     app.use("/api/alice", aliceAuth_1.default);
     app.use("/api/alice/orders", aliceOrders_1.default);
     app.use("/api/alice/ins", aliceInstruments_1.default);
     app.get("/", (_req, res) => res.send("AngelOne + Upstox + AliceBlue TypeScript adapter running"));
-    app.listen(config_1.config.port, () => logger_1.log.info(`Server listening on port ${config_1.config.port}`));
+    const server = http_1.default.createServer(app);
+    (0, marketStream_1.startMarketStream)(server);
+    server.listen(config_1.config.port, () => logger_1.log.info(`Server listening on port ${config_1.config.port}`));
 }
 start().catch((err) => {
     logger_1.log.error("Failed to start:", err);

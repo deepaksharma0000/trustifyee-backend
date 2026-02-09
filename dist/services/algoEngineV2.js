@@ -1,52 +1,42 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.startRun = startRun;
+exports.stopRun = stopRun;
+exports.getStatus = getStatus;
+exports.getRuns = getRuns;
+exports.getTrades = getTrades;
+exports.getSummary = getSummary;
 // src/services/algoEngineV2.ts - Production Ready Algo Engine with Strategy Support
-import User from "../models/User";
-import { AlgoRun } from "../models/AlgoRun";
-import { AlgoTrade } from "../models/AlgoTrade";
-import { Position } from "../models/Position.model";
-import { placeOrderForClient } from "./OrderService";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
-import AngelTokensModel from "../models/AngelTokens";
-import {
-    resolveStrategyLegs,
-    getStrategyConfig,
-    StrategyName,
-    ResolvedStrategyLeg
-} from "./StrategyEngine";
-import { log } from "../utils/logger";
-import { getInstrumentLtp } from "./MarketDataService";
-
-type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
-
-const RUNNERS = new Map<string, NodeJS.Timeout>();
-
+const User_1 = __importDefault(require("../models/User"));
+const AlgoRun_1 = require("../models/AlgoRun");
+const AlgoTrade_1 = require("../models/AlgoTrade");
+const Position_model_1 = require("../models/Position.model");
+const OrderService_1 = require("./OrderService");
+const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
+const StrategyEngine_1 = require("./StrategyEngine");
+const logger_1 = require("../utils/logger");
+const MarketDataService_1 = require("./MarketDataService");
+const RUNNERS = new Map();
 const EOD_HOUR = 15;
 const EOD_MIN = 20;
-
 function startOfDay(d = new Date()) {
     const s = new Date(d);
     s.setHours(0, 0, 0, 0);
     return s;
 }
-
 function isEodTime(now = new Date()) {
-    return (
-        now.getHours() > EOD_HOUR ||
-        (now.getHours() === EOD_HOUR && now.getMinutes() >= EOD_MIN)
-    );
+    return (now.getHours() > EOD_HOUR ||
+        (now.getHours() === EOD_HOUR && now.getMinutes() >= EOD_MIN));
 }
-
-async function getEntryPrice(
-    jwtToken: string,
-    exchange: string,
-    tradingsymbol: string,
-    symboltoken: string
-) {
-    return await getInstrumentLtp(exchange, tradingsymbol, symboltoken);
+async function getEntryPrice(jwtToken, exchange, tradingsymbol, symboltoken) {
+    return await (0, MarketDataService_1.getInstrumentLtp)(exchange, tradingsymbol, symboltoken);
 }
-
-async function squareOffPosition(position: any) {
+async function squareOffPosition(position) {
     const exitSide = position.side === "BUY" ? "SELL" : "BUY";
-    const resp = await placeOrderForClient(position.clientcode, {
+    const resp = await (0, OrderService_1.placeOrderForClient)(position.clientcode, {
         exchange: position.exchange,
         tradingsymbol: position.tradingsymbol,
         side: exitSide,
@@ -54,64 +44,49 @@ async function squareOffPosition(position: any) {
         quantity: position.quantity,
         ordertype: "MARKET",
     });
-
-    const session = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean() as any;
-    const exitPrice =
-        session?.jwtToken && position.symboltoken
-            ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
-            : 0;
-
+    const session = await AngelTokens_1.default.findOne({ clientcode: position.clientcode }).lean();
+    const exitPrice = session?.jwtToken && position.symboltoken
+        ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
+        : 0;
     position.status = "CLOSED";
     position.exitOrderId =
         resp?.data?.orderid ||
-        resp?.data?.data?.orderid ||
-        "MANUAL";
+            resp?.data?.data?.orderid ||
+            "MANUAL";
     position.exitAt = new Date();
     position.exitPrice = exitPrice;
     await position.save();
 }
-
-async function enforceRisk(run: any) {
-    const openPositions = await Position.find({
+async function enforceRisk(run) {
+    const openPositions = await Position_model_1.Position.find({
         runId: String(run._id),
         status: "OPEN",
     }).lean();
-
-    if (openPositions.length === 0) return;
-
+    if (openPositions.length === 0)
+        return;
     let totalEntry = 0;
     let totalPnl = 0;
-
     for (const p of openPositions) {
-        const session = await AngelTokensModel.findOne({ clientcode: p.clientcode }).lean() as any;
-        if (!session?.jwtToken || !p.symboltoken) continue;
+        const session = await AngelTokens_1.default.findOne({ clientcode: p.clientcode }).lean();
+        if (!session?.jwtToken || !p.symboltoken)
+            continue;
         const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
-
-        const pnl =
-            p.side === "BUY"
-                ? (ltp - p.entryPrice) * p.quantity
-                : (p.entryPrice - ltp) * p.quantity;
-
+        const pnl = p.side === "BUY"
+            ? (ltp - p.entryPrice) * p.quantity
+            : (p.entryPrice - ltp) * p.quantity;
         totalEntry += p.entryPrice * p.quantity;
         totalPnl += pnl;
-
-        const slPrice =
-            p.side === "BUY"
-                ? p.entryPrice * (1 - run.stopLossPercent / 100)
-                : p.entryPrice * (1 + run.stopLossPercent / 100);
-        const tpPrice =
-            p.side === "BUY"
-                ? p.entryPrice * (1 + run.targetPercent / 100)
-                : p.entryPrice * (1 - run.targetPercent / 100);
-
-        if (
-            (p.side === "BUY" && (ltp <= slPrice || ltp >= tpPrice)) ||
-            (p.side === "SELL" && (ltp >= slPrice || ltp <= tpPrice))
-        ) {
+        const slPrice = p.side === "BUY"
+            ? p.entryPrice * (1 - run.stopLossPercent / 100)
+            : p.entryPrice * (1 + run.stopLossPercent / 100);
+        const tpPrice = p.side === "BUY"
+            ? p.entryPrice * (1 + run.targetPercent / 100)
+            : p.entryPrice * (1 - run.targetPercent / 100);
+        if ((p.side === "BUY" && (ltp <= slPrice || ltp >= tpPrice)) ||
+            (p.side === "SELL" && (ltp >= slPrice || ltp <= tpPrice))) {
             await squareOffPosition(p);
         }
     }
-
     if (totalEntry > 0) {
         const pnlPercent = (totalPnl / totalEntry) * 100;
         if (pnlPercent <= -run.maxLossPercent) {
@@ -119,50 +94,45 @@ async function enforceRisk(run: any) {
         }
     }
 }
-
 // 🔥 NEW: Strategy-based trade placement
-async function placeTradesForRun(run: any) {
+async function placeTradesForRun(run) {
     const today = startOfDay();
-    const batches = await AlgoTrade.distinct("batchId", {
+    const batches = await AlgoTrade_1.AlgoTrade.distinct("batchId", {
         runId: String(run._id),
         createdAt: { $gte: today },
     });
-
     if (batches.length >= run.maxTradesPerDay) {
         await stopRun(String(run._id), "Max trades reached");
         return;
     }
-
     // 🔥 Use StrategyEngine to resolve legs
-    let resolvedLegs: ResolvedStrategyLeg[];
+    let resolvedLegs;
     try {
-        resolvedLegs = await resolveStrategyLegs({
+        resolvedLegs = await (0, StrategyEngine_1.resolveStrategyLegs)({
             symbol: run.symbol,
             expiry: run.expiry,
-            strategyName: run.strategy as StrategyName,
+            strategyName: run.strategy,
             lotSize: 1,
         });
-
-        log.info(`✅ Strategy ${run.strategy} resolved ${resolvedLegs.length} legs`);
-    } catch (err: any) {
-        log.error(`❌ Strategy resolution failed: ${err.message}`);
+        logger_1.log.info(`✅ Strategy ${run.strategy} resolved ${resolvedLegs.length} legs`);
+    }
+    catch (err) {
+        logger_1.log.error(`❌ Strategy resolution failed: ${err.message}`);
         return;
     }
-
     const batchId = `BATCH-${Date.now()}`;
-    const users = await User.find({
+    const users = await User_1.default.find({
         status: "active",
         trading_status: "enabled",
     }).lean();
-
     for (const user of users) {
         const clientcode = user.client_key;
-        if (!clientcode) continue;
-
+        if (!clientcode)
+            continue;
         for (const leg of resolvedLegs) {
             if (user.licence === "Demo") {
                 const paperId = `PAPER-${Date.now()}-${Math.random()}`;
-                await Position.create({
+                await Position_model_1.Position.create({
                     clientcode,
                     orderid: paperId,
                     tradingsymbol: leg.tradingsymbol,
@@ -176,8 +146,7 @@ async function placeTradesForRun(run: any) {
                     strategy: run.strategy,
                     mode: "paper",
                 });
-
-                await AlgoTrade.create({
+                await AlgoTrade_1.AlgoTrade.create({
                     runId: String(run._id),
                     batchId,
                     userId: String(user._id),
@@ -193,9 +162,8 @@ async function placeTradesForRun(run: any) {
                 });
                 continue;
             }
-
             try {
-                const resp = await placeOrderForClient(clientcode, {
+                const resp = await (0, OrderService_1.placeOrderForClient)(clientcode, {
                     exchange: "NFO",
                     tradingsymbol: leg.tradingsymbol,
                     side: leg.side,
@@ -203,18 +171,14 @@ async function placeTradesForRun(run: any) {
                     quantity: leg.quantity,
                     ordertype: "MARKET",
                 });
-
-                const orderid =
-                    resp?.data?.orderid ||
+                const orderid = resp?.data?.orderid ||
                     resp?.data?.data?.orderid ||
                     `BROKER-${Date.now()}-${Math.random()}`;
-
-                const session = await AngelTokensModel.findOne({ clientcode }).lean() as any;
+                const session = await AngelTokens_1.default.findOne({ clientcode }).lean();
                 const entryPrice = session?.jwtToken && leg.symboltoken
                     ? await getEntryPrice(session.jwtToken, "NFO", leg.tradingsymbol, leg.symboltoken)
                     : 0;
-
-                await Position.create({
+                await Position_model_1.Position.create({
                     clientcode,
                     orderid,
                     tradingsymbol: leg.tradingsymbol,
@@ -228,8 +192,7 @@ async function placeTradesForRun(run: any) {
                     strategy: run.strategy,
                     mode: "live",
                 });
-
-                await AlgoTrade.create({
+                await AlgoTrade_1.AlgoTrade.create({
                     runId: String(run._id),
                     batchId,
                     userId: String(user._id),
@@ -243,8 +206,9 @@ async function placeTradesForRun(run: any) {
                     mode: "live",
                     status: "ok",
                 });
-            } catch (err: any) {
-                await AlgoTrade.create({
+            }
+            catch (err) {
+                await AlgoTrade_1.AlgoTrade.create({
                     runId: String(run._id),
                     batchId,
                     userId: String(user._id),
@@ -263,22 +227,14 @@ async function placeTradesForRun(run: any) {
         }
     }
 }
-
-export async function startRun(params: {
-    symbol: AlgoSymbol;
-    expiry: Date;
-    strategy: StrategyName;
-    createdBy: string;
-}) {
-    const existing = await AlgoRun.findOne({ status: "running" }).lean();
+async function startRun(params) {
+    const existing = await AlgoRun_1.AlgoRun.findOne({ status: "running" }).lean();
     if (existing) {
         return { ok: false, error: "Algo already running" };
     }
-
     // Get strategy config for risk parameters
-    const strategyConfig = getStrategyConfig(params.strategy);
-
-    const run = await AlgoRun.create({
+    const strategyConfig = (0, StrategyEngine_1.getStrategyConfig)(params.strategy);
+    const run = await AlgoRun_1.AlgoRun.create({
         symbol: params.symbol,
         expiry: params.expiry,
         strategy: params.strategy,
@@ -290,100 +246,80 @@ export async function startRun(params: {
         stopLossPercent: strategyConfig.defaultStopLoss,
         targetPercent: strategyConfig.defaultTarget,
     });
-
-    log.info(`🚀 Starting algo run with strategy: ${params.strategy}`);
+    logger_1.log.info(`🚀 Starting algo run with strategy: ${params.strategy}`);
     await placeTradesForRun(run);
-
     const interval = setInterval(async () => {
-        const current = await AlgoRun.findById(run._id).lean();
+        const current = await AlgoRun_1.AlgoRun.findById(run._id).lean();
         if (!current || current.status !== "running") {
             clearInterval(interval);
             RUNNERS.delete(String(run._id));
             return;
         }
-
         if (isEodTime()) {
             await stopRun(String(run._id), "EOD");
             return;
         }
-
         await enforceRisk(current);
         await placeTradesForRun(current);
     }, 30000);
-
     RUNNERS.set(String(run._id), interval);
-
     return { ok: true, run };
 }
-
-export async function stopRun(runId: string, reason = "Stopped") {
-    const run = await AlgoRun.findById(runId);
-    if (!run) return { ok: false, error: "Run not found" };
-
+async function stopRun(runId, reason = "Stopped") {
+    const run = await AlgoRun_1.AlgoRun.findById(runId);
+    if (!run)
+        return { ok: false, error: "Run not found" };
     run.status = "stopped";
     run.stoppedAt = new Date();
     run.stopReason = reason;
     await run.save();
-
     const timer = RUNNERS.get(runId);
     if (timer) {
         clearInterval(timer);
         RUNNERS.delete(runId);
     }
-
-    const openPositions = await Position.find({ runId, status: "OPEN" });
+    const openPositions = await Position_model_1.Position.find({ runId, status: "OPEN" });
     for (const p of openPositions) {
         await squareOffPosition(p);
     }
-
-    log.info(`🛑 Stopped algo run: ${reason}`);
+    logger_1.log.info(`🛑 Stopped algo run: ${reason}`);
     return { ok: true };
 }
-
-export async function getStatus() {
-    const run = await AlgoRun.findOne({ status: "running" }).lean();
+async function getStatus() {
+    const run = await AlgoRun_1.AlgoRun.findOne({ status: "running" }).lean();
     return run || null;
 }
-
-export async function getRuns(limit = 50) {
-    return AlgoRun.find().sort({ createdAt: -1 }).limit(limit).lean();
+async function getRuns(limit = 50) {
+    return AlgoRun_1.AlgoRun.find().sort({ createdAt: -1 }).limit(limit).lean();
 }
-
-export async function getTrades(runId: string, limit = 200) {
-    return AlgoTrade.find({ runId })
+async function getTrades(runId, limit = 200) {
+    return AlgoTrade_1.AlgoTrade.find({ runId })
         .sort({ createdAt: -1 })
         .limit(limit)
         .lean();
 }
-
-export async function getSummary(date?: string) {
+async function getSummary(date) {
     const start = date ? new Date(date) : startOfDay();
     const end = new Date(start);
     end.setDate(start.getDate() + 1);
-
-    const trades = await AlgoTrade.find({
+    const trades = await AlgoTrade_1.AlgoTrade.find({
         createdAt: { $gte: start, $lt: end },
     }).lean();
-
     const totalTrades = trades.length;
     const success = trades.filter((t) => t.status === "ok").length;
     const failed = trades.filter((t) => t.status === "error").length;
-
-    const openPositions = await Position.countDocuments({
+    const openPositions = await Position_model_1.Position.countDocuments({
         status: "OPEN",
     });
-
-    const closedPositions = await Position.find({
+    const closedPositions = await Position_model_1.Position.find({
         status: "CLOSED",
         exitAt: { $gte: start, $lt: end },
     }).lean();
-
     const pnl = closedPositions.reduce((sum, p) => {
         const exitPrice = p.exitPrice ?? p.entryPrice;
         const diff = p.side === "BUY" ? (exitPrice - p.entryPrice) : (p.entryPrice - exitPrice);
         return sum + diff * p.quantity;
     }, 0);
-
     return {
         date: start.toISOString().slice(0, 10),
         totalTrades,

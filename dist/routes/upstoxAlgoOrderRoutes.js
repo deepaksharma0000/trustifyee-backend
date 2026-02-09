@@ -1,13 +1,25 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 // src/routes/upstoxAlgoOrderRoutes.ts
 const express_1 = require("express");
 const orderServices_1 = require("../services/orderServices");
+const UpstoxTokens_1 = __importDefault(require("../models/UpstoxTokens"));
+const auth_middleware_1 = require("../middleware/auth.middleware");
 const router = (0, express_1.Router)();
+async function getAccessToken(userId) {
+    const doc = await UpstoxTokens_1.default.findOne({ userId }).exec();
+    if (!doc || !doc.accessToken)
+        throw new Error("No active Upstox session for userId");
+    return doc.accessToken;
+}
 /**
  * POST /api/upstox/option/algo-order
  * Body:
  * {
+ *   "userId": "admin",
  *   "underlyingSymbol": "NIFTY",
  *   "ltp": 24210,
  *   "side": "BUY",
@@ -18,9 +30,13 @@ const router = (0, express_1.Router)();
  *   "expiryMode": "NEAREST"
  * }
  */
-router.post("/option/algo-order", async (req, res) => {
+router.post("/option/algo-order", auth_middleware_1.auth, auth_middleware_1.adminOnly, async (req, res) => {
     try {
-        const { underlyingSymbol, ltp, side, optionSide, type, lots, strikesAway, expiryMode, price, } = req.body;
+        const { userId, underlyingSymbol, ltp, side, optionSide, type, lots, strikesAway, expiryMode, price, } = req.body;
+        if (!userId) {
+            return res.status(400).json({ error: "userId is required to identify Upstox session" });
+        }
+        const accessToken = await getAccessToken(userId);
         if (!underlyingSymbol || typeof underlyingSymbol !== "string") {
             return res
                 .status(400)
@@ -41,6 +57,7 @@ router.post("/option/algo-order", async (req, res) => {
             strikesAway: strikesAway ? Number(strikesAway) : 0,
             expiryMode: expiryMode || "NEAREST",
             price: price ? Number(price) : undefined,
+            accessToken,
         });
         res.json(resp);
     }
