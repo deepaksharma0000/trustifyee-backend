@@ -7,7 +7,7 @@ import { auth, adminOnly } from "../middleware/auth.middleware";
 
 const router = Router();
 
-router.get("/open/:clientcode", getOpenPositions);
+router.get("/open/:clientcode", auth, getOpenPositions);
 router.post("/close", auth, adminOnly, closePosition);
 
 export default router;

@@ -37,8 +37,8 @@ const userRegisterSchema = Joi.object({
     password: Joi.string().min(6).optional(),
 
     // Optional fields
-    client_key: Joi.string().optional(),
-    broker: Joi.string().allow('', null),
+    client_key: Joi.string().allow('', null).optional(),
+    broker: Joi.string().allow('', null).optional(),
     status: Joi.string().valid('active', 'inactive').default('active'),
     trading_status: Joi.string().valid('enabled', 'disabled').default('enabled'),
     start_date: Joi.date().optional(),
@@ -48,6 +48,8 @@ const userRegisterSchema = Joi.object({
     sub_admin: Joi.string().allow('', null),
     service_to_month: Joi.string().allow('', null),
     group_service: Joi.string().allow('', null),
+    strategies: Joi.array().items(Joi.string()).optional(),
+    api_key: Joi.string().allow('', null).optional(),
 });
 
 export const registerAdmin = async (req: Request, res: Response) => {
@@ -130,7 +132,7 @@ export const registerUser = async (req: Request, res: Response) => {
         const { error } = userRegisterSchema.validate(req.body);
         if (error) return res.status(400).json({ error: error.message, status: false });
 
-        const { email, phone_number, user_name } = req.body;
+        const { email, phone_number, user_name, licence } = req.body;
 
         const existingUser = await User.findOne({ $or: [{ email }, { phone_number }] });
         if (existingUser) return res.status(400).json({ error: "Email or phone exists.", status: false });
@@ -142,10 +144,28 @@ export const registerUser = async (req: Request, res: Response) => {
 
         const client_key = req.body.client_key || uuidv4();
 
+        // Phase 1: Auto-schedule Demo for 2 days
+        let start_date = req.body.start_date;
+        let end_date = req.body.end_date;
+
+        if (licence === 'Demo' && (!start_date || !end_date)) {
+            const today = new Date();
+            start_date = start_date || today;
+            if (!end_date) {
+                const twoDaysLater = new Date(today);
+                twoDaysLater.setDate(today.getDate() + 2);
+                // Set to Market Closing Time: 15:30 (3:30 PM)
+                twoDaysLater.setHours(15, 30, 0, 0);
+                end_date = twoDaysLater;
+            }
+        }
+
         const newUser = new User({
             ...req.body,
             client_key,
-            password: hashedPassword
+            password: hashedPassword,
+            start_date,
+            end_date
         });
 
         await newUser.save();
@@ -171,6 +191,25 @@ export const loginUser = async (req: Request, res: Response) => {
 
         const user = await User.findOne({ user_name });
         if (!user) return res.status(404).json({ error: "User does not exist.", status: false });
+
+        // Phase 1: Check account status
+        if (user.status === 'inactive') {
+            return res.status(403).json({ error: "Your account is disabled. Please contact admin.", status: false });
+        }
+
+        // Phase 1: 15-day disabling logic for Demo users
+        if (user.licence === 'Demo' && user.end_date) {
+            const today = new Date();
+            const expiryDate = new Date(user.end_date);
+            const disableDate = new Date(expiryDate);
+            disableDate.setDate(expiryDate.getDate() + 15);
+
+            if (today > disableDate) {
+                user.status = 'inactive';
+                await user.save();
+                return res.status(403).json({ error: "Your account have been disabled after 15 days of demo expiry. Please take a subscription.", status: false });
+            }
+        }
 
         const isMatch = await bcrypt.compare(password, user.password as string);
         if (!isMatch) return res.status(400).json({ error: "Invalid password", status: false });

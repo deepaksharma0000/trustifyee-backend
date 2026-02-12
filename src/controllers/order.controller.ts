@@ -6,7 +6,14 @@ import AngelTokensModel from "../models/AngelTokens";
 import InstrumentModel from "../models/Instrument";
 
 export const getOrderStatus = async (req: Request, res: Response) => {
-  const { orderid } = req.params;
+  const { orderid, clientcode } = req.params;
+  const user = (req as any).user;
+  const userType = (req as any).userType;
+
+  // Security check: If user, must match clientcode
+  if (userType === 'user' && user.client_key !== clientcode) {
+    return res.status(403).json({ ok: false, message: "Unauthorized access to these orders" });
+  }
 
   const order = await Position.findOne({ orderid });
 
@@ -53,6 +60,14 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
 export const getActivePositions = async (req: Request, res: Response) => {
   try {
     const { clientcode } = req.params;
+    const user = (req as any).user;
+    const userType = (req as any).userType;
+
+    // Security check: If user, must match clientcode
+    if (userType === 'user' && user.client_key !== clientcode) {
+      return res.status(403).json({ ok: false, message: "Unauthorized access to these positions" });
+    }
+
     const positions = await Position.find({ clientcode, status: "OPEN" }).sort({ createdAt: -1 }).lean();
 
     if (positions.length === 0) {
@@ -155,6 +170,14 @@ export const closeOrder = async (req: Request, res: Response) => {
 export const getTradeHistory = async (req: Request, res: Response) => {
   try {
     const { clientcode } = req.params;
+    const user = (req as any).user;
+    const userType = (req as any).userType;
+
+    // Security check: If user, must match clientcode
+    if (userType === 'user' && user.client_key !== clientcode) {
+      return res.status(403).json({ ok: false, message: "Unauthorized access to trade history" });
+    }
+
     // Fetch closed positions, latest first
     const history = await Position.find({ clientcode, status: "CLOSED" }).sort({ exitAt: -1 }).lean();
 

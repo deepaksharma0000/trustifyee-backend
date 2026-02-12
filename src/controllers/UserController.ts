@@ -19,6 +19,9 @@ const updateUserSchema = Joi.object({
     service_to_month: Joi.string().allow('', null).optional(),
     group_service: Joi.string().allow('', null).optional(),
     password: Joi.string().min(6).optional(),
+    strategies: Joi.array().items(Joi.string()).optional(),
+    api_key: Joi.string().allow('', null).optional(),
+    client_key: Joi.string().allow('', null).optional(),
 });
 
 export const updateUser = async (req: Request, res: Response) => {
@@ -28,6 +31,13 @@ export const updateUser = async (req: Request, res: Response) => {
         if (error) return res.status(400).json({ error: error.message, status: false });
 
         const updateData = { ...value };
+
+        if (updateData.client_key === "") {
+            delete updateData.client_key;
+        }
+        if (updateData.api_key === "") {
+            delete updateData.api_key;
+        }
 
         if (updateData.password) {
             updateData.password = await bcrypt.hash(updateData.password, 10);

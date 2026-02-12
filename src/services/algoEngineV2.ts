@@ -153,11 +153,18 @@ async function placeTradesForRun(run: any) {
     const users = await User.find({
         status: "active",
         trading_status: "enabled",
+        strategies: run.strategy
     }).lean();
 
     for (const user of users) {
         const clientcode = user.client_key;
         if (!clientcode) continue;
+
+        // 🔥 Security: Check if Live user has necessary keys
+        if (user.licence === 'Live' && (!user.broker || !user.api_key)) {
+            log.warn(`⚠️ User ${user.user_name} is Live but missing Broker or API Key. Skipping.`);
+            continue;
+        }
 
         for (const leg of resolvedLegs) {
             if (user.licence === "Demo") {
@@ -255,7 +262,7 @@ async function placeTradesForRun(run: any) {
                     strike: leg.strike,
                     side: leg.side,
                     quantity: leg.quantity,
-                    mode: user.licence === "Demo" ? "paper" : "live",
+                    mode: "live",
                     status: "error",
                     error: err?.message || String(err),
                 });
@@ -349,8 +356,10 @@ export async function getRuns(limit = 50) {
     return AlgoRun.find().sort({ createdAt: -1 }).limit(limit).lean();
 }
 
-export async function getTrades(runId: string, limit = 200) {
-    return AlgoTrade.find({ runId })
+export async function getTrades(runId: string, limit = 200, userId?: string) {
+    const query: any = { runId };
+    if (userId) query.userId = userId;
+    return AlgoTrade.find(query)
         .sort({ createdAt: -1 })
         .limit(limit)
         .lean();

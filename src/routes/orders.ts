@@ -76,7 +76,7 @@ router.post("/place", auth, adminOnly, async (req, res) => {
       exchange: orderPayload.exchange,
       side: orderPayload.side,
       quantity: orderPayload.quantity, // We store LOT quantity here currently based on schema usage in getActivePositions
-      entryPrice: Number(orderPayload.price ?? 0), 
+      entryPrice: Number(orderPayload.price ?? 0),
       symboltoken,
       stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
       targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,

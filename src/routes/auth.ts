@@ -38,7 +38,7 @@ router.post("/login", async (req, res) => {
       return res.status(500).json({ ok: false, error: "Missing jwtToken in Angel response" });
     }
 
-  
+
     const saved = await AngelTokensModel.findOneAndUpdate(
       { clientcode },
       { clientcode, jwtToken, refreshToken, feedToken, expiresAt: undefined },
@@ -65,6 +65,49 @@ router.post("/logout", async (req, res) => {
     return res.json({ ok: true });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || err });
+  }
+});
+
+router.post("/validate-session", async (req, res) => {
+  const { clientcode } = req.body;
+  if (!clientcode) return res.status(400).json({ ok: false, error: "clientcode required" });
+
+  try {
+    const tokenData = await AngelTokensModel.findOne({ clientcode });
+    if (!tokenData || !tokenData.jwtToken) {
+      return res.json({ ok: false, error: "No session found" });
+    }
+
+    const profile = await adapter.getProfile(tokenData.jwtToken);
+
+    // AngelOne successful response usually has status: true or data
+    if (profile && profile.status === true) {
+      return res.json({ ok: true, data: profile.data });
+    } else {
+      // Check if we can refresh
+      if (tokenData.refreshToken) {
+        log.info("Session invalid, trying refresh for", clientcode);
+        try {
+          const refreshResp = await adapter.generateTokensUsingRefresh(tokenData.refreshToken);
+          if (refreshResp && refreshResp.status === true && refreshResp.data) {
+            const newJwt = refreshResp.data.jwtToken || refreshResp.data.accessToken;
+            const newFeed = refreshResp.data.feedToken || refreshResp.data.refreshToken;
+
+            await AngelTokensModel.findOneAndUpdate(
+              { clientcode },
+              { jwtToken: newJwt, feedToken: newFeed },
+              { new: true }
+            );
+            return res.json({ ok: true, refreshed: true });
+          }
+        } catch (e) {
+          log.error("Refresh failed for", clientcode);
+        }
+      }
+      return res.json({ ok: false, error: "Session expired or invalid" });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 

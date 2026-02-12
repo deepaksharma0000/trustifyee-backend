@@ -4,22 +4,28 @@ import { getLTP } from "../services/market.service";
 
 export const getLivePnL = async (req: Request, res: Response) => {
   try {
-    
     const { clientcode } = req.params;
+    const user = (req as any).user;
+    const userType = (req as any).userType;
+
+    // Security check: If user, must match clientcode
+    if (userType === 'user' && user.client_key !== clientcode) {
+      return res.status(403).json({ ok: false, message: "Unauthorized access to PnL data" });
+    }
 
     const positions = await Position.find({
       clientcode,
       status: "OPEN",
     });
     type LivePnLRow = {
-        orderid: string;
-        tradingsymbol: string;
-        side: "BUY" | "SELL";
-        quantity: number;
-        entryPrice: number;
-        ltp: number;
-        pnl: number;
-        };
+      orderid: string;
+      tradingsymbol: string;
+      side: "BUY" | "SELL";
+      quantity: number;
+      entryPrice: number;
+      ltp: number;
+      pnl: number;
+    };
 
     const result: LivePnLRow[] = [];
 

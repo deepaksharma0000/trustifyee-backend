@@ -18,6 +18,8 @@ export interface IUser extends Document {
     end_date?: Date;
     password?: string;
     is_login: boolean;
+    strategies?: string[];
+    api_key?: string;
     created_at: Date;
     updated_at: Date;
 }
@@ -40,6 +42,8 @@ const UserSchema: Schema = new Schema({
     end_date: { type: Date },
     password: { type: String },
     is_login: { type: Boolean, default: false },
+    strategies: { type: [String], default: [] },
+    api_key: { type: String },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);
