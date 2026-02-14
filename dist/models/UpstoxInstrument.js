@@ -51,5 +51,6 @@ const UpstoxInstrumentSchema = new mongoose_1.Schema({
     raw: mongoose_1.Schema.Types.Mixed,
 }, { timestamps: true });
 // optional TTL or indexes can be added if you want
-exports.default = mongoose_1.default.models.UpstoxInstrument ||
+const UpstoxInstrumentModel = mongoose_1.default.models.UpstoxInstrument ||
     mongoose_1.default.model("UpstoxInstrument", UpstoxInstrumentSchema);
+exports.default = UpstoxInstrumentModel;

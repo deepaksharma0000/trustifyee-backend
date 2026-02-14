@@ -35,5 +35,7 @@ const UpstoxOrderSchema = new Schema<IUpstoxOrder>(
   { timestamps: true }
 );
 
-export default mongoose.models.UpstoxOrder ||
+const UpstoxOrderModel = mongoose.models.UpstoxOrder ||
   mongoose.model<IUpstoxOrder>("UpstoxOrder", UpstoxOrderSchema);
+
+export default UpstoxOrderModel as mongoose.Model<IUpstoxOrder>;

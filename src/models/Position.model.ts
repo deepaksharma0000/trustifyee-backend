@@ -19,6 +19,10 @@ export interface IPosition extends Document {
   stopLossPrice?: number;
   targetPrice?: number;
   createdAt: Date;
+  autoSquareOffEnabled?: boolean;
+  autoSquareOffTime?: Date;
+  autoSquareOffStatus?: "PENDING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  autoSquareOffJobId?: string;
 }
 
 const PositionSchema = new Schema<IPosition>(
@@ -39,7 +43,11 @@ const PositionSchema = new Schema<IPosition>(
     mode: { type: String, enum: ["live", "paper"], default: "live" },
     status: { type: String, enum: ["PENDING", "COMPLETE", "REJECTED", "OPEN", "CLOSED"], default: "PENDING" },
     exitOrderId: { type: String },
-    exitAt: { type: Date }
+    exitAt: { type: Date },
+    autoSquareOffEnabled: { type: Boolean, default: false },
+    autoSquareOffTime: { type: Date },
+    autoSquareOffStatus: { type: String, enum: ["PENDING", "COMPLETED", "FAILED", "CANCELLED"], default: "PENDING" },
+    autoSquareOffJobId: { type: String }
   },
   { timestamps: true }
 );

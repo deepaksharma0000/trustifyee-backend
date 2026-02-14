@@ -9,7 +9,7 @@ export interface IInstrument extends Document {
   instrumenttype?: string;  // EQ / OPTIDX / FUTSTK etc.
   strike?: number;
   expiry?: Date;
-  optiontype?: "CE" | "PE"; 
+  optiontype?: "CE" | "PE";
   lotSize?: number;
 }
 
@@ -28,5 +28,7 @@ const InstrumentSchema = new Schema<IInstrument>(
   { timestamps: true }
 );
 
-export default mongoose.models.Instrument ||
+const InstrumentModel = mongoose.models.Instrument ||
   mongoose.model<IInstrument>("Instrument", InstrumentSchema);
+
+export default InstrumentModel as mongoose.Model<IInstrument>;

@@ -309,7 +309,7 @@ async function placeTradesForRun(run: any) {
           strike: opt.strike,
           side: "BUY",
           quantity: 1,
-          mode: user.licence === "Demo" ? "paper" : "live",
+          mode: (user.licence as string) === "Demo" ? "paper" : "live",
           status: "error",
           error: err?.message || String(err),
         });

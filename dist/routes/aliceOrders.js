@@ -7,8 +7,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const AliceOrderService_1 = require("../services/AliceOrderService");
 const logger_1 = require("../utils/logger");
+const auth_middleware_1 = require("../middleware/auth.middleware");
 const router = express_1.default.Router();
-router.post("/place", async (req, res) => {
+router.post("/place", auth_middleware_1.auth, auth_middleware_1.adminOnly, async (req, res) => {
     const { clientcode } = req.body;
     if (!clientcode) {
         return res.status(400).json({ error: "clientcode required" });

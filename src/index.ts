@@ -44,6 +44,7 @@ import { startMarketStream } from "./services/marketStream";
 
 
 import { startPositionWatchdog } from "./services/PositionManager";
+import { initAutoExitWorker } from "./jobs/AutoExitWorker";
 
 async function start() {
   try {
@@ -53,6 +54,9 @@ async function start() {
 
     // Start Watchdog
     startPositionWatchdog();
+
+    // Start Auto Exit Worker
+    initAutoExitWorker();
 
     // ----------------------------------------------------------------------
     // ⚡ OPTIMIZED SYNC (Only if DB is empty to prevent hang on restart)
@@ -108,7 +112,13 @@ async function start() {
     app.use("/api/orders", orderRoutess);
     app.use("/api/positions", positionRoutes);
     app.use("/api/pnl", pnlRoutes);
+    app.use("/api/positions", positionRoutes);
+    app.use("/api/pnl", pnlRoutes);
     app.use("/api/webhook", webhookRoutes);
+
+    // [NEW] Market Status
+    const marketStatusRoutes = require("./routes/marketStatus.routes").default;
+    app.use("/api/market", marketStatusRoutes);
 
     setInterval(() => {
       syncPendingOrders();

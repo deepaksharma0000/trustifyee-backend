@@ -40,5 +40,6 @@ const AliceTokensSchema = new mongoose_1.Schema({
     accessToken: { type: String },
     expiresAt: { type: Date }
 }, { timestamps: true });
-exports.default = mongoose_1.default.models.AliceTokens ||
+const AliceTokensModel = mongoose_1.default.models.AliceTokens ||
     mongoose_1.default.model("AliceTokens", AliceTokensSchema);
+exports.default = AliceTokensModel;

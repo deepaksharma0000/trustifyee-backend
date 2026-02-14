@@ -17,4 +17,5 @@ const AngelTokensSchema = new Schema<IAngelTokens>({
   expiresAt: Date
 }, { timestamps: true });
 
-export default mongoose.models.AngelTokens || mongoose.model<IAngelTokens>("AngelTokens", AngelTokensSchema);
+const AngelTokensModel = mongoose.models.AngelTokens || mongoose.model<IAngelTokens>("AngelTokens", AngelTokensSchema);
+export default AngelTokensModel as mongoose.Model<IAngelTokens>;

@@ -39,8 +39,8 @@ const userRegisterSchema = joi_1.default.object({
     phone_number: joi_1.default.string().required(),
     password: joi_1.default.string().min(6).optional(),
     // Optional fields
-    client_key: joi_1.default.string().optional(),
-    broker: joi_1.default.string().allow('', null),
+    client_key: joi_1.default.string().allow('', null).optional(),
+    broker: joi_1.default.string().allow('', null).optional(),
     status: joi_1.default.string().valid('active', 'inactive').default('active'),
     trading_status: joi_1.default.string().valid('enabled', 'disabled').default('enabled'),
     start_date: joi_1.default.date().optional(),
@@ -50,6 +50,8 @@ const userRegisterSchema = joi_1.default.object({
     sub_admin: joi_1.default.string().allow('', null),
     service_to_month: joi_1.default.string().allow('', null),
     group_service: joi_1.default.string().allow('', null),
+    strategies: joi_1.default.array().items(joi_1.default.string()).optional(),
+    api_key: joi_1.default.string().allow('', null).optional(),
 });
 const registerAdmin = async (req, res) => {
     try {
@@ -124,17 +126,33 @@ const registerUser = async (req, res) => {
         const { error } = userRegisterSchema.validate(req.body);
         if (error)
             return res.status(400).json({ error: error.message, status: false });
-        const { email, phone_number, user_name } = req.body;
+        const { email, phone_number, user_name, licence } = req.body;
         const existingUser = await User_1.default.findOne({ $or: [{ email }, { phone_number }] });
         if (existingUser)
             return res.status(400).json({ error: "Email or phone exists.", status: false });
         const plainPassword = user_name.substring(0, 4).toLowerCase() + '@123';
         const hashedPassword = await bcryptjs_1.default.hash(plainPassword, 10);
         const client_key = req.body.client_key || (0, uuid_1.v4)();
+        // Phase 1: Auto-schedule Demo for 2 days
+        let start_date = req.body.start_date;
+        let end_date = req.body.end_date;
+        if (licence === 'Demo' && (!start_date || !end_date)) {
+            const today = new Date();
+            start_date = start_date || today;
+            if (!end_date) {
+                const twoDaysLater = new Date(today);
+                twoDaysLater.setDate(today.getDate() + 2);
+                // Set to Market Closing Time: 15:30 (3:30 PM)
+                twoDaysLater.setHours(15, 30, 0, 0);
+                end_date = twoDaysLater;
+            }
+        }
         const newUser = new User_1.default({
             ...req.body,
             client_key,
-            password: hashedPassword
+            password: hashedPassword,
+            start_date,
+            end_date
         });
         await newUser.save();
         res.status(201).json({
@@ -159,6 +177,22 @@ const loginUser = async (req, res) => {
         const user = await User_1.default.findOne({ user_name });
         if (!user)
             return res.status(404).json({ error: "User does not exist.", status: false });
+        // Phase 1: Check account status
+        if (user.status === 'inactive') {
+            return res.status(403).json({ error: "Your account is disabled. Please contact admin.", status: false });
+        }
+        // Phase 1: 15-day disabling logic for Demo users
+        if (user.licence === 'Demo' && user.end_date) {
+            const today = new Date();
+            const expiryDate = new Date(user.end_date);
+            const disableDate = new Date(expiryDate);
+            disableDate.setDate(expiryDate.getDate() + 15);
+            if (today > disableDate) {
+                user.status = 'inactive';
+                await user.save();
+                return res.status(403).json({ error: "Your account have been disabled after 15 days of demo expiry. Please take a subscription.", status: false });
+            }
+        }
         const isMatch = await bcryptjs_1.default.compare(password, user.password);
         if (!isMatch)
             return res.status(400).json({ error: "Invalid password", status: false });

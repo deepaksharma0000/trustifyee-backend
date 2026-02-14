@@ -54,4 +54,42 @@ router.post("/logout", async (req, res) => {
         return res.status(500).json({ error: err.message || err });
     }
 });
+router.post("/validate-session", async (req, res) => {
+    const { clientcode } = req.body;
+    if (!clientcode)
+        return res.status(400).json({ ok: false, error: "clientcode required" });
+    try {
+        const tokenData = await AngelTokens_1.default.findOne({ clientcode });
+        if (!tokenData || !tokenData.jwtToken) {
+            return res.json({ ok: false, error: "No session found" });
+        }
+        const profile = await adapter.getProfile(tokenData.jwtToken);
+        // AngelOne successful response usually has status: true or data
+        if (profile && profile.status === true) {
+            return res.json({ ok: true, data: profile.data });
+        }
+        else {
+            // Check if we can refresh
+            if (tokenData.refreshToken) {
+                logger_1.log.info("Session invalid, trying refresh for", clientcode);
+                try {
+                    const refreshResp = await adapter.generateTokensUsingRefresh(tokenData.refreshToken);
+                    if (refreshResp && refreshResp.status === true && refreshResp.data) {
+                        const newJwt = refreshResp.data.jwtToken || refreshResp.data.accessToken;
+                        const newFeed = refreshResp.data.feedToken || refreshResp.data.refreshToken;
+                        await AngelTokens_1.default.findOneAndUpdate({ clientcode }, { jwtToken: newJwt, feedToken: newFeed }, { new: true });
+                        return res.json({ ok: true, refreshed: true });
+                    }
+                }
+                catch (e) {
+                    logger_1.log.error("Refresh failed for", clientcode);
+                }
+            }
+            return res.json({ ok: false, error: "Session expired or invalid" });
+        }
+    }
+    catch (err) {
+        return res.status(500).json({ ok: false, error: err.message });
+    }
+});
 exports.default = router;

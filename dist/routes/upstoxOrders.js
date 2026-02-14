@@ -7,6 +7,7 @@ const express_1 = __importDefault(require("express"));
 const UpstoxAdapter_1 = require("../adapters/UpstoxAdapter");
 const UpstoxTokens_1 = __importDefault(require("../models/UpstoxTokens"));
 const logger_1 = require("../utils/logger");
+const auth_middleware_1 = require("../middleware/auth.middleware");
 const router = express_1.default.Router();
 const adapter = new UpstoxAdapter_1.UpstoxAdapter();
 async function getAccessToken(userId) {
@@ -15,7 +16,7 @@ async function getAccessToken(userId) {
         throw new Error("No active Upstox session for userId");
     return doc.accessToken;
 }
-router.post("/place-option", async (req, res) => {
+router.post("/place-option", auth_middleware_1.auth, auth_middleware_1.adminOnly, async (req, res) => {
     try {
         const { userId, instrument_key, option_type, strike_price, expiry, instrument_token: providedToken, transaction_type = "BUY", quantity = 1, product = "D", order_type = "MARKET", validity = "DAY", is_amo = false, tag = "option-auto" } = req.body;
         if (!userId)

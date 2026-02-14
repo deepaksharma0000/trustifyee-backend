@@ -1,7 +1,7 @@
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IUpstoxTokens extends Document {
-  userId: string;          
+  userId: string;
   accessToken: string;
   refreshToken?: string;
   extendedToken?: string;
@@ -10,7 +10,7 @@ export interface IUpstoxTokens extends Document {
   exchanges?: string[];
   products?: string[];
   orderTypes?: string[];
-  expiresAt?: Date;   
+  expiresAt?: Date;
 }
 
 const UpstoxTokensSchema = new Schema<IUpstoxTokens>(
@@ -32,5 +32,7 @@ const UpstoxTokensSchema = new Schema<IUpstoxTokens>(
 // Add index for expiry
 UpstoxTokensSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-export default mongoose.models.UpstoxTokens ||
+const UpstoxTokensModel = mongoose.models.UpstoxTokens ||
   mongoose.model<IUpstoxTokens>("UpstoxTokens", UpstoxTokensSchema);
+
+export default UpstoxTokensModel as mongoose.Model<IUpstoxTokens>;

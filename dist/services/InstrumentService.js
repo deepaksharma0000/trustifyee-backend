@@ -5,12 +5,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.syncNiftyOptionsOnly = syncNiftyOptionsOnly;
 exports.syncBankNiftyOptionsOnly = syncBankNiftyOptionsOnly;
+exports.syncFinNiftyOptionsOnly = syncFinNiftyOptionsOnly;
 exports.findSymbolToken = findSymbolToken;
 exports.findSymbol = findSymbol;
 exports.findNiftyOption = findNiftyOption;
 // src/services/InstrumentService.ts
 const axios_1 = __importDefault(require("axios"));
 const Instrument_1 = __importDefault(require("../models/Instrument"));
+const logger_1 = require("../utils/logger");
 const MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
 async function syncNiftyOptionsOnly() {
     const { data } = await axios_1.default.get(MASTER_URL);
@@ -21,17 +23,9 @@ async function syncNiftyOptionsOnly() {
         r.strike &&
         !isNaN(Number(r.strike)))
         .map(r => {
-        const lotSizeFromAngel = r.lotsize;
-        if (r.name === "NIFTY" && r.instrumenttype === "OPTIDX") {
-            console.log("🧪 LOTSIZE CHECK:", {
-                symbol: r.symbol,
-                lotsize: lotSizeFromAngel,
-                type: typeof lotSizeFromAngel
-            });
-        }
-        const rawStrike = Number(r.strike); // e.g. 2550000
-        const normalizedStrike = rawStrike / 100; // e.g. 25500
-        const lotSize = Number(r.lotsize) || 75; // 🔥 FROM ANGEL DOCS
+        const rawStrike = Number(r.strike);
+        const normalizedStrike = rawStrike / 100;
+        const lotSize = Number(r.lotsize) || 50; // Updated default for Nifty
         return {
             updateOne: {
                 filter: { symboltoken: r.token },
@@ -54,6 +48,7 @@ async function syncNiftyOptionsOnly() {
     });
     if (bulk.length) {
         await Instrument_1.default.bulkWrite(bulk);
+        logger_1.log.info(`[Sync] NIFTY sync done: ${bulk.length} instruments.`);
     }
 }
 async function syncBankNiftyOptionsOnly() {
@@ -65,17 +60,9 @@ async function syncBankNiftyOptionsOnly() {
         r.strike &&
         !isNaN(Number(r.strike)))
         .map(r => {
-        const lotSizeFromAnge = r.lotsize;
-        if (r.name === "BANKNIFTY" && r.instrumenttype === "OPTIDX") {
-            console.log("🧪 LOTSIZE CHECK:", {
-                symbol: r.symbol,
-                lotsize: lotSizeFromAnge,
-                type: typeof lotSizeFromAnge
-            });
-        }
         const rawStrike = Number(r.strike);
         const normalizedStrike = rawStrike / 100;
-        const lotSize = Number(r.lotsize) || 30; // 🔥 BANKNIFTY LOT
+        const lotSize = Number(r.lotsize) || 15; // Updated default for BankNifty
         return {
             updateOne: {
                 filter: { symboltoken: r.token },
@@ -98,6 +85,44 @@ async function syncBankNiftyOptionsOnly() {
     });
     if (bulk.length) {
         await Instrument_1.default.bulkWrite(bulk);
+        logger_1.log.info(`[Sync] BANKNIFTY sync done: ${bulk.length} instruments.`);
+    }
+}
+async function syncFinNiftyOptionsOnly() {
+    const { data } = await axios_1.default.get(MASTER_URL);
+    const bulk = data
+        .filter(r => r.exch_seg === "NFO" &&
+        r.instrumenttype === "OPTIDX" &&
+        r.name === "FINNIFTY" &&
+        r.strike &&
+        !isNaN(Number(r.strike)))
+        .map(r => {
+        const rawStrike = Number(r.strike);
+        const normalizedStrike = rawStrike / 100;
+        const lotSize = Number(r.lotsize) || 25; // Default for FinNifty
+        return {
+            updateOne: {
+                filter: { symboltoken: r.token },
+                update: {
+                    $set: {
+                        symboltoken: r.token,
+                        tradingsymbol: r.symbol,
+                        name: r.name,
+                        exchange: r.exch_seg,
+                        instrumenttype: r.instrumenttype,
+                        strike: normalizedStrike,
+                        expiry: new Date(r.expiry),
+                        optiontype: r.symbol.endsWith("CE") ? "CE" : "PE",
+                        lotSize: lotSize
+                    }
+                },
+                upsert: true
+            }
+        };
+    });
+    if (bulk.length) {
+        await Instrument_1.default.bulkWrite(bulk);
+        logger_1.log.info(`[Sync] FINNIFTY sync done: ${bulk.length} instruments.`);
     }
 }
 /**
