@@ -3,6 +3,7 @@ import express from "express";
 import AngelTokensModel from "../models/AngelTokens";
 import { AngelOneAdapter, AngelSessionResp } from "../adapters/AngelOneAdapter";
 import { log } from "../utils/logger";
+import { encrypt } from "../utils/encryption";
 
 
 const router = express.Router();
@@ -41,7 +42,13 @@ router.post("/login", async (req, res) => {
 
     const saved = await AngelTokensModel.findOneAndUpdate(
       { clientcode },
-      { clientcode, jwtToken, refreshToken, feedToken, expiresAt: undefined },
+      {
+        clientcode,
+        jwtToken: encrypt(jwtToken),
+        refreshToken: refreshToken ? encrypt(refreshToken) : undefined,
+        feedToken: feedToken ? encrypt(feedToken) : undefined,
+        expiresAt: undefined
+      },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     ).lean();
 
@@ -95,7 +102,10 @@ router.post("/validate-session", async (req, res) => {
 
             await AngelTokensModel.findOneAndUpdate(
               { clientcode },
-              { jwtToken: newJwt, feedToken: newFeed },
+              {
+                jwtToken: encrypt(newJwt),
+                feedToken: newFeed ? encrypt(newFeed) : undefined
+              },
               { new: true }
             );
             return res.json({ ok: true, refreshed: true });

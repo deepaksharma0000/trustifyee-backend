@@ -6,6 +6,7 @@ import Admin, { IAdmin } from '../models/Admin';
 import { generateAccessToken, generateRefreshToken } from '../utils/tokens';
 import { validateEmail } from '../utils/functions';
 import { v4 as uuidv4 } from 'uuid';
+import { encrypt, maskKey } from '../utils/encryption';
 
 // Schemas
 const adminRegisterSchema = Joi.object({
@@ -132,7 +133,9 @@ export const registerUser = async (req: Request, res: Response) => {
         const { error } = userRegisterSchema.validate(req.body);
         if (error) return res.status(400).json({ error: error.message, status: false });
 
-        const { email, phone_number, user_name, licence } = req.body;
+        // Inside registerUser function
+
+        let { email, phone_number, user_name, licence, client_key, api_key } = req.body;
 
         const existingUser = await User.findOne({ $or: [{ email }, { phone_number }] });
         if (existingUser) return res.status(400).json({ error: "Email or phone exists.", status: false });
@@ -142,7 +145,11 @@ export const registerUser = async (req: Request, res: Response) => {
 
         const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
-        const client_key = req.body.client_key || uuidv4();
+        // Encrypt sensitive fields
+        if (client_key) client_key = encrypt(client_key);
+        else client_key = uuidv4(); // Generate UUID if not provided
+
+        if (api_key) api_key = encrypt(api_key);
 
         // Phase 1: Auto-schedule Demo for 2 days
         let start_date = req.body.start_date;
@@ -170,9 +177,15 @@ export const registerUser = async (req: Request, res: Response) => {
 
         await newUser.save();
 
+        const maskedUser = {
+            ...newUser.toObject(),
+            client_key: maskKey(newUser.client_key || ""),
+            api_key: maskKey(newUser.api_key || "")
+        };
+
         res.status(201).json({
             message: "User registration successful!",
-            data: newUser,
+            data: maskedUser,
             status: true
         });
 
@@ -220,9 +233,15 @@ export const loginUser = async (req: Request, res: Response) => {
         const accessToken = generateAccessToken(user._id);
         const refreshToken = generateRefreshToken(user._id);
 
+        const maskedUser = {
+            ...user.toObject(),
+            client_key: maskKey(user.client_key || ""),
+            api_key: maskKey(user.api_key || "")
+        };
+
         res.status(200).json({
             message: "Login successful!",
-            data: user,
+            data: maskedUser,
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },

@@ -4,6 +4,7 @@ import zlib from "zlib";
 import crypto from "crypto";
 import { config } from "../config";
 import { log } from "../utils/logger";
+import { decrypt } from "../utils/encryption";
 
 export class AliceBlueAdapter {
   private clientId: string;
@@ -52,7 +53,7 @@ export class AliceBlueAdapter {
     }
 
     if (sessionId) {
-      headers["Authorization"] = `Bearer ${sessionId}`;
+      headers["Authorization"] = `Bearer ${decrypt(sessionId)}`;
     }
 
     return headers;
@@ -215,11 +216,11 @@ export class AliceBlueAdapter {
     return await this.authPost(sessionId, this.orderStatusPath, body);
   }
 
-  
 
 
 
-    // type approx, actual fields docs ke hisaab se adjust karna
+
+  // type approx, actual fields docs ke hisaab se adjust karna
   // async getContractMaster(sessionId: string,params: { exchange: string }) 
   // {
   //   const path = config.aliceContractMasterPath;
@@ -229,12 +230,12 @@ export class AliceBlueAdapter {
 
   //   return data;
   // }
-  
-    /**
-   * Contract master JSON/ZIP download per-exchange.
-   * Ye static URLs use karega (NSE/NFO/INDICES) - .env se aayenge.
-   * Isme sessionId zaroori nahi hai, kyunki yeh public downloads hote hain.
-   */
+
+  /**
+ * Contract master JSON/ZIP download per-exchange.
+ * Ye static URLs use karega (NSE/NFO/INDICES) - .env se aayenge.
+ * Isme sessionId zaroori nahi hai, kyunki yeh public downloads hote hain.
+ */
   async getContractMasterForExchange(exchange: string): Promise<any[]> {
     let url: string | undefined;
 
@@ -331,7 +332,7 @@ export class AliceBlueAdapter {
       return json.result;
     }
 
-     // NEW: generic object-of-objects handling
+    // NEW: generic object-of-objects handling
     if (json && typeof json === "object") {
       const values = Object.values(json);
       log.info(

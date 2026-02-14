@@ -15,6 +15,7 @@ import {
   ResolvedStrategyLeg
 } from "./StrategyEngine";
 import { log } from "../utils/logger";
+import { decrypt } from "../utils/encryption";
 
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
 
@@ -210,8 +211,9 @@ async function placeTradesForRun(run: any) {
   }).lean();
 
   for (const user of users) {
-    const clientcode = user.client_key;
-    if (!clientcode) continue;
+    const rawClientKey = user.client_key;
+    if (!rawClientKey) continue;
+    const clientcode = decrypt(rawClientKey);
 
     for (const opt of optionList) {
       if (user.licence === "Demo") {

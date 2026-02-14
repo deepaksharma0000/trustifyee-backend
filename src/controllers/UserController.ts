@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import User from '../models/User';
 import Joi from 'joi';
 import bcrypt from 'bcryptjs';
+import { encrypt, maskKey } from '../utils/encryption';
 
 const updateUserSchema = Joi.object({
     user_name: Joi.string().optional(),
@@ -32,10 +33,19 @@ export const updateUser = async (req: Request, res: Response) => {
 
         const updateData = { ...value };
 
-        if (updateData.client_key === "") {
+        if (updateData.client_key && !updateData.client_key.startsWith('****')) {
+            updateData.client_key = encrypt(updateData.client_key);
+        } else if (updateData.client_key && updateData.client_key.startsWith('****')) {
+            delete updateData.client_key;
+        } else if (updateData.client_key === "") {
             delete updateData.client_key;
         }
-        if (updateData.api_key === "") {
+
+        if (updateData.api_key && !updateData.api_key.startsWith('****')) {
+            updateData.api_key = encrypt(updateData.api_key);
+        } else if (updateData.api_key && updateData.api_key.startsWith('****')) {
+            delete updateData.api_key;
+        } else if (updateData.api_key === "") {
             delete updateData.api_key;
         }
 
@@ -46,9 +56,15 @@ export const updateUser = async (req: Request, res: Response) => {
         const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
         if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
 
+        const maskedUpdatedUser = {
+            ...updatedUser.toObject(),
+            client_key: maskKey(updatedUser.client_key || ""),
+            api_key: maskKey(updatedUser.api_key || "")
+        };
+
         res.status(200).json({
             message: "User updated successfully!",
-            data: updatedUser,
+            data: maskedUpdatedUser,
             status: true
         });
 
@@ -75,10 +91,15 @@ export const deleteUser = async (req: Request, res: Response) => {
 export const getLoggedInUsers = async (req: Request, res: Response) => {
     try {
         const users = await User.find({ is_login: true });
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: maskKey(u.client_key || ""),
+            api_key: maskKey(u.api_key || "")
+        }));
         res.status(200).json({
             message: "Logged-in users fetched successfully!",
             count: users.length,
-            data: users,
+            data: maskedUsers,
             status: true
         });
     } catch (err: any) {
@@ -110,10 +131,15 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
         }
 
         const users = await User.find(query);
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: maskKey(u.client_key || ""),
+            api_key: maskKey(u.api_key || "")
+        }));
         res.status(200).json({
             message: "Users fetched successfully!",
             count: users.length,
-            data: users,
+            data: maskedUsers,
             status: true
         });
 
@@ -143,8 +169,13 @@ export const getUserSearch = async (req: Request, res: Response) => {
         }
 
         const users = await User.find(query);
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: maskKey(u.client_key || ""),
+            api_key: maskKey(u.api_key || "")
+        }));
         res.status(200).json({
-            users,
+            users: maskedUsers,
             total_users: users.length,
             status: true
         });
