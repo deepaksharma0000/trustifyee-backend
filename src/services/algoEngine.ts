@@ -215,6 +215,32 @@ async function placeTradesForRun(run: any) {
     if (!rawClientKey) continue;
     const clientcode = decrypt(rawClientKey);
 
+    // -------------------------------------------------------------
+    // Enforce Training & Token Conditions (User Request)
+    // -------------------------------------------------------------
+    let angelSession: any = null;
+
+    if (user.licence === "Live") {
+      angelSession = await AngelTokensModel.findOne({ clientcode }).lean();
+
+      const broker_connected = !!angelSession;
+      const token_valid = !!(angelSession?.jwtToken);
+
+      const trading_enabled = (
+        user.status === "active" &&
+        user.trading_status === "enabled" &&
+        user.licence === "Live" &&
+        broker_connected === true &&
+        token_valid === true
+      );
+
+      if (!trading_enabled) {
+        log.warn(`Token Expired – Skipping User ${user.user_name}`);
+        continue;
+      }
+    }
+    // -------------------------------------------------------------
+
     for (const opt of optionList) {
       if (user.licence === "Demo") {
         const paperId = `PAPER-${Date.now()}-${Math.random()}`;
@@ -265,9 +291,9 @@ async function placeTradesForRun(run: any) {
           resp?.data?.data?.orderid ||
           `BROKER-${Date.now()}-${Math.random()}`;
 
-        const session = await AngelTokensModel.findOne({ clientcode }).lean();
-        const entryPrice = session?.jwtToken && opt.symboltoken
-          ? await getEntryPrice(session.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
+        // Uses the session fetched above
+        const entryPrice = angelSession?.jwtToken && opt.symboltoken
+          ? await getEntryPrice(angelSession.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
           : 0;
 
         await Position.create({
