@@ -8,6 +8,8 @@ interface PlaceOrderPayload {
   side: "BUY" | "SELL";
   quantity: number;
   ordertype: "MARKET";
+  variety?: string;
+  producttype?: string;
 }
 
 export const placeAngelOrder = async (

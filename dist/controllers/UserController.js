@@ -23,6 +23,9 @@ const updateUserSchema = joi_1.default.object({
     service_to_month: joi_1.default.string().allow('', null).optional(),
     group_service: joi_1.default.string().allow('', null).optional(),
     password: joi_1.default.string().min(6).optional(),
+    strategies: joi_1.default.array().items(joi_1.default.string()).optional(),
+    api_key: joi_1.default.string().allow('', null).optional(),
+    client_key: joi_1.default.string().allow('', null).optional(),
 });
 const updateUser = async (req, res) => {
     try {
@@ -31,6 +34,12 @@ const updateUser = async (req, res) => {
         if (error)
             return res.status(400).json({ error: error.message, status: false });
         const updateData = { ...value };
+        if (updateData.client_key === "") {
+            delete updateData.client_key;
+        }
+        if (updateData.api_key === "") {
+            delete updateData.api_key;
+        }
         if (updateData.password) {
             updateData.password = await bcryptjs_1.default.hash(updateData.password, 10);
         }

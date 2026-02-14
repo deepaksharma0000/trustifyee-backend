@@ -38,44 +38,45 @@ export const config = {
   upstoxHftBaseUrl: process.env.UPSTOX_HFT_BASE_URL || "https://api-hft.upstox.com",
 
 
- // -------- ALICE BLUE ----------
- 
- // -------- ALICE BLUE ----------
+  // -------- ALICE BLUE ----------
 
-// Trading login / internal client code agar kahin use kar rahe ho
-aliceClientId: process.env.ALICE_CLIENT_ID || "",
-// Developer Portal se
-aliceAppCode: process.env.ALICE_APP_CODE || "",
-aliceApiSecret: process.env.ALICE_API_SECRET || "",
+  // -------- ALICE BLUE ----------
+
+  // Trading login / internal client code agar kahin use kar rahe ho
+  aliceClientId: process.env.ALICE_CLIENT_ID || "",
+  // Developer Portal se
+  aliceAppCode: process.env.ALICE_APP_CODE || "",
+  aliceApiSecret: process.env.ALICE_API_SECRET || "",
   aliceRedirectUrl:
-  process.env.ALICE_REDIRECT_URL || "http://localhost:3000/api/alice/auth/callback",
+    process.env.ALICE_REDIRECT_URL || "http://localhost:3000/api/alice/auth/callback",
 
-aliceAuthBaseUrl:
-  process.env.ALICE_AUTH_BASE_URL || "https://ant.aliceblueonline.com",
+  aliceAuthBaseUrl:
+    process.env.ALICE_AUTH_BASE_URL || "https://ant.aliceblueonline.com",
 
-aliceOrderBaseUrl:
-  process.env.ALICE_ORDER_BASE_URL || "https://a3.aliceblueonline.com",
+  aliceOrderBaseUrl:
+    process.env.ALICE_ORDER_BASE_URL || "https://a3.aliceblueonline.com",
 
-alicePlaceOrderPath:
-  process.env.ALICE_PLACE_ORDER_PATH || "/open-api/od/v1/orders/place",
+  alicePlaceOrderPath:
+    process.env.ALICE_PLACE_ORDER_PATH || "/open-api/od/v1/orders/place",
 
-aliceOrderStatusPath:
-  process.env.ALICE_ORDER_STATUS_PATH || "/open-api/od/v1/orders/book",
-  
-aliceContractMasterNseUrl:
+  aliceOrderStatusPath:
+    process.env.ALICE_ORDER_STATUS_PATH || "/open-api/od/v1/orders/book",
+
+  aliceContractMasterNseUrl:
     process.env.ALICE_CM_NSE_URL || "",
-    
-     aliceContractMasterNfoUrl:
+
+  aliceContractMasterNfoUrl:
     process.env.ALICE_CM_NFO_URL || "",
 
   aliceContractMasterIndicesUrl:
     process.env.ALICE_CM_INDICES_URL || "",
 
-aliceGetUserDetailsPath:
-  process.env.ALICE_GET_USER_DETAILS_PATH ||
-  "/open-api/od/v1/vendor/getUserDetails",
+  aliceGetUserDetailsPath:
+    process.env.ALICE_GET_USER_DETAILS_PATH ||
+    "/open-api/od/v1/vendor/getUserDetails",
 
-    aliceContractMasterPath:
-  process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
+  aliceContractMasterPath:
+    process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
 
+  encryptionKey: process.env.ENCRYPTION_SECRET || "",
 };

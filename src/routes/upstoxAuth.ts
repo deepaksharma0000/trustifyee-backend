@@ -3,6 +3,7 @@ import express from "express";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { log } from "../utils/logger";
+import { encrypt } from "../utils/encryption";
 
 const router = express.Router();
 const adapter = new UpstoxAdapter();
@@ -14,13 +15,13 @@ const adapter = new UpstoxAdapter();
 router.get("/url", (req, res) => {
   const state = req.query.state?.toString() || "state-" + Date.now();
   const url = adapter.getAuthUrl(state);
-  
+
   log.debug("Generated Upstox auth URL for state:", state);
-  
-  return res.json({ 
+
+  return res.json({
     ok: true,
-    url, 
-    state 
+    url,
+    state
   });
 });
 
@@ -34,9 +35,9 @@ router.get("/callback", async (req, res) => {
   log.debug("Upstox callback received:", { code: code ? "present" : "missing", state });
 
   if (!code || typeof code !== "string") {
-    return res.status(400).json({ 
-      ok: false, 
-      error: "Missing authorization code" 
+    return res.status(400).json({
+      ok: false,
+      error: "Missing authorization code"
     });
   }
 
@@ -50,9 +51,9 @@ router.get("/callback", async (req, res) => {
       { userId: tokenResp.user_id },
       {
         userId: tokenResp.user_id,
-        accessToken: tokenResp.access_token,
-        extendedToken: tokenResp.extended_token,
-        refreshToken: tokenResp.refresh_token,
+        accessToken: encrypt(tokenResp.access_token),
+        extendedToken: tokenResp.extended_token ? encrypt(tokenResp.extended_token) : undefined,
+        refreshToken: tokenResp.refresh_token ? encrypt(tokenResp.refresh_token) : undefined,
         email: tokenResp.email,
         userName: tokenResp.user_name,
         exchanges: tokenResp.exchanges,
@@ -80,9 +81,9 @@ router.get("/callback", async (req, res) => {
 
   } catch (err: any) {
     log.error("Upstox callback error:", err.message || err);
-    return res.status(500).json({ 
-      ok: false, 
-      error: err.message || "Authentication failed" 
+    return res.status(500).json({
+      ok: false,
+      error: err.message || "Authentication failed"
     });
   }
 });
@@ -95,35 +96,35 @@ router.post("/refresh", async (req, res) => {
   const { userId } = req.body;
 
   if (!userId) {
-    return res.status(400).json({ 
-      ok: false, 
-      error: "userId is required" 
+    return res.status(400).json({
+      ok: false,
+      error: "userId is required"
     });
   }
 
   try {
     // Get existing token from database
     const existingToken = await UpstoxTokensModel.findOne({ userId });
-    
+
     if (!existingToken || !existingToken.refreshToken) {
-      return res.status(404).json({ 
-        ok: false, 
-        error: "User not found or no refresh token available" 
+      return res.status(404).json({
+        ok: false,
+        error: "User not found or no refresh token available"
       });
     }
 
     // Refresh the token
     const tokenResp = await adapter.refreshAccessToken(existingToken.refreshToken);
-    
+
     // Update in database
     const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
-    
+
     const updated = await UpstoxTokensModel.findOneAndUpdate(
       { userId },
       {
-        accessToken: tokenResp.access_token,
-        extendedToken: tokenResp.extended_token,
-        refreshToken: tokenResp.refresh_token,
+        accessToken: encrypt(tokenResp.access_token),
+        extendedToken: tokenResp.extended_token ? encrypt(tokenResp.extended_token) : undefined,
+        refreshToken: tokenResp.refresh_token ? encrypt(tokenResp.refresh_token) : undefined,
         expiresAt: expiresAt
       },
       { new: true }
@@ -139,9 +140,9 @@ router.post("/refresh", async (req, res) => {
 
   } catch (err: any) {
     log.error("Token refresh error:", err.message || err);
-    return res.status(500).json({ 
-      ok: false, 
-      error: err.message || "Token refresh failed" 
+    return res.status(500).json({
+      ok: false,
+      error: err.message || "Token refresh failed"
     });
   }
 });
@@ -154,19 +155,19 @@ router.get("/profile", async (req, res) => {
   const { userId } = req.query;
 
   if (!userId || typeof userId !== "string") {
-    return res.status(400).json({ 
-      ok: false, 
-      error: "userId query parameter is required" 
+    return res.status(400).json({
+      ok: false,
+      error: "userId query parameter is required"
     });
   }
 
   try {
     const tokenDoc = await UpstoxTokensModel.findOne({ userId });
-    
+
     if (!tokenDoc) {
-      return res.status(404).json({ 
-        ok: false, 
-        error: "User not found" 
+      return res.status(404).json({
+        ok: false,
+        error: "User not found"
       });
     }
 
@@ -179,9 +180,9 @@ router.get("/profile", async (req, res) => {
 
   } catch (err: any) {
     log.error("Get profile error:", err.message || err);
-    return res.status(500).json({ 
-      ok: false, 
-      error: err.message || "Failed to get profile" 
+    return res.status(500).json({
+      ok: false,
+      error: err.message || "Failed to get profile"
     });
   }
 });
@@ -194,20 +195,20 @@ router.get("/status", async (req, res) => {
   const { userId } = req.query;
 
   if (!userId || typeof userId !== "string") {
-    return res.status(400).json({ 
-      ok: false, 
-      error: "userId query parameter is required" 
+    return res.status(400).json({
+      ok: false,
+      error: "userId query parameter is required"
     });
   }
 
   try {
     const tokenDoc = await UpstoxTokensModel.findOne({ userId });
-    
+
     if (!tokenDoc) {
-      return res.json({ 
-        ok: true, 
+      return res.json({
+        ok: true,
         isLoggedIn: false,
-        message: "User not found" 
+        message: "User not found"
       });
     }
 
@@ -228,9 +229,9 @@ router.get("/status", async (req, res) => {
 
   } catch (err: any) {
     log.error("Status check error:", err.message || err);
-    return res.status(500).json({ 
-      ok: false, 
-      error: err.message || "Status check failed" 
+    return res.status(500).json({
+      ok: false,
+      error: err.message || "Status check failed"
     });
   }
 });
@@ -243,27 +244,27 @@ router.post("/logout", async (req, res) => {
   const { userId } = req.body;
 
   if (!userId) {
-    return res.status(400).json({ 
-      ok: false, 
-      error: "userId is required" 
+    return res.status(400).json({
+      ok: false,
+      error: "userId is required"
     });
   }
 
   try {
     await UpstoxTokensModel.deleteOne({ userId });
-    
+
     log.info("User logged out:", userId);
-    
-    return res.json({ 
-      ok: true, 
-      message: "Logged out successfully" 
+
+    return res.json({
+      ok: true,
+      message: "Logged out successfully"
     });
 
   } catch (err: any) {
     log.error("Logout error:", err.message || err);
-    return res.status(500).json({ 
-      ok: false, 
-      error: err.message || "Logout failed" 
+    return res.status(500).json({
+      ok: false,
+      error: err.message || "Logout failed"
     });
   }
 });

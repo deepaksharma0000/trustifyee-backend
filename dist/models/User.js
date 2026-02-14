@@ -52,5 +52,7 @@ const UserSchema = new mongoose_1.Schema({
     end_date: { type: Date },
     password: { type: String },
     is_login: { type: Boolean, default: false },
+    strategies: { type: [String], default: [] },
+    api_key: { type: String },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 exports.default = mongoose_1.default.model('User', UserSchema);

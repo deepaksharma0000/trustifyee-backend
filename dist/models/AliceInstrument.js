@@ -49,5 +49,6 @@ const AliceInstrumentSchema = new mongoose_1.Schema({
 }, { timestamps: true });
 // unique index to avoid duplicates per exchange/token
 AliceInstrumentSchema.index({ exchange: 1, token: 1 }, { unique: true });
-exports.default = mongoose_1.default.models.AliceInstrument ||
+const AliceInstrumentModel = mongoose_1.default.models.AliceInstrument ||
     mongoose_1.default.model("AliceInstrument", AliceInstrumentSchema);
+exports.default = AliceInstrumentModel;

@@ -6,6 +6,12 @@ const market_service_1 = require("../services/market.service");
 const getLivePnL = async (req, res) => {
     try {
         const { clientcode } = req.params;
+        const user = req.user;
+        const userType = req.userType;
+        // Security check: If user, must match clientcode
+        if (userType === 'user' && user.client_key !== clientcode) {
+            return res.status(403).json({ ok: false, message: "Unauthorized access to PnL data" });
+        }
         const positions = await Position_model_1.Position.find({
             clientcode,
             status: "OPEN",

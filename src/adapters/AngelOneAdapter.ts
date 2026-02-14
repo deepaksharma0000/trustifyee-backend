@@ -2,6 +2,7 @@
 import axios, { AxiosInstance } from "axios";
 import { config } from "../config";
 import { log } from "../utils/logger";
+import { decrypt } from "../utils/encryption";
 
 export type AngelSessionResp = {
   status?: boolean | string;
@@ -43,7 +44,7 @@ export class AngelOneAdapter {
     };
 
     if (jwtToken) {
-      headers["Authorization"] = `Bearer ${jwtToken}`;
+      headers["Authorization"] = `Bearer ${decrypt(jwtToken)}`;
     }
 
     return headers;
@@ -193,7 +194,7 @@ export class AngelOneAdapter {
   // ------------ REFRESH TOKEN (OPTIONAL) ------------
 
   async generateTokensUsingRefresh(refreshToken: string) {
-    const body = { refreshToken };
+    const body = { refreshToken: decrypt(refreshToken) };
     try {
       const resp = await this.client.post(this.refreshTokenPath, body, {
         headers: this.baseHeaders()
@@ -205,6 +206,20 @@ export class AngelOneAdapter {
       throw new Error(
         `generateTokensUsingRefresh failed: ${JSON.stringify(data)}`
       );
+    }
+  }
+  // ------------ USER PROFILE ------------
+  async getProfile(jwtToken: string) {
+    const path = "/rest/secure/angelbroking/user/v1/getProfile";
+    try {
+      const resp = await this.client.get(path, {
+        headers: this.baseHeaders(jwtToken)
+      });
+      return resp.data;
+    } catch (err: any) {
+      // Return error structure rather than throwing for easier validation check
+      const data = err?.response?.data ?? err.message;
+      return { status: false, message: "Profile fetch failed", data };
     }
   }
 }

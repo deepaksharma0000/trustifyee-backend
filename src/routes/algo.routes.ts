@@ -79,6 +79,14 @@ router.get("/trades/:runId", auth, adminOnly, async (req, res) => {
   return res.json({ ok: true, trades });
 });
 
+router.get("/my-trades/:runId", auth, async (req, res) => {
+  const { runId } = req.params;
+  const userId = (req as any).id;
+  const limit = req.query.limit ? Number(req.query.limit) : 200;
+  const trades = await getTrades(runId, limit, userId);
+  return res.json({ ok: true, trades });
+});
+
 router.get("/trades/export", auth, adminOnly, async (req, res) => {
   const runId = req.query.runId ? String(req.query.runId) : undefined;
   const limit = req.query.limit ? Number(req.query.limit) : 1000;

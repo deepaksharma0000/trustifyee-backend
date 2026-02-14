@@ -19,6 +19,10 @@ const PositionSchema = new mongoose_1.Schema({
     mode: { type: String, enum: ["live", "paper"], default: "live" },
     status: { type: String, enum: ["PENDING", "COMPLETE", "REJECTED", "OPEN", "CLOSED"], default: "PENDING" },
     exitOrderId: { type: String },
-    exitAt: { type: Date }
+    exitAt: { type: Date },
+    autoSquareOffEnabled: { type: Boolean, default: false },
+    autoSquareOffTime: { type: Date },
+    autoSquareOffStatus: { type: String, enum: ["PENDING", "COMPLETED", "FAILED", "CANCELLED"], default: "PENDING" },
+    autoSquareOffJobId: { type: String }
 }, { timestamps: true });
 exports.Position = (0, mongoose_1.model)("Position", PositionSchema);

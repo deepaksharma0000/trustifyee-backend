@@ -4,6 +4,7 @@ import http from "http";
 import bodyParser from "body-parser";
 import mongoose from "mongoose";
 import { config } from "./config";
+import InstrumentModel from "./models/Instrument";
 import authRoutes from "./routes/auth";
 import orderRoutes from "./routes/orders";
 import orderRoutess from "./routes/order.routes";
@@ -28,6 +29,7 @@ import upstoxInstrumentSyncRoutes from "./routes/upstoxInstrumentSyncRoutes";
 import upstoxLtpRoutes from "./routes/upstoxLtpRoutes";
 import algoRoutes from "./routes/algo.routes";
 import strategyHelperRoutes from "./routes/strategyHelper.routes";
+import helpRoutes from "./routes/help";
 
 
 
@@ -42,101 +44,115 @@ import { startMarketStream } from "./services/marketStream";
 
 
 import { startPositionWatchdog } from "./services/PositionManager";
+import { initAutoExitWorker } from "./jobs/AutoExitWorker";
 
 async function start() {
-  log.info("Starting server...");
-  await mongoose.connect(config.mongoUri);
-  log.info("Connected to MongoDB");
-
-  // Start Watchdog
-  startPositionWatchdog();
-
   try {
-    const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
-    console.log("✅ Upstox Options Sync:", result);
-  } catch (err: any) {
-    console.warn("⚠️ Upstox Options Sync skipped/failed (Non-critical):", err.message);
-  }
+    log.info("🚀 Starting server...");
+    await mongoose.connect(config.mongoUri);
+    log.info("✅ Connected to MongoDB");
 
-  const app = express();
+    // Start Watchdog
+    startPositionWatchdog();
 
-  const allowedOrigins =
-    config.corsOrigins.length > 0
+    // Start Auto Exit Worker
+    initAutoExitWorker();
+
+    // ----------------------------------------------------------------------
+    // ⚡ OPTIMIZED SYNC (Only if DB is empty to prevent hang on restart)
+    // ----------------------------------------------------------------------
+    log.info("Checking instrument database status...");
+    const instrumentCount = await InstrumentModel.countDocuments();
+
+    if (instrumentCount < 100) {
+      log.info(`Instruments empty or low (${instrumentCount}). Syncing AngelOne Master data (Heavy Operation)...`);
+      await syncNiftyOptionsOnly();
+      log.info("✅ NIFTY OPTIDX sync done");
+
+      await syncBankNiftyOptionsOnly();
+      log.info("✅ BANKNIFTY OPTIDX sync done");
+    } else {
+      log.info(`✅ Skipping heavy sync: ${instrumentCount} instruments already in DB.`);
+    }
+
+    // Upstox Initial Sync (Optional/Non-critical)
+    try {
+      log.info("Syncing Upstox Option Chain...");
+      const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
+      log.info("✅ Upstox Options Sync success");
+    } catch (err: any) {
+      log.warn(`⚠️ Upstox Options Sync skipped/failed: ${err.message}`);
+    }
+
+    const app = express();
+    const allowedOrigins = config.corsOrigins.length > 0
       ? config.corsOrigins
-      : ["http://localhost:8080", "http://localhost:3000"];
+      : ["http://localhost:8080", "http://localhost:3000", "https://6920-2405-201-300b-721e-a4ea-b208-cd7d-2464.ngrok-free.app"];
 
-  app.use(
-    cors({
-      origin: allowedOrigins,
-      credentials: true,
-    })
-  );
-  app.use(bodyParser.json());
+    // app.use(cors({ origin: allowedOrigins, credentials: true }));
+    app.use(cors({ origin: true }));
 
+    app.use(bodyParser.json());
 
-  // Angel One
-  await syncNiftyOptionsOnly();
-  console.log("✅ Clean NIFTY OPTIDX sync done");
+    // Angel One - Old syncs removed to favor the optimized one above
 
-  await syncBankNiftyOptionsOnly();
-  console.log("✅ Clean BANKNIFTY OPTIDX sync done");
+    // Static
+    app.use("/uploads", express.static("uploads"));
 
-  // Static
-  app.use("/uploads", express.static("uploads"));
+    // App Routes
+    app.use("/api", appAuthRoutes);
+    app.use("/api", adminRoutes);
+    app.use("/api", userRoutes);
+    app.use("/api", adminModuleRoutes);
 
-  // App Routes (Migrated)
-  app.use("/api", appAuthRoutes);
-  app.use("/api", adminRoutes);
-  app.use("/api", userRoutes);
-  app.use("/api", adminModuleRoutes);
+    app.use("/api/auth", authRoutes);
+    app.use("/api/orders", orderRoutes);
+    app.use("/api/instruments", instrumentRoutes);
+    app.use("/api/nifty", niftyRoutes);
+    app.use("/api/orders", orderRoutess);
+    app.use("/api/positions", positionRoutes);
+    app.use("/api/pnl", pnlRoutes);
+    app.use("/api/positions", positionRoutes);
+    app.use("/api/pnl", pnlRoutes);
+    app.use("/api/webhook", webhookRoutes);
 
-  app.use("/api/auth", authRoutes);
-  app.use("/api/orders", orderRoutes);
-  app.use("/api/instruments", instrumentRoutes);
-  app.use(bodyParser.json());
-  app.use("/api/nifty", niftyRoutes);
-  app.use("/api/orders", orderRoutess);
-  app.use("/api/positions", positionRoutes);
-  app.use("/api/pnl", pnlRoutes);
-  app.use("/api/webhook", webhookRoutes);
-  setInterval(() => {
-    syncPendingOrders();
-  }, 5000);
+    // [NEW] Market Status
+    const marketStatusRoutes = require("./routes/marketStatus.routes").default;
+    app.use("/api/market", marketStatusRoutes);
 
-  // Upstox
-  app.use("/api/upstox/auth", upstoxAuthRoutes);
-  app.use("/api/upstox/orders", upstoxOrder);
-  app.use("/api/upstox", upstoxOrderRoutes);
-  app.use("/api/upstox/instruments", upstoxInstrumentSyncRoutes);
-  app.use("/api/upstox", upstoxAlgoOrderRoutes);
-  app.use("/api/upstox/ltp", upstoxLtpRoutes);
+    setInterval(() => {
+      syncPendingOrders();
+    }, 5000);
 
-  // Algo engine
-  app.use("/api/algo", algoRoutes);
+    // Upstox
+    app.use("/api/upstox/auth", upstoxAuthRoutes);
+    app.use("/api/upstox/orders", upstoxOrder);
+    app.use("/api/upstox", upstoxOrderRoutes);
+    app.use("/api/upstox/instruments", upstoxInstrumentSyncRoutes);
+    app.use("/api/upstox", upstoxAlgoOrderRoutes);
+    app.use("/api/upstox/ltp", upstoxLtpRoutes);
 
-  // Strategy helper (for manual control with auto-selection)
-  app.use("/api/strategy", strategyHelperRoutes);
+    // Algo engine
+    app.use("/api/algo", algoRoutes);
+    app.use("/api/strategy", strategyHelperRoutes);
+    app.use("/api/alice", aliceAuthRoutes);
+    app.use("/api/alice/orders", aliceOrderRoutes);
+    app.use("/api/alice/ins", aliceInstrumentsRoutes);
+    app.use("/api/help", helpRoutes);
 
+    app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
 
-  // Alice Blue
+    const server = http.createServer(app);
+    startMarketStream(server);
 
-  app.use("/api/alice", aliceAuthRoutes);
-  app.use("/api/alice/orders", aliceOrderRoutes);
-  app.use("/api/alice/ins", aliceInstrumentsRoutes);
+    server.listen(config.port, () =>
+      log.info(`📡 Server listening on port ${config.port}`)
+    );
 
-  app.get("/", (_req, res) =>
-    res.send("AngelOne + Upstox + AliceBlue TypeScript adapter running")
-  );
-
-  const server = http.createServer(app);
-  startMarketStream(server);
-
-  server.listen(config.port, () =>
-    log.info(`Server listening on port ${config.port}`)
-  );
+  } catch (err: any) {
+    log.error("❌ Critical Failure during startup:", err);
+    process.exit(1);
+  }
 }
 
-start().catch((err) => {
-  log.error("Failed to start:", err);
-  process.exit(1);
-});
+start();

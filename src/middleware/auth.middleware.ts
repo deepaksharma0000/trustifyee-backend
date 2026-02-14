@@ -43,6 +43,24 @@ export const auth = async (req: AuthRequest, res: Response, next: NextFunction) 
             return res.status(404).json({ error: "User not found" });
         }
 
+        // Phase 1: Check account status and 15-day Demo grace period
+        if ((user as any).status === 'inactive') {
+            return res.status(403).json({ error: "Account disabled. Please contact admin." });
+        }
+
+        if ((user as any).licence === 'Demo' && (user as any).end_date) {
+            const today = new Date();
+            const expiryDate = new Date((user as any).end_date);
+            const disableDate = new Date(expiryDate);
+            disableDate.setDate(expiryDate.getDate() + 15);
+
+            if (today > disableDate) {
+                (user as any).status = 'inactive';
+                await (user as any).save();
+                return res.status(403).json({ error: "Demo grace period expired. Account disabled." });
+            }
+        }
+
         req.id = decoded.user_id;
         req.user = user;
         req.userType = (user as any)?.role ? 'admin' : 'user';

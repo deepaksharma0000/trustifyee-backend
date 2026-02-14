@@ -51,17 +51,19 @@ async function getOptionChain(symbol = "NIFTY", expiry, strikeRange = 5) {
     const expiryList = Array.from(new Set(expiriesData
         .map((d) => formatIstDate(new Date(d)))
         .filter((d) => d >= formatIstDate(new Date())))).sort();
-    // 3. If LTP is still 0, return what we have (expiries) but empty options
+    // 3. (REMOVED) If LTP is still 0, we will try to infer it from available strikes so we can at least show the chain.
+    /*
     if (currentLtp <= 0) {
-        return {
-            symbol,
-            ltp: 0,
-            atmStrike: 0,
-            usedStrike: 0,
-            options: [],
-            expiries: expiryList
-        };
+      return {
+        symbol,
+        ltp: 0,
+        atmStrike: 0,
+        usedStrike: 0,
+        options: [],
+        expiries: expiryList
+      };
     }
+    */
     const atm = (0, optionUtils_1.getATMStrike)(currentLtp);
     let targetRange;
     if (expiry) {
@@ -89,11 +91,21 @@ async function getOptionChain(symbol = "NIFTY", expiry, strikeRange = 5) {
             symbol,
             ltp: currentLtp,
             atmStrike: atm,
+            usedStrike: 0,
             options: [],
             expiries: expiryList
         };
     }
-    const usedStrike = getNearestStrike(strikes, atm);
+    // Fallback: If LTP is 0, use the median strike as the "current Price" to center the view
+    if (currentLtp <= 0) {
+        const sortedAll = [...strikes].sort((a, b) => a - b);
+        const median = sortedAll[Math.floor(sortedAll.length / 2)];
+        currentLtp = median;
+        // Recalculate atm with the new fake LTP
+    }
+    // Re-calculate ATM in case we just updated currentLtp
+    const finalAtm = (0, optionUtils_1.getATMStrike)(currentLtp);
+    const usedStrike = getNearestStrike(strikes, finalAtm);
     const sorted = strikes.sort((a, b) => a - b);
     const idx = sorted.findIndex((s) => s === usedStrike);
     const minIdx = Math.max(0, idx - strikeRange);
@@ -109,7 +121,7 @@ async function getOptionChain(symbol = "NIFTY", expiry, strikeRange = 5) {
     const response = {
         symbol,
         ltp: currentLtp,
-        atmStrike: atm,
+        atmStrike: finalAtm,
         usedStrike,
         options,
         expiries: expiryList

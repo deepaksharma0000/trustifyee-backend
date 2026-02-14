@@ -6,7 +6,14 @@ import AngelTokensModel from "../models/AngelTokens";
 import InstrumentModel from "../models/Instrument";
 
 export const getOrderStatus = async (req: Request, res: Response) => {
-  const { orderid } = req.params;
+  const { orderid, clientcode } = req.params;
+  const user = (req as any).user;
+  const userType = (req as any).userType;
+
+  // Security check: If user, must match clientcode
+  if (userType === 'user' && user.client_key !== clientcode) {
+    return res.status(403).json({ ok: false, message: "Unauthorized access to these orders" });
+  }
 
   const order = await Position.findOne({ orderid });
 
@@ -27,10 +34,32 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
       side,
       quantity,
       price,
-      symboltoken
+      symboltoken,
+      autoSquareOffEnabled,  // [NEW]
+      autoSquareOffTime      // [NEW]
     } = req.body;
 
-    await Position.create({
+    // [NEW] Check Market Status
+    const MarketStatusService = require("../services/MarketStatusService").MarketStatusService;
+    try {
+      MarketStatusService.validateOrderRequest();
+    } catch (err: any) {
+      return res.status(400).json({ ok: false, message: err.message });
+    }
+
+    // Validate if Enabled
+    let autoExitJobId = undefined;
+    let autoExitStatus = "PENDING";
+
+    if (autoSquareOffEnabled && autoSquareOffTime) {
+      // Basic validation (optional)
+      const exitDate = new Date(autoSquareOffTime);
+      if (isNaN(exitDate.getTime())) {
+        throw new Error("Invalid auto square-off time");
+      }
+    }
+
+    const newPosition = await Position.create({
       clientcode,
       orderid,
       tradingsymbol,
@@ -42,7 +71,20 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
       stopLossPrice: (req.body as any).stopLossPrice,
       targetPrice: (req.body as any).targetPrice,
       status: "OPEN",
+      autoSquareOffEnabled: autoSquareOffEnabled || false,
+      autoSquareOffTime: autoSquareOffTime ? new Date(autoSquareOffTime) : undefined,
+      autoSquareOffStatus: autoSquareOffEnabled ? "PENDING" : undefined
     });
+
+    // Schedule Job if enabled
+    if (autoSquareOffEnabled && autoSquareOffTime) {
+      const AutoExitService = require("../services/AutoExitService").AutoExitService; // Lazy load to avoid circular deps if any
+      const jobId = await AutoExitService.scheduleExit(orderid, new Date(autoSquareOffTime));
+
+      newPosition.autoSquareOffJobId = jobId;
+      await newPosition.save();
+    }
+
 
     res.json({ ok: true });
   } catch (err: any) {
@@ -53,6 +95,14 @@ export const savePlacedOrder = async (req: Request, res: Response) => {
 export const getActivePositions = async (req: Request, res: Response) => {
   try {
     const { clientcode } = req.params;
+    const user = (req as any).user;
+    const userType = (req as any).userType;
+
+    // Security check: If user, must match clientcode
+    if (userType === 'user' && user.client_key !== clientcode) {
+      return res.status(403).json({ ok: false, message: "Unauthorized access to these positions" });
+    }
+
     const positions = await Position.find({ clientcode, status: "OPEN" }).sort({ createdAt: -1 }).lean();
 
     if (positions.length === 0) {
@@ -74,7 +124,7 @@ export const getActivePositions = async (req: Request, res: Response) => {
         }
 
         if (currentSymbolToken) {
-          const ltpResp = await adapter.getLtp(tokens.jwtToken, p.exchange, p.tradingsymbol, currentSymbolToken);
+          const ltpResp = await adapter.getLtp(tokens.jwtToken!, p.exchange, p.tradingsymbol, currentSymbolToken);
           const ltp = ltpResp?.data?.ltp || 0;
           const pnl = p.side === "BUY"
             ? (ltp - p.entryPrice) * p.quantity
@@ -97,6 +147,16 @@ export const getActivePositions = async (req: Request, res: Response) => {
 export const closeOrder = async (req: Request, res: Response) => {
   try {
     const { clientcode, orderid } = req.body;
+
+    // [NEW] Check Market Status (Allow force close if needed? Usually NO for live market)
+    // admin might want to force close internally, but broker will reject anyway if market is closed.
+    // Let's block it for consistency unless extended hours are supported.
+    const MarketStatusService = require("../services/MarketStatusService").MarketStatusService;
+    try {
+      MarketStatusService.validateOrderRequest();
+    } catch (err: any) {
+      return res.status(400).json({ ok: false, message: err.message });
+    }
 
     const position = await Position.findOne({
       clientcode,
@@ -143,6 +203,14 @@ export const closeOrder = async (req: Request, res: Response) => {
       message: "Position squared off successfully",
       orderid: position.exitOrderId
     });
+
+    // [NEW] Cancel Auto Exit Job if exists
+    if (position.autoSquareOffEnabled && position.autoSquareOffJobId) {
+      const AutoExitService = require("../services/AutoExitService").AutoExitService;
+      await AutoExitService.cancelExit(position.orderid);
+      position.autoSquareOffStatus = "CANCELLED";
+      await position.save();
+    }
   } catch (err: any) {
     console.error("Close order error:", err);
     res.status(500).json({
@@ -155,6 +223,14 @@ export const closeOrder = async (req: Request, res: Response) => {
 export const getTradeHistory = async (req: Request, res: Response) => {
   try {
     const { clientcode } = req.params;
+    const user = (req as any).user;
+    const userType = (req as any).userType;
+
+    // Security check: If user, must match clientcode
+    if (userType === 'user' && user.client_key !== clientcode) {
+      return res.status(403).json({ ok: false, message: "Unauthorized access to trade history" });
+    }
+
     // Fetch closed positions, latest first
     const history = await Position.find({ clientcode, status: "CLOSED" }).sort({ exitAt: -1 }).lean();
 

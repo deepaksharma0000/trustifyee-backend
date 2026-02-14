@@ -3,6 +3,7 @@ import express from "express";
 import AliceTokensModel from "../models/AliceTokens";
 import { log } from "../utils/logger";
 import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
+import { encrypt } from "../utils/encryption";
 
 const router = express.Router();
 const aliceAdapter = new AliceBlueAdapter();
@@ -56,7 +57,7 @@ router.get("/auth/callback", async (req, res) => {
       { clientcode },
       {
         clientcode,
-        sessionId: data.userSession,
+        sessionId: encrypt(data.userSession),
         // optional: agar model extend kara ho
         // aliceUserId: userId,
         // aliceClientId: data.clientId,
@@ -93,7 +94,7 @@ router.post("/login", async (req, res) => {
       { clientcode },
       {
         clientcode,
-        sessionId,
+        sessionId: encrypt(sessionId),
         expiresAt: undefined
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }

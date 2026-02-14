@@ -48,5 +48,6 @@ const UpstoxTokensSchema = new mongoose_1.Schema({
 }, { timestamps: true });
 // Add index for expiry
 UpstoxTokensSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-exports.default = mongoose_1.default.models.UpstoxTokens ||
+const UpstoxTokensModel = mongoose_1.default.models.UpstoxTokens ||
     mongoose_1.default.model("UpstoxTokens", UpstoxTokensSchema);
+exports.default = UpstoxTokensModel;

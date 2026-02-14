@@ -2,13 +2,13 @@
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IUpstoxInstrument extends Document {
-  instrument_key: string; 
-  instrument_token: string;   
+  instrument_key: string;
+  instrument_token: string;
   tradingsymbol?: string;
   name?: string;
   exchange?: string;
   segment?: string;
-  instrument_type?: string;   
+  instrument_type?: string;
   option_type?: string;
   expiry?: Date | null;
   strike_price?: number | null;
@@ -19,8 +19,8 @@ export interface IUpstoxInstrument extends Document {
 
 const UpstoxInstrumentSchema = new Schema<IUpstoxInstrument>(
   {
-    instrument_key: { type: String, required: true,index: true },
-    instrument_token:{ type: String, unique: true, sparse: true },
+    instrument_key: { type: String, required: true, index: true },
+    instrument_token: { type: String, unique: true, sparse: true },
     tradingsymbol: String,
     name: String,
     exchange: String,
@@ -37,5 +37,7 @@ const UpstoxInstrumentSchema = new Schema<IUpstoxInstrument>(
 );
 
 // optional TTL or indexes can be added if you want
-export default mongoose.models.UpstoxInstrument ||
+const UpstoxInstrumentModel = mongoose.models.UpstoxInstrument ||
   mongoose.model<IUpstoxInstrument>("UpstoxInstrument", UpstoxInstrumentSchema);
+
+export default UpstoxInstrumentModel as mongoose.Model<IUpstoxInstrument>;

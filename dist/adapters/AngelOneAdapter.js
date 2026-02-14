@@ -151,5 +151,20 @@ class AngelOneAdapter {
             throw new Error(`generateTokensUsingRefresh failed: ${JSON.stringify(data)}`);
         }
     }
+    // ------------ USER PROFILE ------------
+    async getProfile(jwtToken) {
+        const path = "/rest/secure/angelbroking/user/v1/getProfile";
+        try {
+            const resp = await this.client.get(path, {
+                headers: this.baseHeaders(jwtToken)
+            });
+            return resp.data;
+        }
+        catch (err) {
+            // Return error structure rather than throwing for easier validation check
+            const data = err?.response?.data ?? err.message;
+            return { status: false, message: "Profile fetch failed", data };
+        }
+    }
 }
 exports.AngelOneAdapter = AngelOneAdapter;

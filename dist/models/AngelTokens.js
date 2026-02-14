@@ -42,4 +42,5 @@ const AngelTokensSchema = new mongoose_1.Schema({
     feedToken: String,
     expiresAt: Date
 }, { timestamps: true });
-exports.default = mongoose_1.default.models.AngelTokens || mongoose_1.default.model("AngelTokens", AngelTokensSchema);
+const AngelTokensModel = mongoose_1.default.models.AngelTokens || mongoose_1.default.model("AngelTokens", AngelTokensSchema);
+exports.default = AngelTokensModel;

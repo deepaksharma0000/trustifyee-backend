@@ -70,6 +70,13 @@ router.get("/trades/:runId", auth_middleware_1.auth, auth_middleware_1.adminOnly
     const trades = await (0, algoEngineV2_1.getTrades)(runId, limit);
     return res.json({ ok: true, trades });
 });
+router.get("/my-trades/:runId", auth_middleware_1.auth, async (req, res) => {
+    const { runId } = req.params;
+    const userId = req.id;
+    const limit = req.query.limit ? Number(req.query.limit) : 200;
+    const trades = await (0, algoEngineV2_1.getTrades)(runId, limit, userId);
+    return res.json({ ok: true, trades });
+});
 router.get("/trades/export", auth_middleware_1.auth, auth_middleware_1.adminOnly, async (req, res) => {
     const runId = req.query.runId ? String(req.query.runId) : undefined;
     const limit = req.query.limit ? Number(req.query.limit) : 1000;

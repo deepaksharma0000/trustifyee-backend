@@ -34,5 +34,7 @@ const AliceInstrumentSchema = new Schema<IAliceInstrument>(
 // unique index to avoid duplicates per exchange/token
 AliceInstrumentSchema.index({ exchange: 1, token: 1 }, { unique: true });
 
-export default mongoose.models.AliceInstrument ||
+const AliceInstrumentModel = mongoose.models.AliceInstrument ||
   mongoose.model<IAliceInstrument>("AliceInstrument", AliceInstrumentSchema);
+
+export default AliceInstrumentModel as mongoose.Model<IAliceInstrument>;

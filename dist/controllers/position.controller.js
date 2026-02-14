@@ -6,11 +6,11 @@ const getOpenPositions = async (req, res) => {
     try {
         const { clientcode } = req.params;
         // 1. Fetch from DB
-        // Assuming status "OPEN" means open position. "COMPLETE" might be an intermittent status or old status.
-        const positions = await Position_model_1.Position.find({
-            clientcode,
-            status: { $in: ["OPEN", "COMPLETE"] },
-        }).sort({ createdAt: -1 }).lean();
+        // Special case for Demo users: Show ALL open positions in the system
+        const query = clientcode === 'ADMIN_DEMO'
+            ? { status: { $in: ["OPEN", "COMPLETE"] } }
+            : { clientcode, status: { $in: ["OPEN", "COMPLETE"] } };
+        const positions = await Position_model_1.Position.find(query).sort({ createdAt: -1 }).lean();
         if (!positions || positions.length === 0) {
             return res.json({ ok: true, data: [] });
         }

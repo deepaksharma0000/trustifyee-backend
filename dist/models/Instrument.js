@@ -46,5 +46,6 @@ const InstrumentSchema = new mongoose_1.Schema({
     optiontype: { type: String, enum: ["CE", "PE"] },
     lotSize: { type: Number }
 }, { timestamps: true });
-exports.default = mongoose_1.default.models.Instrument ||
+const InstrumentModel = mongoose_1.default.models.Instrument ||
     mongoose_1.default.model("Instrument", InstrumentSchema);
+exports.default = InstrumentModel;

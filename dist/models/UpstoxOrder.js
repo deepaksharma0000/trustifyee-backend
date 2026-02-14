@@ -49,5 +49,6 @@ const UpstoxOrderSchema = new mongoose_1.Schema({
     raw_request: mongoose_1.Schema.Types.Mixed,
     raw_response: mongoose_1.Schema.Types.Mixed,
 }, { timestamps: true });
-exports.default = mongoose_1.default.models.UpstoxOrder ||
+const UpstoxOrderModel = mongoose_1.default.models.UpstoxOrder ||
     mongoose_1.default.model("UpstoxOrder", UpstoxOrderSchema);
+exports.default = UpstoxOrderModel;

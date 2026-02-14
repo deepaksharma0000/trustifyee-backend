@@ -15,20 +15,7 @@ import {
   ResolvedStrategyLeg
 } from "./StrategyEngine";
 import { log } from "../utils/logger";
-
-type LeanInstrument = {
-  tradingsymbol: string;
-  strike: number;
-  optiontype: "CE" | "PE";
-  expiry: Date;
-  symboltoken: string;
-};
-
-type LeanSession = {
-  jwtToken: string;
-} | null;
-
-
+import { decrypt } from "../utils/encryption";
 
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
 
@@ -78,8 +65,7 @@ async function resolveOptions(symbol: AlgoSymbol, expiry: Date) {
       optiontype,
     })
       .select("tradingsymbol strike optiontype expiry symboltoken")
-      .lean<LeanInstrument>();
-
+      .lean();
 
     if (opt) return opt;
 
@@ -98,8 +84,7 @@ async function resolveOptions(symbol: AlgoSymbol, expiry: Date) {
       optiontype,
     })
       .select("tradingsymbol strike optiontype expiry symboltoken")
-      .lean<LeanInstrument>();
-
+      .lean();
 
     return opt || null;
   };
@@ -132,9 +117,7 @@ async function squareOffPosition(position: any) {
     ordertype: "MARKET",
   });
 
-  const session = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean<LeanSession>();
-
-
+  const session = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean();
   const exitPrice =
     session?.jwtToken && position.symboltoken
       ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
@@ -162,7 +145,7 @@ async function enforceRisk(run: any) {
   let totalPnl = 0;
 
   for (const p of openPositions) {
-    const session = await AngelTokensModel.findOne({ clientcode: p.clientcode }).lean<LeanSession>();
+    const session = await AngelTokensModel.findOne({ clientcode: p.clientcode }).lean();
     if (!session?.jwtToken || !p.symboltoken) continue;
     const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
 
@@ -225,12 +208,38 @@ async function placeTradesForRun(run: any) {
   const users = await User.find({
     status: "active",
     trading_status: "enabled",
-  }).lean<any[]>();
-
+  }).lean();
 
   for (const user of users) {
-    const clientcode = user.client_key;
-    if (!clientcode) continue;
+    const rawClientKey = user.client_key;
+    if (!rawClientKey) continue;
+    const clientcode = decrypt(rawClientKey);
+
+    // -------------------------------------------------------------
+    // Enforce Training & Token Conditions (User Request)
+    // -------------------------------------------------------------
+    let angelSession: any = null;
+
+    if (user.licence === "Live") {
+      angelSession = await AngelTokensModel.findOne({ clientcode }).lean();
+
+      const broker_connected = !!angelSession;
+      const token_valid = !!(angelSession?.jwtToken);
+
+      const trading_enabled = (
+        user.status === "active" &&
+        user.trading_status === "enabled" &&
+        user.licence === "Live" &&
+        broker_connected === true &&
+        token_valid === true
+      );
+
+      if (!trading_enabled) {
+        log.warn(`Token Expired – Skipping User ${user.user_name}`);
+        continue;
+      }
+    }
+    // -------------------------------------------------------------
 
     for (const opt of optionList) {
       if (user.licence === "Demo") {
@@ -282,9 +291,9 @@ async function placeTradesForRun(run: any) {
           resp?.data?.data?.orderid ||
           `BROKER-${Date.now()}-${Math.random()}`;
 
-        const session = await AngelTokensModel.findOne({ clientcode }).lean<LeanSession>();
-        const entryPrice = session?.jwtToken && opt.symboltoken
-          ? await getEntryPrice(session.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
+        // Uses the session fetched above
+        const entryPrice = angelSession?.jwtToken && opt.symboltoken
+          ? await getEntryPrice(angelSession.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
           : 0;
 
         await Position.create({
@@ -328,7 +337,7 @@ async function placeTradesForRun(run: any) {
           strike: opt.strike,
           side: "BUY",
           quantity: 1,
-          mode: String(user.licence) === "Demo" ? "paper" : "live",
+          mode: (user.licence as string) === "Demo" ? "paper" : "live",
           status: "error",
           error: err?.message || String(err),
         });
