@@ -30,6 +30,7 @@ exports.config = {
     angelBaseUrl: process.env.ANGEL_BASE_URL || "https://smartapi.angelbroking.com",
     genPath: process.env.ANGEL_GENERATE_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/generateTokens",
     refreshPath: process.env.ANGEL_REFRESH_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/refreshToken",
+    angelRedirectUrl: process.env.ANGEL_REDIRECT_URL || "http://localhost:3000/api/auth/angel/callback",
     // -------- UPSTOX ----------
     upstoxApiKey: process.env.UPSTOX_API_KEY || "",
     upstoxClientId: process.env.UPSTOX_CLIENT_ID || "",
@@ -55,4 +56,5 @@ exports.config = {
     aliceGetUserDetailsPath: process.env.ALICE_GET_USER_DETAILS_PATH ||
         "/open-api/od/v1/vendor/getUserDetails",
     aliceContractMasterPath: process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
+    encryptionKey: process.env.ENCRYPTION_SECRET || "",
 };

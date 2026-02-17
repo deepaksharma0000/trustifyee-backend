@@ -8,6 +8,7 @@ const express_1 = __importDefault(require("express"));
 const UpstoxAdapter_1 = require("../adapters/UpstoxAdapter");
 const UpstoxTokens_1 = __importDefault(require("../models/UpstoxTokens"));
 const logger_1 = require("../utils/logger");
+const encryption_1 = require("../utils/encryption");
 const router = express_1.default.Router();
 const adapter = new UpstoxAdapter_1.UpstoxAdapter();
 /**
@@ -43,9 +44,9 @@ router.get("/callback", async (req, res) => {
         const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
         const doc = await UpstoxTokens_1.default.findOneAndUpdate({ userId: tokenResp.user_id }, {
             userId: tokenResp.user_id,
-            accessToken: tokenResp.access_token,
-            extendedToken: tokenResp.extended_token,
-            refreshToken: tokenResp.refresh_token,
+            accessToken: (0, encryption_1.encrypt)(tokenResp.access_token),
+            extendedToken: tokenResp.extended_token ? (0, encryption_1.encrypt)(tokenResp.extended_token) : undefined,
+            refreshToken: tokenResp.refresh_token ? (0, encryption_1.encrypt)(tokenResp.refresh_token) : undefined,
             email: tokenResp.email,
             userName: tokenResp.user_name,
             exchanges: tokenResp.exchanges,
@@ -101,9 +102,9 @@ router.post("/refresh", async (req, res) => {
         // Update in database
         const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
         const updated = await UpstoxTokens_1.default.findOneAndUpdate({ userId }, {
-            accessToken: tokenResp.access_token,
-            extendedToken: tokenResp.extended_token,
-            refreshToken: tokenResp.refresh_token,
+            accessToken: (0, encryption_1.encrypt)(tokenResp.access_token),
+            extendedToken: tokenResp.extended_token ? (0, encryption_1.encrypt)(tokenResp.extended_token) : undefined,
+            refreshToken: tokenResp.refresh_token ? (0, encryption_1.encrypt)(tokenResp.refresh_token) : undefined,
             expiresAt: expiresAt
         }, { new: true });
         logger_1.log.info("Token refreshed for user:", userId);

@@ -10,6 +10,7 @@ const zlib_1 = __importDefault(require("zlib"));
 const crypto_1 = __importDefault(require("crypto"));
 const config_1 = require("../config");
 const logger_1 = require("../utils/logger");
+const encryption_1 = require("../utils/encryption");
 class AliceBlueAdapter {
     constructor() {
         this.clientId = config_1.config.aliceClientId;
@@ -38,7 +39,7 @@ class AliceBlueAdapter {
             headers["apikey"] = this.apiKey;
         }
         if (sessionId) {
-            headers["Authorization"] = `Bearer ${sessionId}`;
+            headers["Authorization"] = `Bearer ${(0, encryption_1.decrypt)(sessionId)}`;
         }
         return headers;
     }

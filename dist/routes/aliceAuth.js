@@ -8,6 +8,7 @@ const express_1 = __importDefault(require("express"));
 const AliceTokens_1 = __importDefault(require("../models/AliceTokens"));
 const logger_1 = require("../utils/logger");
 const AliceBlueAdapter_1 = require("../adapters/AliceBlueAdapter");
+const encryption_1 = require("../utils/encryption");
 const router = express_1.default.Router();
 const aliceAdapter = new AliceBlueAdapter_1.AliceBlueAdapter();
 /**
@@ -52,7 +53,7 @@ router.get("/auth/callback", async (req, res) => {
         }
         const saved = await AliceTokens_1.default.findOneAndUpdate({ clientcode }, {
             clientcode,
-            sessionId: data.userSession,
+            sessionId: (0, encryption_1.encrypt)(data.userSession),
             // optional: agar model extend kara ho
             // aliceUserId: userId,
             // aliceClientId: data.clientId,
@@ -81,7 +82,7 @@ router.post("/login", async (req, res) => {
     try {
         const saved = await AliceTokens_1.default.findOneAndUpdate({ clientcode }, {
             clientcode,
-            sessionId,
+            sessionId: (0, encryption_1.encrypt)(sessionId),
             expiresAt: undefined
         }, { upsert: true, new: true, setDefaultsOnInsert: true }).lean();
         logger_1.log.debug("Saved Alice session for client (manual):", clientcode, saved);

@@ -42,6 +42,7 @@ export const decrypt = (text: string): string => {
 };
 
 export const maskKey = (key: string): string => {
-    if (!key || key.length < 8) return '********';
+    if (!key || key.trim() === "") return "";
+    if (key.length < 8) return "********";
     return '****' + key.slice(-4);
-}
+};

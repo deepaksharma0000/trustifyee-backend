@@ -20,6 +20,9 @@ export interface IUser extends Document {
     is_login: boolean;
     strategies?: string[];
     api_key?: string;
+    broker_verified: boolean;
+    broker_connected: boolean;
+    is_online: boolean;
     created_at: Date;
     updated_at: Date;
 }
@@ -44,6 +47,9 @@ const UserSchema: Schema = new Schema({
     is_login: { type: Boolean, default: false },
     strategies: { type: [String], default: [] },
     api_key: { type: String },
+    broker_verified: { type: Boolean, default: false },
+    broker_connected: { type: Boolean, default: false },
+    is_online: { type: Boolean, default: false },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);

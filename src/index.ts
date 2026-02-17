@@ -30,6 +30,7 @@ import upstoxLtpRoutes from "./routes/upstoxLtpRoutes";
 import algoRoutes from "./routes/algo.routes";
 import strategyHelperRoutes from "./routes/strategyHelper.routes";
 import helpRoutes from "./routes/help";
+import signalRoutes from "./routes/signal.routes";
 
 
 
@@ -139,6 +140,7 @@ async function start() {
     app.use("/api/alice/orders", aliceOrderRoutes);
     app.use("/api/alice/ins", aliceInstrumentsRoutes);
     app.use("/api/help", helpRoutes);
+    app.use("/api/signals", signalRoutes);
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
 

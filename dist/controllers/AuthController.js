@@ -11,6 +11,7 @@ const Admin_1 = __importDefault(require("../models/Admin"));
 const tokens_1 = require("../utils/tokens");
 const functions_1 = require("../utils/functions");
 const uuid_1 = require("uuid");
+const encryption_1 = require("../utils/encryption");
 // Schemas
 const adminRegisterSchema = joi_1.default.object({
     full_name: joi_1.default.string().min(3).max(150).required(),
@@ -126,13 +127,20 @@ const registerUser = async (req, res) => {
         const { error } = userRegisterSchema.validate(req.body);
         if (error)
             return res.status(400).json({ error: error.message, status: false });
-        const { email, phone_number, user_name, licence } = req.body;
+        // Inside registerUser function
+        let { email, phone_number, user_name, licence, client_key, api_key } = req.body;
         const existingUser = await User_1.default.findOne({ $or: [{ email }, { phone_number }] });
         if (existingUser)
             return res.status(400).json({ error: "Email or phone exists.", status: false });
         const plainPassword = user_name.substring(0, 4).toLowerCase() + '@123';
         const hashedPassword = await bcryptjs_1.default.hash(plainPassword, 10);
-        const client_key = req.body.client_key || (0, uuid_1.v4)();
+        // Encrypt sensitive fields
+        if (client_key)
+            client_key = (0, encryption_1.encrypt)(client_key);
+        else
+            client_key = (0, uuid_1.v4)(); // Generate UUID if not provided
+        if (api_key)
+            api_key = (0, encryption_1.encrypt)(api_key);
         // Phase 1: Auto-schedule Demo for 2 days
         let start_date = req.body.start_date;
         let end_date = req.body.end_date;
@@ -155,9 +163,14 @@ const registerUser = async (req, res) => {
             end_date
         });
         await newUser.save();
+        const maskedUser = {
+            ...newUser.toObject(),
+            client_key: (0, encryption_1.maskKey)(newUser.client_key || ""),
+            api_key: (0, encryption_1.maskKey)(newUser.api_key || "")
+        };
         res.status(201).json({
             message: "User registration successful!",
-            data: newUser,
+            data: maskedUser,
             status: true
         });
     }
@@ -200,9 +213,14 @@ const loginUser = async (req, res) => {
         await user.save();
         const accessToken = (0, tokens_1.generateAccessToken)(user._id);
         const refreshToken = (0, tokens_1.generateRefreshToken)(user._id);
+        const maskedUser = {
+            ...user.toObject(),
+            client_key: (0, encryption_1.maskKey)(user.client_key || ""),
+            api_key: (0, encryption_1.maskKey)(user.api_key || "")
+        };
         res.status(200).json({
             message: "Login successful!",
-            data: user,
+            data: maskedUser,
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },

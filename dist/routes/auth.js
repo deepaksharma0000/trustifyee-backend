@@ -8,14 +8,20 @@ const express_1 = __importDefault(require("express"));
 const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
 const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
 const logger_1 = require("../utils/logger");
+const encryption_1 = require("../utils/encryption");
+const auth_middleware_1 = require("../middleware/auth.middleware");
 const router = express_1.default.Router();
 const adapter = new AngelOneAdapter_1.AngelOneAdapter();
-router.post("/login", async (req, res) => {
-    const { clientcode, password, totp } = req.body;
-    if (!clientcode || !password) {
-        return res.status(400).json({ error: "clientcode and password required" });
-    }
+// --------------------------------------------------------------------------
+//  Angel One Login (Password + TOTP) - Trading APIs
+// --------------------------------------------------------------------------
+router.post("/angel/login", auth_middleware_1.auth, async (req, res) => {
     try {
+        const { clientcode, password, totp } = req.body;
+        if (!clientcode || !password) {
+            return res.status(400).json({ ok: false, error: "Client code and password required" });
+        }
+        // Call Angel One API
         const resp = await adapter.generateSession({ clientcode, password, totp });
         if (!resp || resp.status === false || resp.data == null) {
             logger_1.log.error("Angel login failed:", resp);
@@ -33,15 +39,25 @@ router.post("/login", async (req, res) => {
             logger_1.log.error("No jwtToken found in Angel response:", resp);
             return res.status(500).json({ ok: false, error: "Missing jwtToken in Angel response" });
         }
-        const saved = await AngelTokens_1.default.findOneAndUpdate({ clientcode }, { clientcode, jwtToken, refreshToken, feedToken, expiresAt: undefined }, { upsert: true, new: true, setDefaultsOnInsert: true }).lean();
-        logger_1.log.debug("Saved Angel session for client:", clientcode, saved);
+        // Save tokens
+        await AngelTokens_1.default.findOneAndUpdate({ clientcode }, {
+            clientcode,
+            jwtToken: (0, encryption_1.encrypt)(jwtToken),
+            refreshToken: refreshToken ? (0, encryption_1.encrypt)(refreshToken) : undefined,
+            feedToken: feedToken ? (0, encryption_1.encrypt)(feedToken) : undefined,
+            expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000)
+        }, { upsert: true, new: true, setDefaultsOnInsert: true });
+        logger_1.log.info(`Angel One session created for ${clientcode}`);
         return res.json({ ok: true, data: tokensData });
     }
     catch (err) {
-        logger_1.log.error("login error", err.message || err);
-        return res.status(500).json({ error: err.message || err });
+        logger_1.log.error("Angel login error", err);
+        return res.status(500).json({ ok: false, error: err.message });
     }
 });
+// --------------------------------------------------------------------------
+//  Logout / Session Management
+// --------------------------------------------------------------------------
 router.post("/logout", async (req, res) => {
     const { clientcode } = req.body;
     if (!clientcode)
@@ -64,12 +80,11 @@ router.post("/validate-session", async (req, res) => {
             return res.json({ ok: false, error: "No session found" });
         }
         const profile = await adapter.getProfile(tokenData.jwtToken);
-        // AngelOne successful response usually has status: true or data
         if (profile && profile.status === true) {
             return res.json({ ok: true, data: profile.data });
         }
         else {
-            // Check if we can refresh
+            // Try refresh
             if (tokenData.refreshToken) {
                 logger_1.log.info("Session invalid, trying refresh for", clientcode);
                 try {
@@ -77,7 +92,10 @@ router.post("/validate-session", async (req, res) => {
                     if (refreshResp && refreshResp.status === true && refreshResp.data) {
                         const newJwt = refreshResp.data.jwtToken || refreshResp.data.accessToken;
                         const newFeed = refreshResp.data.feedToken || refreshResp.data.refreshToken;
-                        await AngelTokens_1.default.findOneAndUpdate({ clientcode }, { jwtToken: newJwt, feedToken: newFeed }, { new: true });
+                        await AngelTokens_1.default.findOneAndUpdate({ clientcode }, {
+                            jwtToken: (0, encryption_1.encrypt)(newJwt),
+                            feedToken: newFeed ? (0, encryption_1.encrypt)(newFeed) : undefined
+                        }, { new: true });
                         return res.json({ ok: true, refreshed: true });
                     }
                 }

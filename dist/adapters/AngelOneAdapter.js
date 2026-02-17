@@ -8,6 +8,7 @@ exports.AngelOneAdapter = void 0;
 const axios_1 = __importDefault(require("axios"));
 const config_1 = require("../config");
 const logger_1 = require("../utils/logger");
+const encryption_1 = require("../utils/encryption");
 class AngelOneAdapter {
     constructor() {
         // official SmartAPI paths
@@ -35,11 +36,11 @@ class AngelOneAdapter {
             "X-SourceID": "WEB"
         };
         if (jwtToken) {
-            headers["Authorization"] = `Bearer ${jwtToken}`;
+            headers["Authorization"] = `Bearer ${(0, encryption_1.decrypt)(jwtToken)}`;
         }
         return headers;
     }
-    // ------------ LOGIN ------------
+    // ------------ LOGIN (Trading APIs - Password Based) ------------
     async generateSession(params) {
         const body = {
             clientcode: params.clientcode,
@@ -138,7 +139,7 @@ class AngelOneAdapter {
     }
     // ------------ REFRESH TOKEN (OPTIONAL) ------------
     async generateTokensUsingRefresh(refreshToken) {
-        const body = { refreshToken };
+        const body = { refreshToken: (0, encryption_1.decrypt)(refreshToken) };
         try {
             const resp = await this.client.post(this.refreshTokenPath, body, {
                 headers: this.baseHeaders()

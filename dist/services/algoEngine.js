@@ -19,6 +19,8 @@ const optionUtils_1 = require("../utils/optionUtils");
 const OrderService_1 = require("./OrderService");
 const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
 const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
+const logger_1 = require("../utils/logger");
+const encryption_1 = require("../utils/encryption");
 const RUNNERS = new Map();
 const EOD_HOUR = 15;
 const EOD_MIN = 20;
@@ -166,9 +168,29 @@ async function placeTradesForRun(run) {
         trading_status: "enabled",
     }).lean();
     for (const user of users) {
-        const clientcode = user.client_key;
-        if (!clientcode)
+        const rawClientKey = user.client_key;
+        if (!rawClientKey)
             continue;
+        const clientcode = (0, encryption_1.decrypt)(rawClientKey);
+        // -------------------------------------------------------------
+        // Enforce Training & Token Conditions (User Request)
+        // -------------------------------------------------------------
+        let angelSession = null;
+        if (user.licence === "Live") {
+            angelSession = await AngelTokens_1.default.findOne({ clientcode }).lean();
+            const broker_connected = !!angelSession;
+            const token_valid = !!(angelSession?.jwtToken);
+            const trading_enabled = (user.status === "active" &&
+                user.trading_status === "enabled" &&
+                user.licence === "Live" &&
+                broker_connected === true &&
+                token_valid === true);
+            if (!trading_enabled) {
+                logger_1.log.warn(`Token Expired – Skipping User ${user.user_name}`);
+                continue;
+            }
+        }
+        // -------------------------------------------------------------
         for (const opt of optionList) {
             if (user.licence === "Demo") {
                 const paperId = `PAPER-${Date.now()}-${Math.random()}`;
@@ -214,9 +236,9 @@ async function placeTradesForRun(run) {
                 const orderid = resp?.data?.orderid ||
                     resp?.data?.data?.orderid ||
                     `BROKER-${Date.now()}-${Math.random()}`;
-                const session = await AngelTokens_1.default.findOne({ clientcode }).lean();
-                const entryPrice = session?.jwtToken && opt.symboltoken
-                    ? await getEntryPrice(session.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
+                // Uses the session fetched above
+                const entryPrice = angelSession?.jwtToken && opt.symboltoken
+                    ? await getEntryPrice(angelSession.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
                     : 0;
                 await Position_model_1.Position.create({
                     clientcode,

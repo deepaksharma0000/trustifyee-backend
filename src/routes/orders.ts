@@ -10,6 +10,7 @@ import { auth, adminOnly } from "../middleware/auth.middleware";
 import User from "../models/User";
 import { Position } from "../models/Position.model";
 import InstrumentModel from "../models/Instrument";
+import { getOptionChain } from "../services/NiftyOptionService";
 import { v4 as uuidv4 } from "uuid";
 
 const router = express.Router();
@@ -27,12 +28,12 @@ router.post("/place", auth, adminOnly, async (req, res) => {
     }
 
     const orderPayload: PlaceOrderInput = {
-      exchange: (req.body.exchange).toString().toUpperCase(),
+      exchange: (req.body.exchange || "NFO").toString().toUpperCase(),
       tradingsymbol: req.body.tradingsymbol,
       side: req.body.side,
       transactiontype: req.body.transactiontype || req.body.side,
       quantity: qtyNum,
-      ordertype: req.body.ordertype,
+      ordertype: req.body.ordertype || "MARKET",
       price: req.body.price ?? 0,
       producttype: req.body.producttype,
       duration: req.body.duration,
@@ -42,10 +43,10 @@ router.post("/place", auth, adminOnly, async (req, res) => {
 
     log.debug("Incoming place order:", { clientcode, orderPayload });
 
-    // Fetch instrument for symboltoken if not provided or just to be safe for Position record
+    // Resolve instrument
     const instrument = await InstrumentModel.findOne({
       tradingsymbol: orderPayload.tradingsymbol,
-      exchange: "NFO"
+      exchange: orderPayload.exchange
     }).lean() as any;
 
     if (!instrument) {
@@ -54,7 +55,6 @@ router.post("/place", auth, adminOnly, async (req, res) => {
 
     const symboltoken = instrument.symboltoken as string;
 
-
     const resp = await placeOrderForClient(clientcode, orderPayload);
 
     if (resp && resp.status === false) {
@@ -62,26 +62,21 @@ router.post("/place", auth, adminOnly, async (req, res) => {
       return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
     }
 
-    // Extract order ID
     const orderid =
       (resp as any)?.data?.orderid ||
-      (resp as any)?.data?.uniqueorderid ||
       (resp as any)?.data?.data?.orderid ||
       (resp as any)?.data?.orderId ||
       `BROKER-${uuidv4()}`;
 
-    // Create Position Record
     await Position.create({
       clientcode,
       orderid,
       tradingsymbol: orderPayload.tradingsymbol,
       exchange: orderPayload.exchange,
       side: orderPayload.side,
-      quantity: orderPayload.quantity, // We store LOT quantity here currently based on schema usage in getActivePositions
+      quantity: orderPayload.quantity,
       entryPrice: Number(orderPayload.price ?? 0),
       symboltoken,
-      stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-      targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
       strategy: req.body.strategy || "Manual",
       status: "OPEN",
     });
@@ -125,18 +120,15 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
 
     const instrument = await InstrumentModel.findOne({
       tradingsymbol: orderPayload.tradingsymbol,
-      exchange: "NFO"
+      exchange: orderPayload.exchange
     }).lean() as any;
 
     const symboltoken = instrument?.symboltoken as string | undefined;
 
     const results = await Promise.all(users.map(async (user: any) => {
       const clientcode = user.client_key;
-      if (!clientcode) {
-        return { userId: user._id, status: "skipped", reason: "missing client_key" };
-      }
+      if (!clientcode) return { userId: user._id, status: "skipped", reason: "missing client_key" };
 
-      // Demo users: paper trade only
       if (user.licence === "Demo") {
         const paperOrderId = `PAPER-${uuidv4()}`;
         await Position.create({
@@ -148,8 +140,6 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           quantity: orderPayload.quantity,
           entryPrice: Number(orderPayload.price ?? 0),
           symboltoken,
-          stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-          targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
           strategy: req.body.strategy || "Manual",
           status: "OPEN",
         });
@@ -158,12 +148,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
 
       try {
         const resp = await placeOrderForClient(clientcode, orderPayload);
-        const orderid =
-          (resp as any)?.data?.orderid ||
-          (resp as any)?.data?.data?.orderid ||
-          (resp as any)?.data?.orderId ||
-          (resp as any)?.data?.data?.orderId ||
-          `BROKER-${uuidv4()}`;
+        const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || `BROKER-${uuidv4()}`;
 
         await Position.create({
           clientcode,
@@ -174,8 +159,6 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           quantity: orderPayload.quantity,
           entryPrice: Number(orderPayload.price ?? 0),
           symboltoken,
-          stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-          targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
           strategy: req.body.strategy || "Manual",
           status: "OPEN",
         });
@@ -186,13 +169,92 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       }
     }));
 
-    return res.json({
-      ok: true,
-      totalUsers: users.length,
-      results
-    });
+    return res.json({ ok: true, totalUsers: users.length, results });
   } catch (err: any) {
     log.error("place-all error", err.message || err);
+    return res.status(500).json({ error: err.message || err });
+  }
+});
+
+// 🔥 NEW: Place order for the logged-in user themselves
+router.post("/place-user", auth, async (req, res) => {
+  const user = (req as any).user;
+  const clientcode = user.client_key;
+
+  if (user.licence === "Live" && !clientcode) {
+    return res.status(400).json({ error: "No broker client code assigned to your account" });
+  }
+
+  try {
+    const { symbol, optiontype, side, quantity, ordertype, producttype } = req.body;
+    let { tradingsymbol, symboltoken } = req.body;
+
+    // Auto-resolve ATM if tradingsymbol is missing but symbol/optiontype provided
+    if (!tradingsymbol && symbol && optiontype) {
+      const chain = await getOptionChain(symbol.toUpperCase());
+      const atmStrike = chain.atmStrike;
+      const match = chain.options.find((o: any) => o.strike === atmStrike && o.optiontype === optiontype.toUpperCase());
+
+      if (!match) return res.status(400).json({ error: `Could not find ATM ${optiontype} for ${symbol}` });
+
+      tradingsymbol = match.tradingsymbol;
+      symboltoken = match.symboltoken;
+    }
+
+    if (!tradingsymbol) return res.status(400).json({ error: "tradingsymbol required" });
+
+    const orderPayload: PlaceOrderInput = {
+      exchange: "NFO",
+      tradingsymbol,
+      side: side || "BUY",
+      transactiontype: side || "BUY",
+      quantity: Number(quantity) || 1,
+      ordertype: ordertype || "MARKET",
+      price: 0,
+      producttype: producttype || "INTRADAY",
+      symboltoken
+    };
+
+    if (user.licence === "Demo") {
+      const paperOrderId = `PAPER-${uuidv4()}`;
+      await Position.create({
+        clientcode: clientcode || "DEMO-USER",
+        orderid: paperOrderId,
+        tradingsymbol: orderPayload.tradingsymbol,
+        exchange: "NFO",
+        side: orderPayload.side,
+        quantity: orderPayload.quantity,
+        entryPrice: 0,
+        symboltoken: orderPayload.symboltoken,
+        strategy: req.body.strategy || "Manual",
+        status: "OPEN",
+      });
+      return res.json({ ok: true, message: "Paper trade executed", orderid: paperOrderId });
+    }
+
+    const resp = await placeOrderForClient(clientcode, orderPayload);
+
+    if (resp && resp.status === false) {
+      return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
+    }
+
+    const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || `BROKER-${uuidv4()}`;
+
+    await Position.create({
+      clientcode,
+      orderid,
+      tradingsymbol: orderPayload.tradingsymbol,
+      exchange: "NFO",
+      side: orderPayload.side,
+      quantity: orderPayload.quantity,
+      entryPrice: 0,
+      symboltoken: orderPayload.symboltoken,
+      strategy: req.body.strategy || "Manual",
+      status: "OPEN",
+    });
+
+    return res.json({ ok: true, resp, orderid });
+  } catch (err: any) {
     return res.status(500).json({ error: err.message || err });
   }
 });
@@ -208,3 +270,4 @@ router.get("/status/:clientcode/:orderId", async (req, res) => {
 });
 
 export default router;
+

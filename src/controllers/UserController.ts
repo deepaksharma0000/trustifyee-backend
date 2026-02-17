@@ -2,11 +2,11 @@ import { Request, Response } from 'express';
 import User from '../models/User';
 import Joi from 'joi';
 import bcrypt from 'bcryptjs';
-import { encrypt, maskKey } from '../utils/encryption';
+import { encrypt, maskKey, decrypt } from '../utils/encryption';
+import { AngelOneAdapter } from '../adapters/AngelOneAdapter';
+import AngelTokensModel from '../models/AngelTokens';
 
 const updateUserSchema = Joi.object({
-    user_name: Joi.string().optional(),
-    email: Joi.string().email().optional(),
     full_name: Joi.string().optional(),
     phone_number: Joi.string().optional(),
     broker: Joi.string().allow('', null).optional(),
@@ -19,11 +19,10 @@ const updateUserSchema = Joi.object({
     sub_admin: Joi.string().allow('', null).optional(),
     service_to_month: Joi.string().allow('', null).optional(),
     group_service: Joi.string().allow('', null).optional(),
-    password: Joi.string().min(6).optional(),
     strategies: Joi.array().items(Joi.string()).optional(),
-    api_key: Joi.string().allow('', null).optional(),
-    client_key: Joi.string().allow('', null).optional(),
-});
+    is_online: Joi.boolean().optional(),
+    is_login: Joi.boolean().optional(),
+}).unknown(true);
 
 export const updateUser = async (req: Request, res: Response) => {
     try {
@@ -31,27 +30,15 @@ export const updateUser = async (req: Request, res: Response) => {
         const { error, value } = updateUserSchema.validate(req.body);
         if (error) return res.status(400).json({ error: error.message, status: false });
 
-        const updateData = { ...value };
+        const updateData: any = { ...value };
 
-        if (updateData.client_key && !updateData.client_key.startsWith('****')) {
-            updateData.client_key = encrypt(updateData.client_key);
-        } else if (updateData.client_key && updateData.client_key.startsWith('****')) {
-            delete updateData.client_key;
-        } else if (updateData.client_key === "") {
-            delete updateData.client_key;
-        }
-
-        if (updateData.api_key && !updateData.api_key.startsWith('****')) {
-            updateData.api_key = encrypt(updateData.api_key);
-        } else if (updateData.api_key && updateData.api_key.startsWith('****')) {
-            delete updateData.api_key;
-        } else if (updateData.api_key === "") {
-            delete updateData.api_key;
-        }
-
-        if (updateData.password) {
-            updateData.password = await bcrypt.hash(updateData.password, 10);
-        }
+        // [CRITICAL] Backend Guard: NEVER allow these fields via general profile update
+        delete updateData.password;
+        delete updateData.email;
+        delete updateData.user_name;
+        delete updateData.client_key;
+        delete updateData.api_key;
+        delete updateData.broker_verified;
 
         const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
         if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
@@ -63,7 +50,7 @@ export const updateUser = async (req: Request, res: Response) => {
         };
 
         res.status(200).json({
-            message: "User updated successfully!",
+            message: "Profile updated successfully!",
             data: maskedUpdatedUser,
             status: true
         });
@@ -72,6 +59,31 @@ export const updateUser = async (req: Request, res: Response) => {
         if (err.code === 11000) {
             return res.status(400).json({ error: "Duplicate error", status: false });
         }
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+
+export const updateUserBroker = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { client_key, api_key } = req.body;
+
+        const updateData: any = {};
+        if (client_key) updateData.client_key = encrypt(client_key);
+        if (api_key) updateData.api_key = encrypt(api_key);
+
+        // Reset verification status whenever broker details change
+        updateData.broker_verified = false;
+        updateData.broker_connected = false;
+
+        const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
+        if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
+
+        res.status(200).json({
+            message: "Broker details updated successfully! Pending admin approval.",
+            status: true
+        });
+    } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });
     }
 };
@@ -184,3 +196,60 @@ export const getUserSearch = async (req: Request, res: Response) => {
         res.status(500).json({ error: err.message, status: false });
     }
 }
+
+export const verifyUserBroker = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { verified } = req.body;
+
+        if (!verified) {
+            await User.findByIdAndUpdate(id, { broker_verified: false, broker_connected: false });
+            return res.status(200).json({ message: "Broker unverified successfully!", status: true });
+        }
+
+        const user = await User.findById(id);
+        if (!user) return res.status(404).json({ error: "User not found", status: false });
+
+        // [STEP 1] Check if keys exist
+        if (!user.client_key || !user.api_key) {
+            return res.status(400).json({ error: "Broker API Key or Client Code missing.", status: false });
+        }
+
+        // [STEP 2] Check for an active session (Access Token)
+        const client_code = decrypt(user.client_key);
+        const tokenData = await AngelTokensModel.findOne({ clientcode: client_code });
+
+        if (!tokenData || !tokenData.jwtToken) {
+            return res.status(400).json({
+                error: "Access token missing. User MUST login to Angel One dashboard first to generate a session.",
+                status: false
+            });
+        }
+
+        // [STEP 3] Call Test API (Get Profile)
+        const adapter = new AngelOneAdapter();
+        const profile = await adapter.getProfile(tokenData.jwtToken);
+
+        if (profile && profile.status === true) {
+            user.broker_verified = true;
+            user.broker_connected = true; // Unlock
+            await user.save();
+
+            return res.status(200).json({
+                message: "Broker connection verified and connected successfully!",
+                status: true,
+                data: { broker_verified: true, broker_connected: true }
+            });
+        } else {
+            // Success toggle failed because API rejected it
+            user.broker_connected = false;
+            await user.save();
+            return res.status(401).json({
+                error: "Broker validation failed (Profile API error). User needs to re-login to Angel One.",
+                status: false
+            });
+        }
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};

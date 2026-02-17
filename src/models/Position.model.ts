@@ -23,6 +23,8 @@ export interface IPosition extends Document {
   autoSquareOffTime?: Date;
   autoSquareOffStatus?: "PENDING" | "COMPLETED" | "FAILED" | "CANCELLED";
   autoSquareOffJobId?: string;
+  signalId?: string;
+  signalType?: "ENTRY" | "EXIT";
 }
 
 const PositionSchema = new Schema<IPosition>(
@@ -47,7 +49,9 @@ const PositionSchema = new Schema<IPosition>(
     autoSquareOffEnabled: { type: Boolean, default: false },
     autoSquareOffTime: { type: Date },
     autoSquareOffStatus: { type: String, enum: ["PENDING", "COMPLETED", "FAILED", "CANCELLED"], default: "PENDING" },
-    autoSquareOffJobId: { type: String }
+    autoSquareOffJobId: { type: String },
+    signalId: { type: String, index: true },
+    signalType: { type: String, enum: ["ENTRY", "EXIT"] },
   },
   { timestamps: true }
 );

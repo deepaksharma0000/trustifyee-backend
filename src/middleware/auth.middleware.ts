@@ -20,7 +20,7 @@ export const auth = async (req: AuthRequest, res: Response, next: NextFunction) 
         const bearerToken = authHeader?.startsWith("Bearer ")
             ? authHeader.slice(7).trim()
             : undefined;
-        const access = bearerToken || req.header("x-access-token");
+        const access = bearerToken || req.header("x-access-token") || (req.query.token as string);
 
         if (!access) {
             return res.status(401).json({ error: "Access token is missing" });

@@ -16,6 +16,7 @@ import {
 } from "./StrategyEngine";
 import { log } from "../utils/logger";
 import { decrypt } from "../utils/encryption";
+import { SignalService } from "./SignalService";
 
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
 
@@ -223,21 +224,41 @@ async function placeTradesForRun(run: any) {
     if (user.licence === "Live") {
       angelSession = await AngelTokensModel.findOne({ clientcode }).lean();
 
-      const broker_connected = !!angelSession;
+      const broker_connected = !!angelSession && user.broker_verified; // Added broker_verified check
       const token_valid = !!(angelSession?.jwtToken);
 
-      const trading_enabled = (
+      const trading_ready = (
         user.status === "active" &&
         user.trading_status === "enabled" &&
-        user.licence === "Live" &&
         broker_connected === true &&
         token_valid === true
       );
 
-      if (!trading_enabled) {
-        log.warn(`Token Expired – Skipping User ${user.user_name}`);
+      if (!trading_ready) {
+        log.warn(`User ${user.user_name} not ready for trading (Verified: ${user.broker_verified}, Token: ${token_valid})`);
         continue;
       }
+
+      // 🔧 TASK 4: Auto-Algo Disable for Live
+      // Create a signal instead of placing the order
+      for (const opt of optionList) {
+        log.info(`Creating SIGNAL for Live User ${user.user_name} - ${opt.tradingsymbol}`);
+
+        await SignalService.createSignal({
+          symbol: run.symbol,
+          exchange: "NFO",
+          side: "BUY", // Algo initiates BUY
+          tradingsymbol: opt.tradingsymbol,
+          strike: opt.strike,
+          optiontype: opt.optiontype,
+          expiry: opt.expiry,
+          price: 0, // LTP will be fetched on execute
+          quantity: 1, // Base quantity
+          strategy: run.strategy,
+          signalType: "ENTRY"
+        });
+      }
+      continue;
     }
     // -------------------------------------------------------------
 

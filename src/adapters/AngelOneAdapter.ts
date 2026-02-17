@@ -50,7 +50,7 @@ export class AngelOneAdapter {
     return headers;
   }
 
-  // ------------ LOGIN ------------
+  // ------------ LOGIN (Trading APIs - Password Based) ------------
 
   async generateSession(params: {
     clientcode: string;

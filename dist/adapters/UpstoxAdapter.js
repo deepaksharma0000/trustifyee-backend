@@ -7,6 +7,7 @@ exports.UpstoxAdapter = void 0;
 const axios_1 = __importDefault(require("axios"));
 const config_1 = require("../config");
 const logger_1 = require("../utils/logger");
+const encryption_1 = require("../utils/encryption");
 class UpstoxAdapter {
     constructor() {
         this.clientId = config_1.config.upstoxClientId;
@@ -102,7 +103,7 @@ class UpstoxAdapter {
         const body = new URLSearchParams({
             client_id: this.clientId,
             client_secret: this.clientSecret,
-            refresh_token: refreshToken,
+            refresh_token: (0, encryption_1.decrypt)(refreshToken),
             grant_type: "refresh_token",
         });
         try {
@@ -133,7 +134,7 @@ class UpstoxAdapter {
         try {
             const response = await this.client.get("/user/profile", {
                 headers: {
-                    "Authorization": `Bearer ${accessToken}`,
+                    "Authorization": `Bearer ${(0, encryption_1.decrypt)(accessToken)}`,
                     "Accept": "application/json",
                 },
             });
@@ -157,7 +158,7 @@ class UpstoxAdapter {
         try {
             const response = await this.client.get("/user/profile", {
                 headers: {
-                    "Authorization": `Bearer ${accessToken}`,
+                    "Authorization": `Bearer ${(0, encryption_1.decrypt)(accessToken)}`,
                     "Accept": "application/json",
                 },
             });
@@ -180,7 +181,7 @@ class UpstoxAdapter {
         try {
             const response = await this.client.get(endpoint, {
                 headers: {
-                    "Authorization": `Bearer ${accessToken}`,
+                    "Authorization": `Bearer ${(0, encryption_1.decrypt)(accessToken)}`,
                     "Accept": "application/json",
                 },
                 params,
@@ -205,7 +206,7 @@ class UpstoxAdapter {
         try {
             const response = await this.client.post(endpoint, data, {
                 headers: {
-                    "Authorization": `Bearer ${accessToken}`,
+                    "Authorization": `Bearer ${(0, encryption_1.decrypt)(accessToken)}`,
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                 },

@@ -51,7 +51,10 @@ const userRegisterSchema = Joi.object({
     group_service: Joi.string().allow('', null),
     strategies: Joi.array().items(Joi.string()).optional(),
     api_key: Joi.string().allow('', null).optional(),
-});
+    broker_verified: Joi.boolean().optional(),
+    is_online: Joi.boolean().optional(),
+    is_login: Joi.boolean().optional(),
+}).unknown(true);
 
 export const registerAdmin = async (req: Request, res: Response) => {
     try {
@@ -109,6 +112,7 @@ export const loginAdmin = async (req: Request, res: Response) => {
         if (!isMatch) return res.status(400).json({ error: "Invalid password", status: false });
 
         admin.is_login = true;
+        // admin does not have is_online field, keep it as is_login for now or add to model
         await admin.save();
 
         const accessToken = generateAccessToken(admin._id);
@@ -228,6 +232,7 @@ export const loginUser = async (req: Request, res: Response) => {
         if (!isMatch) return res.status(400).json({ error: "Invalid password", status: false });
 
         user.is_login = true;
+        user.is_online = true;
         await user.save();
 
         const accessToken = generateAccessToken(user._id);
@@ -275,7 +280,7 @@ export const logoutUser = async (req: Request, res: Response) => {
         const userId = (req as any).id;
         if (!userId) return res.status(401).json({ error: "Unauthorized", status: false });
 
-        await User.findByIdAndUpdate(userId, { is_login: false });
+        await User.findByIdAndUpdate(userId, { is_login: false, is_online: false });
 
         res.status(200).json({
             message: "User logged out successfully!",

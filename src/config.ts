@@ -28,6 +28,7 @@ export const config = {
   angelBaseUrl: process.env.ANGEL_BASE_URL || "https://smartapi.angelbroking.com",
   genPath: process.env.ANGEL_GENERATE_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/generateTokens",
   refreshPath: process.env.ANGEL_REFRESH_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/refreshToken",
+  angelRedirectUrl: process.env.ANGEL_REDIRECT_URL || "http://localhost:3000/api/auth/angel/callback",
 
   // -------- UPSTOX ----------
   upstoxApiKey: process.env.UPSTOX_API_KEY || "",

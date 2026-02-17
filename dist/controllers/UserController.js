@@ -7,6 +7,7 @@ exports.getUserSearch = exports.getUsersByEndDate = exports.getUserTotalCount = 
 const User_1 = __importDefault(require("../models/User"));
 const joi_1 = __importDefault(require("joi"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const encryption_1 = require("../utils/encryption");
 const updateUserSchema = joi_1.default.object({
     user_name: joi_1.default.string().optional(),
     email: joi_1.default.string().email().optional(),
@@ -34,10 +35,22 @@ const updateUser = async (req, res) => {
         if (error)
             return res.status(400).json({ error: error.message, status: false });
         const updateData = { ...value };
-        if (updateData.client_key === "") {
+        if (updateData.client_key && !updateData.client_key.startsWith('****')) {
+            updateData.client_key = (0, encryption_1.encrypt)(updateData.client_key);
+        }
+        else if (updateData.client_key && updateData.client_key.startsWith('****')) {
             delete updateData.client_key;
         }
-        if (updateData.api_key === "") {
+        else if (updateData.client_key === "") {
+            delete updateData.client_key;
+        }
+        if (updateData.api_key && !updateData.api_key.startsWith('****')) {
+            updateData.api_key = (0, encryption_1.encrypt)(updateData.api_key);
+        }
+        else if (updateData.api_key && updateData.api_key.startsWith('****')) {
+            delete updateData.api_key;
+        }
+        else if (updateData.api_key === "") {
             delete updateData.api_key;
         }
         if (updateData.password) {
@@ -46,9 +59,14 @@ const updateUser = async (req, res) => {
         const updatedUser = await User_1.default.findByIdAndUpdate(id, updateData, { new: true });
         if (!updatedUser)
             return res.status(404).json({ error: "User not found", status: false });
+        const maskedUpdatedUser = {
+            ...updatedUser.toObject(),
+            client_key: (0, encryption_1.maskKey)(updatedUser.client_key || ""),
+            api_key: (0, encryption_1.maskKey)(updatedUser.api_key || "")
+        };
         res.status(200).json({
             message: "User updated successfully!",
-            data: updatedUser,
+            data: maskedUpdatedUser,
             status: true
         });
     }
@@ -76,10 +94,15 @@ exports.deleteUser = deleteUser;
 const getLoggedInUsers = async (req, res) => {
     try {
         const users = await User_1.default.find({ is_login: true });
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: (0, encryption_1.maskKey)(u.client_key || ""),
+            api_key: (0, encryption_1.maskKey)(u.api_key || "")
+        }));
         res.status(200).json({
             message: "Logged-in users fetched successfully!",
             count: users.length,
-            data: users,
+            data: maskedUsers,
             status: true
         });
     }
@@ -113,10 +136,15 @@ const getUsersByEndDate = async (req, res) => {
             query.end_date = { $lte: new Date(date) };
         }
         const users = await User_1.default.find(query);
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: (0, encryption_1.maskKey)(u.client_key || ""),
+            api_key: (0, encryption_1.maskKey)(u.api_key || "")
+        }));
         res.status(200).json({
             message: "Users fetched successfully!",
             count: users.length,
-            data: users,
+            data: maskedUsers,
             status: true
         });
     }
@@ -141,8 +169,13 @@ const getUserSearch = async (req, res) => {
             query.phone_number = { $regex: phoneTerm, $options: 'i' };
         }
         const users = await User_1.default.find(query);
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: (0, encryption_1.maskKey)(u.client_key || ""),
+            api_key: (0, encryption_1.maskKey)(u.api_key || "")
+        }));
         res.status(200).json({
-            users,
+            users: maskedUsers,
             total_users: users.length,
             status: true
         });
