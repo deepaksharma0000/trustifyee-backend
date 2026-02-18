@@ -109,7 +109,7 @@ async function getEntryPrice(
 
 async function squareOffPosition(position: any) {
   const exitSide = position.side === "BUY" ? "SELL" : "BUY";
-  const resp = await placeOrderForClient(position.clientcode, {
+  const resp = await placeOrderForClient(position.userId, position.clientcode, {
     exchange: position.exchange,
     tradingsymbol: position.tradingsymbol,
     side: exitSide,
@@ -118,7 +118,7 @@ async function squareOffPosition(position: any) {
     ordertype: "MARKET",
   });
 
-  const session = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean();
+  const session = await AngelTokensModel.findOne({ userId: position.userId, clientcode: position.clientcode }).lean();
   const exitPrice =
     session?.jwtToken && position.symboltoken
       ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
@@ -146,7 +146,7 @@ async function enforceRisk(run: any) {
   let totalPnl = 0;
 
   for (const p of openPositions) {
-    const session = await AngelTokensModel.findOne({ clientcode: p.clientcode }).lean();
+    const session = await AngelTokensModel.findOne({ userId: (p as any).userId, clientcode: p.clientcode }).lean();
     if (!session?.jwtToken || !p.symboltoken) continue;
     const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
 
@@ -222,7 +222,7 @@ async function placeTradesForRun(run: any) {
     let angelSession: any = null;
 
     if (user.licence === "Live") {
-      angelSession = await AngelTokensModel.findOne({ clientcode }).lean();
+      angelSession = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean();
 
       const broker_connected = !!angelSession && user.broker_verified; // Added broker_verified check
       const token_valid = !!(angelSession?.jwtToken);
@@ -266,6 +266,7 @@ async function placeTradesForRun(run: any) {
       if (user.licence === "Demo") {
         const paperId = `PAPER-${Date.now()}-${Math.random()}`;
         await Position.create({
+          userId: String(user._id),
           clientcode,
           orderid: paperId,
           tradingsymbol: opt.tradingsymbol,
@@ -298,7 +299,7 @@ async function placeTradesForRun(run: any) {
       }
 
       try {
-        const resp = await placeOrderForClient(clientcode, {
+        const resp = await placeOrderForClient(user._id, clientcode, {
           exchange: "NFO",
           tradingsymbol: opt.tradingsymbol,
           side: "BUY",
@@ -318,6 +319,7 @@ async function placeTradesForRun(run: any) {
           : 0;
 
         await Position.create({
+          userId: String(user._id),
           clientcode,
           orderid,
           tradingsymbol: opt.tradingsymbol,

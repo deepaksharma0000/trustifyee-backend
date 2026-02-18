@@ -31,6 +31,7 @@ import algoRoutes from "./routes/algo.routes";
 import strategyHelperRoutes from "./routes/strategyHelper.routes";
 import helpRoutes from "./routes/help";
 import signalRoutes from "./routes/signal.routes";
+import angeloneAuthRoutes from "./routes/angeloneAuth";
 
 
 
@@ -141,6 +142,7 @@ async function start() {
     app.use("/api/alice/ins", aliceInstrumentsRoutes);
     app.use("/api/help", helpRoutes);
     app.use("/api/signals", signalRoutes);
+    app.use("/api/angelone/auth", angeloneAuthRoutes);
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
 

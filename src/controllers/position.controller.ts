@@ -4,12 +4,21 @@ import { Position } from "../models/Position.model";
 export const getOpenPositions = async (req: Request, res: Response) => {
   try {
     const { clientcode } = req.params;
+    const userId = (req as any).id;
+    const isAdminRequested = clientcode === 'ADMIN_ALL';
 
     // 1. Fetch from DB
-    // Special case for Demo users: Show ALL open positions in the system
-    const query = clientcode === 'ADMIN_DEMO'
-      ? { status: { $in: ["OPEN", "COMPLETE"] } }
-      : { clientcode, status: { $in: ["OPEN", "COMPLETE"] } };
+    // Special case for Admins: Show ALL open positions in the system
+    // Special case for Demo users: Show ALL open positions (legacy compatibility)
+    const query: any = { status: { $in: ["OPEN", "COMPLETE"] } };
+
+    if (clientcode !== 'ADMIN_DEMO' && !isAdminRequested) {
+      if (userId) {
+        query.userId = userId;
+      } else {
+        query.clientcode = clientcode;
+      }
+    }
 
     const positions = await Position.find(query).sort({ createdAt: -1 }).lean();
 
@@ -26,7 +35,7 @@ export const getOpenPositions = async (req: Request, res: Response) => {
       const { AngelOneAdapter } = require("../adapters/AngelOneAdapter");
       const InstrumentModel = require("../models/Instrument").default;
 
-      const tokens = await AngelTokensModel.findOne({ clientcode });
+      const tokens = await AngelTokensModel.findOne(userId ? { userId, clientcode } : { clientcode });
 
       if (tokens?.jwtToken) {
         const adapter = new AngelOneAdapter();

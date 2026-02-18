@@ -97,10 +97,13 @@ router.post("/angel/login", auth, async (req: any, res) => {
       return res.status(500).json({ ok: false, error: "Missing jwtToken in Angel response" });
     }
 
+    const userId = req.id;
+
     // Save tokens
     await AngelTokensModel.findOneAndUpdate(
-      { clientcode },
+      { userId, clientcode },
       {
+        userId,
         clientcode,
         jwtToken: encrypt(jwtToken),
         refreshToken: refreshToken ? encrypt(refreshToken) : undefined,
@@ -128,24 +131,26 @@ router.post("/angel/login", auth, async (req: any, res) => {
 //  Logout / Session Management
 // --------------------------------------------------------------------------
 
-router.post("/logout", async (req, res) => {
+router.post("/logout", auth, async (req: any, res) => {
   const { clientcode } = req.body;
+  const userId = req.id;
   if (!clientcode) return res.status(400).json({ error: "clientcode required" });
 
   try {
-    await AngelTokensModel.deleteOne({ clientcode }).exec();
+    await AngelTokensModel.deleteOne({ userId, clientcode }).exec();
     return res.json({ ok: true });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || err });
   }
 });
 
-router.post("/validate-session", async (req, res) => {
+router.post("/validate-session", auth, async (req: any, res) => {
   const { clientcode } = req.body;
+  const userId = req.id;
   if (!clientcode) return res.status(400).json({ ok: false, error: "clientcode required" });
 
   try {
-    const tokenData = await AngelTokensModel.findOne({ clientcode });
+    const tokenData = await AngelTokensModel.findOne({ userId, clientcode });
     if (!tokenData || !tokenData.jwtToken) {
       return res.json({ ok: false, error: "No session found" });
     }
@@ -165,7 +170,7 @@ router.post("/validate-session", async (req, res) => {
             const newFeed = refreshResp.data.feedToken || refreshResp.data.refreshToken;
 
             await AngelTokensModel.findOneAndUpdate(
-              { clientcode },
+              { userId, clientcode },
               {
                 jwtToken: encrypt(newJwt),
                 feedToken: newFeed ? encrypt(newFeed) : undefined

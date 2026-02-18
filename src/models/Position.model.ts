@@ -1,6 +1,7 @@
 import { Schema, model, Document } from "mongoose";
 
 export interface IPosition extends Document {
+  userId?: string;
   clientcode: string;
   orderid: string;
   exitOrderId?: string;
@@ -29,6 +30,7 @@ export interface IPosition extends Document {
 
 const PositionSchema = new Schema<IPosition>(
   {
+    userId: { type: String, index: true },
     clientcode: { type: String, required: true },
     orderid: { type: String, required: true, unique: true },
     tradingsymbol: { type: String, required: true },

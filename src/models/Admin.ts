@@ -20,6 +20,10 @@ export interface IAdmin extends Document {
     status: 'active' | 'inactive';
     profile_img?: string;
     is_login: boolean;
+    broker_connected: boolean;
+    broker_verified: boolean;
+    broker?: string;
+    client_key?: string; // For consistency with User model if needed, or use panel_client_key
     created_at: Date;
     updated_at: Date;
 }
@@ -28,8 +32,9 @@ const AdminSchema: Schema = new Schema({
     full_name: { type: String, required: true },
     mobile: { type: String, required: true },
     email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
+    password: { type: String, required: true, select: false },
     panel_client_key: { type: String, unique: true, sparse: true },
+    client_key: { type: String, sparse: true },
     all_permission: { type: Boolean, default: false },
     add_client: { type: Boolean, default: false },
     edit_client: { type: Boolean, default: false },
@@ -44,6 +49,9 @@ const AdminSchema: Schema = new Schema({
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     profile_img: { type: String },
     is_login: { type: Boolean, default: false },
+    broker_connected: { type: Boolean, default: false },
+    broker_verified: { type: Boolean, default: false },
+    broker: { type: String },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IAdmin>('Admin', AdminSchema);

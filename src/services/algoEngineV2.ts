@@ -13,6 +13,7 @@ import {
     ResolvedStrategyLeg
 } from "./StrategyEngine";
 import { log } from "../utils/logger";
+import { decrypt } from "../utils/encryption";
 import { getInstrumentLtp } from "./MarketDataService";
 
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
@@ -46,7 +47,7 @@ async function getEntryPrice(
 
 async function squareOffPosition(position: any) {
     const exitSide = position.side === "BUY" ? "SELL" : "BUY";
-    const resp = await placeOrderForClient(position.clientcode, {
+    const resp = await placeOrderForClient(position.userId, position.clientcode, {
         exchange: position.exchange,
         tradingsymbol: position.tradingsymbol,
         side: exitSide,
@@ -55,7 +56,7 @@ async function squareOffPosition(position: any) {
         ordertype: "MARKET",
     });
 
-    const session = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean() as any;
+    const session = await AngelTokensModel.findOne({ userId: position.userId, clientcode: position.clientcode }).lean() as any;
     const exitPrice =
         session?.jwtToken && position.symboltoken
             ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
@@ -83,7 +84,7 @@ async function enforceRisk(run: any) {
     let totalPnl = 0;
 
     for (const p of openPositions) {
-        const session = await AngelTokensModel.findOne({ clientcode: p.clientcode }).lean() as any;
+        const session = await AngelTokensModel.findOne({ userId: (p as any).userId, clientcode: p.clientcode }).lean() as any;
         if (!session?.jwtToken || !p.symboltoken) continue;
         const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
 
@@ -157,8 +158,15 @@ async function placeTradesForRun(run: any) {
     }).lean();
 
     for (const user of users) {
-        const clientcode = user.client_key;
+        let clientcode = user.client_key;
         if (!clientcode) continue;
+
+        try {
+            clientcode = decrypt(clientcode);
+        } catch (e) {
+            log.warn(`Failed to decrypt client_key for user ${user.user_name} in algo engine`);
+            continue;
+        }
 
         // 🔥 Security: Check if Live user has necessary keys
         if (user.licence === 'Live' && (!user.broker || !user.api_key)) {
@@ -170,6 +178,7 @@ async function placeTradesForRun(run: any) {
             if (user.licence === "Demo") {
                 const paperId = `PAPER-${Date.now()}-${Math.random()}`;
                 await Position.create({
+                    userId: String(user._id),
                     clientcode,
                     orderid: paperId,
                     tradingsymbol: leg.tradingsymbol,
@@ -202,7 +211,7 @@ async function placeTradesForRun(run: any) {
             }
 
             try {
-                const resp = await placeOrderForClient(clientcode, {
+                const resp = await placeOrderForClient(user._id, clientcode, {
                     exchange: "NFO",
                     tradingsymbol: leg.tradingsymbol,
                     side: leg.side,
@@ -216,12 +225,13 @@ async function placeTradesForRun(run: any) {
                     resp?.data?.data?.orderid ||
                     `BROKER-${Date.now()}-${Math.random()}`;
 
-                const session = await AngelTokensModel.findOne({ clientcode }).lean() as any;
+                const session = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean() as any;
                 const entryPrice = session?.jwtToken && leg.symboltoken
                     ? await getEntryPrice(session.jwtToken, "NFO", leg.tradingsymbol, leg.symboltoken)
                     : 0;
 
                 await Position.create({
+                    userId: String(user._id),
                     clientcode,
                     orderid,
                     tradingsymbol: leg.tradingsymbol,

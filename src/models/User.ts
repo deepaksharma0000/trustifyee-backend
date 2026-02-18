@@ -43,7 +43,7 @@ const UserSchema: Schema = new Schema({
     trading_status: { type: String, enum: ['enabled', 'disabled'], default: 'enabled' },
     start_date: { type: Date },
     end_date: { type: Date },
-    password: { type: String },
+    password: { type: String, select: false },
     is_login: { type: Boolean, default: false },
     strategies: { type: [String], default: [] },
     api_key: { type: String },

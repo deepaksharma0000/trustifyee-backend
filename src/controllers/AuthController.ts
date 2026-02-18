@@ -84,9 +84,12 @@ export const registerAdmin = async (req: Request, res: Response) => {
         const accessToken = generateAccessToken(newAdmin._id);
         const refreshToken = generateRefreshToken(newAdmin._id);
 
+        const adminObj = newAdmin.toObject() as any;
+        delete adminObj.password;
+
         res.status(201).json({
             message: "Admin registration successful!",
-            data: newAdmin,
+            data: adminObj,
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },
@@ -105,7 +108,7 @@ export const loginAdmin = async (req: Request, res: Response) => {
         if (!email || !validateEmail(email)) return res.status(400).json({ error: "Email is not valid", status: false });
         if (!password) return res.status(400).json({ error: "Password is required", status: false });
 
-        const admin = await Admin.findOne({ email });
+        const admin = await Admin.findOne({ email }).select('+password');
         if (!admin) return res.status(404).json({ error: "Admin does not exist.", status: false });
 
         const isMatch = await bcrypt.compare(password, admin.password);
@@ -115,12 +118,17 @@ export const loginAdmin = async (req: Request, res: Response) => {
         // admin does not have is_online field, keep it as is_login for now or add to model
         await admin.save();
 
-        const accessToken = generateAccessToken(admin._id);
-        const refreshToken = generateRefreshToken(admin._id);
+        const accessToken = generateAccessToken(admin._id, admin.role || 'admin');
+        const refreshToken = generateRefreshToken(admin._id, admin.role || 'admin');
+
+        const adminObj = admin.toObject() as any;
+        delete adminObj.password;
 
         res.status(200).json({
             message: "Login successful!",
-            data: admin,
+            data: adminObj,
+            user: adminObj, // For frontend compatibility
+            accessToken, // For frontend compatibility
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },
@@ -181,11 +189,12 @@ export const registerUser = async (req: Request, res: Response) => {
 
         await newUser.save();
 
-        const maskedUser = {
+        const maskedUser: any = {
             ...newUser.toObject(),
             client_key: maskKey(newUser.client_key || ""),
             api_key: maskKey(newUser.api_key || "")
         };
+        delete maskedUser.password;
 
         res.status(201).json({
             message: "User registration successful!",
@@ -206,7 +215,7 @@ export const loginUser = async (req: Request, res: Response) => {
         if (!user_name) return res.status(400).json({ error: "User name is required", status: false });
         if (!password) return res.status(400).json({ error: "Password is required", status: false });
 
-        const user = await User.findOne({ user_name });
+        const user = await User.findOne({ user_name }).select('+password');
         if (!user) return res.status(404).json({ error: "User does not exist.", status: false });
 
         // Phase 1: Check account status
@@ -235,11 +244,14 @@ export const loginUser = async (req: Request, res: Response) => {
         user.is_online = true;
         await user.save();
 
-        const accessToken = generateAccessToken(user._id);
-        const refreshToken = generateRefreshToken(user._id);
+        const accessToken = generateAccessToken(user._id, 'user');
+        const refreshToken = generateRefreshToken(user._id, 'user');
+
+        const userObj = user.toObject() as any;
+        delete userObj.password;
 
         const maskedUser = {
-            ...user.toObject(),
+            ...userObj,
             client_key: maskKey(user.client_key || ""),
             api_key: maskKey(user.api_key || "")
         };
@@ -247,6 +259,8 @@ export const loginUser = async (req: Request, res: Response) => {
         res.status(200).json({
             message: "Login successful!",
             data: maskedUser,
+            user: maskedUser, // For frontend compatibility
+            accessToken, // For frontend compatibility
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },

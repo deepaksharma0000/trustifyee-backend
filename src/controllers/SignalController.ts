@@ -38,7 +38,7 @@ export const executeSignal = async (req: Request, res: Response) => {
         log.info(`Executing signal ${signalId} for user ${user.user_name} with ${lots} lots`);
 
         try {
-            const resp = await placeOrderForClient(client_key, {
+            const resp = await placeOrderForClient(userId, client_key, {
                 exchange: signal.exchange,
                 tradingsymbol: signal.tradingsymbol,
                 side: signal.side,
@@ -50,6 +50,7 @@ export const executeSignal = async (req: Request, res: Response) => {
             const orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `SIG-${Date.now()}`;
 
             const position = await Position.create({
+                userId: userId,
                 clientcode: client_key,
                 orderid: orderid,
                 tradingsymbol: signal.tradingsymbol,

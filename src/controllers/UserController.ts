@@ -102,7 +102,7 @@ export const deleteUser = async (req: Request, res: Response) => {
 
 export const getLoggedInUsers = async (req: Request, res: Response) => {
     try {
-        const users = await User.find({ is_login: true });
+        const users = await User.find({ is_login: true }).select('-password');
         const maskedUsers = users.map(u => ({
             ...u.toObject(),
             client_key: maskKey(u.client_key || ""),
@@ -142,17 +142,17 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
             query.end_date = { $lte: new Date(date as string) };
         }
 
-        const users = await User.find(query);
-        const maskedUsers = users.map(u => ({
+        const users = await User.find(query).select("-password");
+        const maskedUsers = users.map((u) => ({
             ...u.toObject(),
             client_key: maskKey(u.client_key || ""),
-            api_key: maskKey(u.api_key || "")
+            api_key: maskKey(u.api_key || ""),
         }));
         res.status(200).json({
             message: "Users fetched successfully!",
             count: users.length,
             data: maskedUsers,
-            status: true
+            status: true,
         });
 
     } catch (err: any) {
@@ -180,16 +180,16 @@ export const getUserSearch = async (req: Request, res: Response) => {
             query.phone_number = { $regex: phoneTerm, $options: 'i' };
         }
 
-        const users = await User.find(query);
-        const maskedUsers = users.map(u => ({
+        const users = await User.find(query).select("-password");
+        const maskedUsers = users.map((u) => ({
             ...u.toObject(),
             client_key: maskKey(u.client_key || ""),
-            api_key: maskKey(u.api_key || "")
+            api_key: maskKey(u.api_key || ""),
         }));
         res.status(200).json({
             users: maskedUsers,
             total_users: users.length,
-            status: true
+            status: true,
         });
 
     } catch (err: any) {
@@ -217,7 +217,7 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
 
         // [STEP 2] Check for an active session (Access Token)
         const client_code = decrypt(user.client_key);
-        const tokenData = await AngelTokensModel.findOne({ clientcode: client_code });
+        const tokenData = await AngelTokensModel.findOne({ userId: user._id, clientcode: client_code });
 
         if (!tokenData || !tokenData.jwtToken) {
             return res.status(400).json({

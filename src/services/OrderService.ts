@@ -20,14 +20,15 @@ export type PlaceOrderInput = {
 
 };
 
-export async function placeOrderForClient(
+export async function placeOrderForClient(userId: string | unknown,
   clientcode: string,
   orderInput: PlaceOrderInput
 ) {
   // STEP 0 - Client token
-  const tokens = await AngelTokensModel.findOne({ clientcode });
+  // @ts-ignore
+  const tokens = await AngelTokensModel.findOne({ userId, clientcode });
   if (!tokens?.jwtToken) {
-    throw new Error("No active session for clientcode");
+    throw new Error("No active AngelOne session found for this user");
   }
 
   // STEP 1 - BUY / SELL validate
@@ -46,36 +47,36 @@ export async function placeOrderForClient(
     throw new Error("Option contract not found in DB");
   }
 
-// new block 
-// let finalQuantity = orderInput.quantity;
+  // new block 
+  // let finalQuantity = orderInput.quantity;
 
-// // 🔥 NIFTY option trade → LOT based
-// if (
-//   symbol.instrumenttype === "OPTIDX" &&
-//   symbol.name === "NIFTY"
-// ) {
-//   const lotSize = symbol.lotSize || 65;
+  // // 🔥 NIFTY option trade → LOT based
+  // if (
+  //   symbol.instrumenttype === "OPTIDX" &&
+  //   symbol.name === "NIFTY"
+  // ) {
+  //   const lotSize = symbol.lotSize || 65;
 
-//   const lots = Number(orderInput.quantity);
-//   if (!lots || lots <= 0) {
-//     throw new Error("Invalid lot count");
-//   }
+  //   const lots = Number(orderInput.quantity);
+  //   if (!lots || lots <= 0) {
+  //     throw new Error("Invalid lot count");
+  //   }
 
-//   finalQuantity = lots * lotSize; // 🔥 MAGIC LINE
-// }
-// 🔥 LOT BASED QUANTITY FIX (NIFTY / BANKNIFTY)
-let finalQuantity = orderInput.quantity;
+  //   finalQuantity = lots * lotSize; // 🔥 MAGIC LINE
+  // }
+  // 🔥 LOT BASED QUANTITY FIX (NIFTY / BANKNIFTY)
+  let finalQuantity = orderInput.quantity;
 
-if (
-  symbol.instrumenttype === "OPTIDX" &&
-  (symbol.name === "NIFTY" || symbol.name === "BANKNIFTY" || symbol.name === "FINNIFTY")
-) {
-  if (!symbol.lotSize) {
-    throw new Error("Lot size not found for index option");
+  if (
+    symbol.instrumenttype === "OPTIDX" &&
+    (symbol.name === "NIFTY" || symbol.name === "BANKNIFTY" || symbol.name === "FINNIFTY")
+  ) {
+    if (!symbol.lotSize) {
+      throw new Error("Lot size not found for index option");
+    }
+
+    finalQuantity = orderInput.quantity * symbol.lotSize;
   }
-
-  finalQuantity = orderInput.quantity * symbol.lotSize;
-}
 
 
 
@@ -108,12 +109,14 @@ if (
   );
 }
 export async function getOrderStatusForClient(
+  userId: string | unknown,
   clientcode: string,
   orderId: string
 ) {
-  const tokens = await AngelTokensModel.findOne({ clientcode });
+  // @ts-ignore
+  const tokens = await AngelTokensModel.findOne({ userId, clientcode });
   if (!tokens?.jwtToken) {
-    throw new Error("No active session for clientcode");
+    throw new Error("No active session for this user");
   }
 
   return await adapter.getOrderStatus(tokens.jwtToken, orderId);

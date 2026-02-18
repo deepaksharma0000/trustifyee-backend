@@ -79,6 +79,24 @@ export class AngelOneAdapter {
     }
   }
 
+  // ------------ OAUTH / PUBLISHER LOGIN FLOW ------------
+
+  async generateSessionByAuthToken(authToken: string): Promise<AngelSessionResp> {
+    const body = { refreshToken: authToken };
+    try {
+      const resp = await this.client.post(this.tokenPath, body, {
+        headers: this.baseHeaders()
+      });
+      log.debug("Angel generateTokens (OAuth) response:", resp.data);
+      return resp.data;
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const data = err?.response?.data || err.message;
+      log.error("generateTokensByAuthToken failed", status, data);
+      throw new Error(`generateTokensByAuthToken failed: ${JSON.stringify(data)}`);
+    }
+  }
+
   // ------------ GENERIC AUTHP POST / GET ------------
 
   async authPost(jwtToken: string, path: string, body?: any) {
