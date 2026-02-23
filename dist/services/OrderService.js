@@ -10,11 +10,12 @@ const Instrument_1 = __importDefault(require("../models/Instrument"));
 const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
 const logger_1 = require("../utils/logger");
 const adapter = new AngelOneAdapter_1.AngelOneAdapter();
-async function placeOrderForClient(clientcode, orderInput) {
+async function placeOrderForClient(userId, clientcode, orderInput) {
     // STEP 0 - Client token
-    const tokens = await AngelTokens_1.default.findOne({ clientcode });
+    // @ts-ignore
+    const tokens = await AngelTokens_1.default.findOne({ userId, clientcode });
     if (!tokens?.jwtToken) {
-        throw new Error("No active session for clientcode");
+        throw new Error("No active AngelOne session found for this user");
     }
     // STEP 1 - BUY / SELL validate
     const txType = orderInput.side?.toUpperCase();
@@ -73,10 +74,19 @@ async function placeOrderForClient(clientcode, orderInput) {
     // STEP 4 - Place order
     return await adapter.authPost(tokens.jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
 }
-async function getOrderStatusForClient(clientcode, orderId) {
-    const tokens = await AngelTokens_1.default.findOne({ clientcode });
+async function getOrderStatusForClient(userId, clientcode, orderId) {
+    // @ts-ignore
+    const tokens = await AngelTokens_1.default.findOne({ userId, clientcode });
     if (!tokens?.jwtToken) {
-        throw new Error("No active session for clientcode");
+        throw new Error("No active session for this user");
     }
+    const orderBookResp = await adapter.getOrderBook(tokens.jwtToken);
+    if (orderBookResp && orderBookResp.status && Array.isArray(orderBookResp.data)) {
+        const order = orderBookResp.data.find((o) => o.orderid === orderId);
+        if (order) {
+            return { status: true, data: order };
+        }
+    }
+    // Fallback to singular getOrder if book check fails
     return await adapter.getOrderStatus(tokens.jwtToken, orderId);
 }

@@ -21,6 +21,7 @@ const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
 const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
 const logger_1 = require("../utils/logger");
 const encryption_1 = require("../utils/encryption");
+const SignalService_1 = require("./SignalService");
 const RUNNERS = new Map();
 const EOD_HOUR = 15;
 const EOD_MIN = 20;
@@ -87,7 +88,7 @@ async function getEntryPrice(jwtToken, exchange, tradingsymbol, symboltoken) {
 }
 async function squareOffPosition(position) {
     const exitSide = position.side === "BUY" ? "SELL" : "BUY";
-    const resp = await (0, OrderService_1.placeOrderForClient)(position.clientcode, {
+    const resp = await (0, OrderService_1.placeOrderForClient)(position.userId, position.clientcode, {
         exchange: position.exchange,
         tradingsymbol: position.tradingsymbol,
         side: exitSide,
@@ -95,7 +96,7 @@ async function squareOffPosition(position) {
         quantity: position.quantity,
         ordertype: "MARKET",
     });
-    const session = await AngelTokens_1.default.findOne({ clientcode: position.clientcode }).lean();
+    const session = await AngelTokens_1.default.findOne({ userId: position.userId, clientcode: position.clientcode }).lean();
     const exitPrice = session?.jwtToken && position.symboltoken
         ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
         : 0;
@@ -118,7 +119,7 @@ async function enforceRisk(run) {
     let totalEntry = 0;
     let totalPnl = 0;
     for (const p of openPositions) {
-        const session = await AngelTokens_1.default.findOne({ clientcode: p.clientcode }).lean();
+        const session = await AngelTokens_1.default.findOne({ userId: p.userId, clientcode: p.clientcode }).lean();
         if (!session?.jwtToken || !p.symboltoken)
             continue;
         const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
@@ -177,24 +178,43 @@ async function placeTradesForRun(run) {
         // -------------------------------------------------------------
         let angelSession = null;
         if (user.licence === "Live") {
-            angelSession = await AngelTokens_1.default.findOne({ clientcode }).lean();
-            const broker_connected = !!angelSession;
+            angelSession = await AngelTokens_1.default.findOne({ userId: user._id, clientcode }).lean();
+            const broker_connected = !!angelSession && user.broker_verified; // Added broker_verified check
             const token_valid = !!(angelSession?.jwtToken);
-            const trading_enabled = (user.status === "active" &&
+            const trading_ready = (user.status === "active" &&
                 user.trading_status === "enabled" &&
-                user.licence === "Live" &&
                 broker_connected === true &&
                 token_valid === true);
-            if (!trading_enabled) {
-                logger_1.log.warn(`Token Expired – Skipping User ${user.user_name}`);
+            if (!trading_ready) {
+                logger_1.log.warn(`User ${user.user_name} not ready for trading (Verified: ${user.broker_verified}, Token: ${token_valid})`);
                 continue;
             }
+            // 🔧 TASK 4: Auto-Algo Disable for Live
+            // Create a signal instead of placing the order
+            for (const opt of optionList) {
+                logger_1.log.info(`Creating SIGNAL for Live User ${user.user_name} - ${opt.tradingsymbol}`);
+                await SignalService_1.SignalService.createSignal({
+                    symbol: run.symbol,
+                    exchange: "NFO",
+                    side: "BUY", // Algo initiates BUY
+                    tradingsymbol: opt.tradingsymbol,
+                    strike: opt.strike,
+                    optiontype: opt.optiontype,
+                    expiry: opt.expiry,
+                    price: 0, // LTP will be fetched on execute
+                    quantity: 1, // Base quantity
+                    strategy: run.strategy,
+                    signalType: "ENTRY"
+                });
+            }
+            continue;
         }
         // -------------------------------------------------------------
         for (const opt of optionList) {
             if (user.licence === "Demo") {
                 const paperId = `PAPER-${Date.now()}-${Math.random()}`;
                 await Position_model_1.Position.create({
+                    userId: String(user._id),
                     clientcode,
                     orderid: paperId,
                     tradingsymbol: opt.tradingsymbol,
@@ -225,7 +245,7 @@ async function placeTradesForRun(run) {
                 continue;
             }
             try {
-                const resp = await (0, OrderService_1.placeOrderForClient)(clientcode, {
+                const resp = await (0, OrderService_1.placeOrderForClient)(user._id, clientcode, {
                     exchange: "NFO",
                     tradingsymbol: opt.tradingsymbol,
                     side: "BUY",
@@ -241,6 +261,7 @@ async function placeTradesForRun(run) {
                     ? await getEntryPrice(angelSession.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
                     : 0;
                 await Position_model_1.Position.create({
+                    userId: String(user._id),
                     clientcode,
                     orderid,
                     tradingsymbol: opt.tradingsymbol,

@@ -74,7 +74,7 @@ async function checkAndManagePositions() {
                 if (limitHit) {
                     logger_1.log.info(`🚀 Auto-Exit Triggered: ${p.tradingsymbol} | reason: ${exitReason} | LTP: ${ltp} | SL: ${pos.stopLossPrice} | TGT: ${pos.targetPrice}`);
                     // We need a session token for execution
-                    const tokens = await AngelTokens_1.default.findOne({ clientcode: p.clientcode }).lean();
+                    const tokens = await AngelTokens_1.default.findOne(p.userId ? { userId: p.userId, clientcode: p.clientcode } : { clientcode: p.clientcode }).lean();
                     if (tokens?.jwtToken) {
                         await executeExit(p, tokens.jwtToken, exitReason);
                     }

@@ -18,6 +18,7 @@ const OrderService_1 = require("./OrderService");
 const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
 const StrategyEngine_1 = require("./StrategyEngine");
 const logger_1 = require("../utils/logger");
+const encryption_1 = require("../utils/encryption");
 const MarketDataService_1 = require("./MarketDataService");
 const RUNNERS = new Map();
 const EOD_HOUR = 15;
@@ -36,7 +37,7 @@ async function getEntryPrice(jwtToken, exchange, tradingsymbol, symboltoken) {
 }
 async function squareOffPosition(position) {
     const exitSide = position.side === "BUY" ? "SELL" : "BUY";
-    const resp = await (0, OrderService_1.placeOrderForClient)(position.clientcode, {
+    const resp = await (0, OrderService_1.placeOrderForClient)(position.userId, position.clientcode, {
         exchange: position.exchange,
         tradingsymbol: position.tradingsymbol,
         side: exitSide,
@@ -44,7 +45,7 @@ async function squareOffPosition(position) {
         quantity: position.quantity,
         ordertype: "MARKET",
     });
-    const session = await AngelTokens_1.default.findOne({ clientcode: position.clientcode }).lean();
+    const session = await AngelTokens_1.default.findOne({ userId: position.userId, clientcode: position.clientcode }).lean();
     const exitPrice = session?.jwtToken && position.symboltoken
         ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
         : 0;
@@ -67,7 +68,7 @@ async function enforceRisk(run) {
     let totalEntry = 0;
     let totalPnl = 0;
     for (const p of openPositions) {
-        const session = await AngelTokens_1.default.findOne({ clientcode: p.clientcode }).lean();
+        const session = await AngelTokens_1.default.findOne({ userId: p.userId, clientcode: p.clientcode }).lean();
         if (!session?.jwtToken || !p.symboltoken)
             continue;
         const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
@@ -127,9 +128,16 @@ async function placeTradesForRun(run) {
         strategies: run.strategy
     }).lean();
     for (const user of users) {
-        const clientcode = user.client_key;
+        let clientcode = user.client_key;
         if (!clientcode)
             continue;
+        try {
+            clientcode = (0, encryption_1.decrypt)(clientcode);
+        }
+        catch (e) {
+            logger_1.log.warn(`Failed to decrypt client_key for user ${user.user_name} in algo engine`);
+            continue;
+        }
         // 🔥 Security: Check if Live user has necessary keys
         if (user.licence === 'Live' && (!user.broker || !user.api_key)) {
             logger_1.log.warn(`⚠️ User ${user.user_name} is Live but missing Broker or API Key. Skipping.`);
@@ -139,6 +147,7 @@ async function placeTradesForRun(run) {
             if (user.licence === "Demo") {
                 const paperId = `PAPER-${Date.now()}-${Math.random()}`;
                 await Position_model_1.Position.create({
+                    userId: String(user._id),
                     clientcode,
                     orderid: paperId,
                     tradingsymbol: leg.tradingsymbol,
@@ -169,7 +178,7 @@ async function placeTradesForRun(run) {
                 continue;
             }
             try {
-                const resp = await (0, OrderService_1.placeOrderForClient)(clientcode, {
+                const resp = await (0, OrderService_1.placeOrderForClient)(user._id, clientcode, {
                     exchange: "NFO",
                     tradingsymbol: leg.tradingsymbol,
                     side: leg.side,
@@ -180,11 +189,12 @@ async function placeTradesForRun(run) {
                 const orderid = resp?.data?.orderid ||
                     resp?.data?.data?.orderid ||
                     `BROKER-${Date.now()}-${Math.random()}`;
-                const session = await AngelTokens_1.default.findOne({ clientcode }).lean();
+                const session = await AngelTokens_1.default.findOne({ userId: user._id, clientcode }).lean();
                 const entryPrice = session?.jwtToken && leg.symboltoken
                     ? await getEntryPrice(session.jwtToken, "NFO", leg.tradingsymbol, leg.symboltoken)
                     : 0;
                 await Position_model_1.Position.create({
+                    userId: String(user._id),
                     clientcode,
                     orderid,
                     tradingsymbol: leg.tradingsymbol,

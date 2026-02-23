@@ -11,7 +11,13 @@ const auth_middleware_1 = require("../middleware/auth.middleware");
 const User_1 = __importDefault(require("../models/User"));
 const Position_model_1 = require("../models/Position.model");
 const Instrument_1 = __importDefault(require("../models/Instrument"));
+const NiftyOptionService_1 = require("../services/NiftyOptionService");
 const uuid_1 = require("uuid");
+const encryption_1 = require("../utils/encryption");
+const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
+const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
+const angel_service_1 = require("../services/angel.service");
+const BrokerResponse_1 = require("../models/BrokerResponse");
 const router = express_1.default.Router();
 router.post("/place", auth_middleware_1.auth, auth_middleware_1.adminOnly, async (req, res) => {
     const { clientcode } = req.body;
@@ -24,12 +30,12 @@ router.post("/place", auth_middleware_1.auth, auth_middleware_1.adminOnly, async
             return res.status(400).json({ error: "Valid quantity required" });
         }
         const orderPayload = {
-            exchange: (req.body.exchange).toString().toUpperCase(),
+            exchange: (req.body.exchange || "NFO").toString().toUpperCase(),
             tradingsymbol: req.body.tradingsymbol,
             side: req.body.side,
             transactiontype: req.body.transactiontype || req.body.side,
             quantity: qtyNum,
-            ordertype: req.body.ordertype,
+            ordertype: req.body.ordertype || "MARKET",
             price: req.body.price ?? 0,
             producttype: req.body.producttype,
             duration: req.body.duration,
@@ -37,40 +43,46 @@ router.post("/place", auth_middleware_1.auth, auth_middleware_1.adminOnly, async
             triggerPrice: req.body.triggerPrice
         };
         logger_1.log.debug("Incoming place order:", { clientcode, orderPayload });
-        // Fetch instrument for symboltoken if not provided or just to be safe for Position record
+        // Resolve instrument
         const instrument = await Instrument_1.default.findOne({
             tradingsymbol: orderPayload.tradingsymbol,
-            exchange: "NFO"
+            exchange: orderPayload.exchange
         }).lean();
         if (!instrument) {
             return res.status(400).json({ error: "Instrument not found" });
         }
         const symboltoken = instrument.symboltoken;
-        const resp = await (0, OrderService_1.placeOrderForClient)(clientcode, orderPayload);
+        // For admin placing for client, we need the client's userId.
+        // Encrypt search term to find user with encrypted client_key
+        const encryptedClientCode = (0, encryption_1.encrypt)(clientcode);
+        const targetUser = await User_1.default.findOne({ client_key: encryptedClientCode });
+        if (!targetUser) {
+            return res.status(404).json({ error: "User with this clientcode not found" });
+        }
+        // Pass the plain-text clientcode for token lookup
+        const resp = await (0, OrderService_1.placeOrderForClient)(targetUser._id, clientcode, orderPayload);
         if (resp && resp.status === false) {
             logger_1.log.error("AngelOne order placement failed:", resp);
             return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
         }
-        // Extract order ID
         const orderid = resp?.data?.orderid ||
-            resp?.data?.uniqueorderid ||
             resp?.data?.data?.orderid ||
             resp?.data?.orderId ||
             `BROKER-${(0, uuid_1.v4)()}`;
-        // Create Position Record
         await Position_model_1.Position.create({
+            userId: targetUser._id,
             clientcode,
             orderid,
             tradingsymbol: orderPayload.tradingsymbol,
             exchange: orderPayload.exchange,
             side: orderPayload.side,
-            quantity: orderPayload.quantity, // We store LOT quantity here currently based on schema usage in getActivePositions
+            quantity: orderPayload.quantity,
             entryPrice: Number(orderPayload.price ?? 0),
             symboltoken,
-            stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-            targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
             strategy: req.body.strategy || "Manual",
             status: "OPEN",
+            stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
+            targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
         });
         return res.json({ ok: true, resp, orderid });
     }
@@ -104,21 +116,29 @@ router.post("/place-all", auth_middleware_1.auth, auth_middleware_1.adminOnly, a
         const users = await User_1.default.find({
             status: "active",
             trading_status: "enabled",
+            is_online: true,
+            broker_connected: true
         }).lean();
         const instrument = await Instrument_1.default.findOne({
             tradingsymbol: orderPayload.tradingsymbol,
-            exchange: "NFO"
+            exchange: orderPayload.exchange
         }).lean();
         const symboltoken = instrument?.symboltoken;
         const results = await Promise.all(users.map(async (user) => {
-            const clientcode = user.client_key;
-            if (!clientcode) {
+            let clientcode = user.client_key;
+            if (!clientcode)
                 return { userId: user._id, status: "skipped", reason: "missing client_key" };
+            // Decrypt if it looks like an encrypted field (or always decrypt if consistently encrypted)
+            try {
+                clientcode = (0, encryption_1.decrypt)(clientcode);
             }
-            // Demo users: paper trade only
+            catch (e) {
+                logger_1.log.warn("Failed to decrypt clientcode for user:", user._id);
+            }
             if (user.licence === "Demo") {
                 const paperOrderId = `PAPER-${(0, uuid_1.v4)()}`;
                 await Position_model_1.Position.create({
+                    userId: user._id,
                     clientcode,
                     orderid: paperOrderId,
                     tradingsymbol: orderPayload.tradingsymbol,
@@ -127,21 +147,76 @@ router.post("/place-all", auth_middleware_1.auth, auth_middleware_1.adminOnly, a
                     quantity: orderPayload.quantity,
                     entryPrice: Number(orderPayload.price ?? 0),
                     symboltoken,
-                    stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-                    targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
                     strategy: req.body.strategy || "Manual",
                     status: "OPEN",
+                    mode: "paper",
+                    stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
+                    targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
                 });
                 return { userId: user._id, status: "paper", orderid: paperOrderId };
             }
             try {
-                const resp = await (0, OrderService_1.placeOrderForClient)(clientcode, orderPayload);
-                const orderid = resp?.data?.orderid ||
-                    resp?.data?.data?.orderid ||
-                    resp?.data?.orderId ||
-                    resp?.data?.data?.orderId ||
-                    `BROKER-${(0, uuid_1.v4)()}`;
+                const resp = await (0, OrderService_1.placeOrderForClient)(user._id, clientcode, orderPayload);
+                // 🔥 Verify if the broker actually accepted the order
+                if (resp && (resp.status === false || resp.status === "error" || resp.errorcode)) {
+                    const errMsg = resp.message || resp.error || "Broker rejected the order";
+                    await BrokerResponse_1.BrokerResponse.create({
+                        userId: user._id,
+                        clientcode,
+                        tradingsymbol: orderPayload.tradingsymbol,
+                        action: "BROADCAST_ORDER",
+                        status: "REJECTED",
+                        message: errMsg,
+                        brokerError: resp
+                    });
+                    return { userId: user._id, status: "error", error: errMsg };
+                }
+                const orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `BROKER-${(0, uuid_1.v4)()}`;
+                // 🕒 WAIT for Broker RMS to process (1.5 - 2 seconds)
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                // 🔍 Fetch REAL Status from Broker
+                let actualStatus = "SUCCESS";
+                let actualMessage = "Order placed successfully";
+                let finalBrokerData = resp;
+                try {
+                    const statusResp = await (0, OrderService_1.getOrderStatusForClient)(user._id, clientcode, orderid);
+                    let brokerData = statusResp?.data || statusResp;
+                    if (Array.isArray(brokerData)) {
+                        brokerData = brokerData[0];
+                    }
+                    if (brokerData && typeof brokerData === 'object') {
+                        finalBrokerData = brokerData;
+                        // Use String() to safely handle potential boolean status
+                        const bStatus = String(brokerData.orderstatus || brokerData.status || "").toUpperCase();
+                        if (bStatus === "REJECTED") {
+                            actualStatus = "REJECTED";
+                            actualMessage = brokerData.text || brokerData.message || "Rejected by Broker RMS";
+                        }
+                        else if (bStatus === "CANCELLED") {
+                            actualStatus = "REJECTED";
+                            actualMessage = "Order Cancelled by Broker";
+                        }
+                        else if (bStatus === "COMPLETE") {
+                            actualStatus = "SUCCESS";
+                            actualMessage = "Order executed successfully";
+                        }
+                        else if (bStatus === "OPEN" || bStatus === "PENDING") {
+                            actualStatus = "SUCCESS";
+                            actualMessage = "Order is open/pending in broker terminal";
+                        }
+                    }
+                    else {
+                        actualStatus = "ERROR";
+                        actualMessage = "Broker returned empty status response";
+                    }
+                }
+                catch (statusErr) {
+                    logger_1.log.warn(`Status check failed for ${orderid}:`, statusErr.message);
+                    actualStatus = "ERROR";
+                    actualMessage = "Sync failed: " + statusErr.message;
+                }
                 await Position_model_1.Position.create({
+                    userId: user._id,
                     clientcode,
                     orderid,
                     tradingsymbol: orderPayload.tradingsymbol,
@@ -150,36 +225,373 @@ router.post("/place-all", auth_middleware_1.auth, auth_middleware_1.adminOnly, a
                     quantity: orderPayload.quantity,
                     entryPrice: Number(orderPayload.price ?? 0),
                     symboltoken,
+                    strategy: req.body.strategy || "Manual",
+                    status: actualStatus === "REJECTED" ? "REJECTED" : "OPEN",
+                    mode: "live",
                     stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
                     targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
-                    strategy: req.body.strategy || "Manual",
-                    status: "OPEN",
                 });
-                return { userId: user._id, status: "ok", orderid };
+                // Log ACTUAL Response
+                await BrokerResponse_1.BrokerResponse.create({
+                    userId: user._id,
+                    clientcode,
+                    orderid,
+                    tradingsymbol: orderPayload.tradingsymbol,
+                    action: "BROADCAST_ORDER",
+                    status: (actualStatus === "ERROR" ? "REJECTED" : actualStatus), // Map error to rejected for user clarity
+                    message: actualMessage,
+                    brokerError: finalBrokerData
+                });
+                return { userId: user._id, status: actualStatus === "REJECTED" ? "error" : "ok", orderid, message: actualMessage };
             }
             catch (err) {
-                return { userId: user._id, status: "error", error: err.message || String(err) };
+                const errMsg = err.message || String(err);
+                await BrokerResponse_1.BrokerResponse.create({
+                    userId: user._id,
+                    clientcode,
+                    tradingsymbol: orderPayload.tradingsymbol,
+                    action: "BROADCAST_ORDER",
+                    status: "ERROR",
+                    message: errMsg
+                });
+                return { userId: user._id, status: "error", error: errMsg };
             }
         }));
-        return res.json({
-            ok: true,
-            totalUsers: users.length,
-            results
-        });
+        return res.json({ ok: true, totalUsers: users.length, results });
     }
     catch (err) {
         logger_1.log.error("place-all error", err.message || err);
         return res.status(500).json({ error: err.message || err });
     }
 });
-router.get("/status/:clientcode/:orderId", async (req, res) => {
+// 🔥 NEW: Place order for the logged-in user themselves
+router.post("/place-user", auth_middleware_1.auth, async (req, res) => {
+    const user = req.user;
+    let clientcode = user.client_key;
+    if (user.licence === "Live" && !clientcode) {
+        return res.status(400).json({ error: "No broker client code assigned to your account" });
+    }
+    // Decrypt clientcode for token lookup
+    if (clientcode) {
+        try {
+            clientcode = (0, encryption_1.decrypt)(clientcode);
+        }
+        catch (e) {
+            logger_1.log.warn("Failed to decrypt clientcode for user:", user._id);
+        }
+    }
     try {
-        const { clientcode, orderId } = req.params;
-        const resp = await (0, OrderService_1.getOrderStatusForClient)(clientcode, orderId);
-        return res.json({ ok: true, resp });
+        const { symbol, optiontype, side, quantity, ordertype, producttype } = req.body;
+        let { tradingsymbol, symboltoken } = req.body;
+        // Auto-resolve ATM if tradingsymbol is missing but symbol/optiontype provided
+        if (!tradingsymbol && symbol && optiontype) {
+            const chain = await (0, NiftyOptionService_1.getOptionChain)(symbol.toUpperCase());
+            const atmStrike = chain.atmStrike;
+            const match = chain.options.find((o) => o.strike === atmStrike && o.optiontype === optiontype.toUpperCase());
+            if (!match)
+                return res.status(400).json({ error: `Could not find ATM ${optiontype} for ${symbol}` });
+            tradingsymbol = match.tradingsymbol;
+            symboltoken = match.symboltoken;
+        }
+        if (!tradingsymbol)
+            return res.status(400).json({ error: "tradingsymbol required" });
+        const orderPayload = {
+            exchange: "NFO",
+            tradingsymbol,
+            side: side || "BUY",
+            transactiontype: side || "BUY",
+            quantity: Number(quantity) || 1,
+            ordertype: ordertype || "MARKET",
+            price: 0,
+            producttype: producttype || "INTRADAY",
+            symboltoken
+        };
+        if (user.licence === "Demo") {
+            const paperOrderId = `PAPER-${(0, uuid_1.v4)()}`;
+            await Position_model_1.Position.create({
+                userId: user._id,
+                clientcode: clientcode || "DEMO-USER",
+                orderid: paperOrderId,
+                tradingsymbol: orderPayload.tradingsymbol,
+                exchange: "NFO",
+                side: orderPayload.side,
+                quantity: orderPayload.quantity,
+                entryPrice: 0,
+                symboltoken: orderPayload.symboltoken,
+                strategy: req.body.strategy || "Manual",
+                status: "OPEN",
+                mode: "paper",
+                stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
+                targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+            });
+            return res.json({ ok: true, message: "Paper trade executed", orderid: paperOrderId });
+        }
+        const resp = await (0, OrderService_1.placeOrderForClient)(user._id, clientcode, orderPayload);
+        if (resp && resp.status === false) {
+            return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
+        }
+        const orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `BROKER-${(0, uuid_1.v4)()}`;
+        // 🕒 WAIT for Broker RMS
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        // 🔍 Fetch REAL Status from Broker
+        let actualStatus = "SUCCESS";
+        let actualMessage = "Order placed successfully";
+        let finalBrokerData = resp;
+        try {
+            const statusResp = await (0, OrderService_1.getOrderStatusForClient)(user._id, clientcode, orderid);
+            let brokerData = statusResp?.data || statusResp;
+            if (Array.isArray(brokerData)) {
+                brokerData = brokerData[0];
+            }
+            if (brokerData && typeof brokerData === 'object') {
+                finalBrokerData = brokerData;
+                const bStatus = String(brokerData.orderstatus || brokerData.status || "").toUpperCase();
+                if (bStatus === "REJECTED") {
+                    actualStatus = "REJECTED";
+                    actualMessage = brokerData.text || brokerData.message || "Rejected by Broker RMS";
+                }
+            }
+        }
+        catch (statusErr) {
+            logger_1.log.warn("Direct user status check failed:", statusErr.message);
+            actualStatus = "ERROR";
+            actualMessage = "Verification failed: " + statusErr.message;
+        }
+        await Position_model_1.Position.create({
+            userId: user._id,
+            clientcode,
+            orderid,
+            tradingsymbol: orderPayload.tradingsymbol,
+            exchange: "NFO",
+            side: orderPayload.side,
+            quantity: orderPayload.quantity,
+            entryPrice: 0,
+            symboltoken: orderPayload.symboltoken,
+            strategy: req.body.strategy || "Manual",
+            status: actualStatus === "REJECTED" ? "REJECTED" : "OPEN",
+            mode: "live",
+            stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
+            targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+        });
+        // Log ACTUAL Response
+        await BrokerResponse_1.BrokerResponse.create({
+            userId: user._id,
+            clientcode,
+            orderid,
+            tradingsymbol: orderPayload.tradingsymbol,
+            action: "USER_ORDER",
+            status: (actualStatus === "ERROR" ? "REJECTED" : actualStatus),
+            message: actualMessage,
+            brokerError: finalBrokerData
+        });
+        if (actualStatus === "REJECTED") {
+            return res.status(400).json({ ok: false, error: actualMessage, orderid });
+        }
+        return res.json({ ok: true, resp, orderid });
     }
     catch (err) {
         return res.status(500).json({ error: err.message || err });
+    }
+});
+router.get("/status/:clientcode/:orderId", auth_middleware_1.auth, async (req, res) => {
+    try {
+        const { clientcode, orderId } = req.params;
+        const user = req.user;
+        const userType = req.userType;
+        // Security check: If user, must match clientcode
+        if (userType === 'user' && user.client_key !== clientcode) {
+            return res.status(403).json({ ok: false, message: "Unauthorized access to these orders" });
+        }
+        // Attempt to get live status from broker
+        let brokerResp = null;
+        try {
+            brokerResp = await (0, OrderService_1.getOrderStatusForClient)(user._id, clientcode, orderId);
+        }
+        catch (e) {
+            logger_1.log.warn(`Broker status check failed for ${orderId}:`, e.message);
+        }
+        // Sync with DB
+        const order = await Position_model_1.Position.findOne({ orderid: orderId });
+        if (brokerResp && brokerResp.status && order) {
+            const brokerStatus = brokerResp.data?.status || brokerResp.data?.orderstatus;
+            if (brokerStatus === "COMPLETE" && order.status === "OPEN") {
+                order.status = "CLOSED"; // Adjust status naming convention if needed
+                await order.save();
+            }
+        }
+        if (!order) {
+            return res.json({ ok: true, resp: brokerResp });
+        }
+        return res.json({
+            ok: true,
+            resp: brokerResp,
+            dbStatus: order.status
+        });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message || err });
+    }
+});
+// --- MERGED FROM order.routes.ts ---
+router.post("/save", auth_middleware_1.auth, auth_middleware_1.adminOnly, async (req, res) => {
+    try {
+        const { clientcode, orderid, tradingsymbol, exchange, side, quantity, price, symboltoken, autoSquareOffEnabled, autoSquareOffTime } = req.body;
+        const MarketStatusService = require("../services/MarketStatusService").MarketStatusService;
+        try {
+            MarketStatusService.validateOrderRequest();
+        }
+        catch (err) {
+            return res.status(400).json({ ok: false, message: err.message });
+        }
+        if (autoSquareOffEnabled && autoSquareOffTime) {
+            const exitDate = new Date(autoSquareOffTime);
+            if (isNaN(exitDate.getTime())) {
+                throw new Error("Invalid auto square-off time");
+            }
+        }
+        const newPosition = await Position_model_1.Position.create({
+            clientcode,
+            orderid,
+            tradingsymbol,
+            exchange,
+            side,
+            quantity,
+            entryPrice: price || 0,
+            symboltoken,
+            stopLossPrice: req.body.stopLossPrice,
+            targetPrice: req.body.targetPrice,
+            status: "OPEN",
+            autoSquareOffEnabled: autoSquareOffEnabled || false,
+            autoSquareOffTime: autoSquareOffTime ? new Date(autoSquareOffTime) : undefined,
+            autoSquareOffStatus: autoSquareOffEnabled ? "PENDING" : undefined
+        });
+        if (autoSquareOffEnabled && autoSquareOffTime) {
+            const AutoExitService = require("../services/AutoExitService").AutoExitService;
+            const jobId = await AutoExitService.scheduleExit(orderid, new Date(autoSquareOffTime));
+            newPosition.autoSquareOffJobId = jobId;
+            await newPosition.save();
+        }
+        res.json({ ok: true });
+    }
+    catch (err) {
+        logger_1.log.error("Save order error:", err.message);
+        res.status(500).json({ ok: false, message: "Save order failed", error: err.message });
+    }
+});
+router.post("/close", auth_middleware_1.auth, auth_middleware_1.adminOnly, async (req, res) => {
+    try {
+        const { clientcode, orderid } = req.body;
+        const MarketStatusService = require("../services/MarketStatusService").MarketStatusService;
+        try {
+            MarketStatusService.validateOrderRequest();
+        }
+        catch (err) {
+            return res.status(400).json({ ok: false, message: err.message });
+        }
+        const position = await Position_model_1.Position.findOne({
+            clientcode,
+            orderid,
+            status: "OPEN",
+        });
+        if (!position) {
+            return res.status(404).json({ ok: false, message: "Open position not found" });
+        }
+        const exitSide = position.side === "BUY" ? "SELL" : "BUY";
+        const angelResp = await (0, angel_service_1.placeAngelOrder)({
+            clientcode,
+            tradingsymbol: position.tradingsymbol,
+            exchange: position.exchange,
+            side: exitSide,
+            quantity: position.quantity,
+            ordertype: "MARKET",
+        });
+        if (!angelResp?.ok) {
+            return res.status(400).json({ ok: false, message: angelResp?.error || "Angel exit order failed" });
+        }
+        position.status = "CLOSED";
+        position.exitOrderId = angelResp.resp?.data?.orderid || "MANUAL";
+        position.exitAt = new Date();
+        await position.save();
+        if (position.autoSquareOffEnabled && position.autoSquareOffJobId) {
+            const AutoExitService = require("../services/AutoExitService").AutoExitService;
+            await AutoExitService.cancelExit(position.orderid);
+            position.autoSquareOffStatus = "CANCELLED";
+            await position.save();
+        }
+        res.json({ ok: true, message: "Position squared off successfully", orderid: position.exitOrderId });
+    }
+    catch (err) {
+        logger_1.log.error("Close order error:", err.message);
+        res.status(500).json({ ok: false, message: "Failed to close position" });
+    }
+});
+router.get("/active-positions/:clientcode", auth_middleware_1.auth, async (req, res) => {
+    try {
+        const { clientcode } = req.params;
+        const user = req.user;
+        const userType = req.userType;
+        if (userType === 'user' && user.client_key !== clientcode) {
+            return res.status(403).json({ ok: false, message: "Unauthorized access" });
+        }
+        const positions = await Position_model_1.Position.find({ clientcode, status: "OPEN" }).sort({ createdAt: -1 }).lean();
+        if (positions.length === 0)
+            return res.json({ ok: true, data: [] });
+        const tokens = await AngelTokens_1.default.findOne({ clientcode });
+        if (!tokens?.jwtToken)
+            return res.status(401).json({ ok: false, message: "No active session" });
+        const adapter = new AngelOneAdapter_1.AngelOneAdapter();
+        const positionsWithLtp = await Promise.all(positions.map(async (p) => {
+            try {
+                let currentSymbolToken = p.symboltoken;
+                if (!currentSymbolToken) {
+                    const inst = await Instrument_1.default.findOne({ tradingsymbol: p.tradingsymbol, exchange: p.exchange });
+                    currentSymbolToken = inst?.symboltoken;
+                }
+                if (currentSymbolToken) {
+                    const ltpResp = await adapter.getLtp(tokens.jwtToken, p.exchange, p.tradingsymbol, currentSymbolToken);
+                    const ltp = ltpResp?.data?.ltp || 0;
+                    const pnl = p.side === "BUY" ? (ltp - p.entryPrice) * p.quantity : (p.entryPrice - ltp) * p.quantity;
+                    return { ...p, ltp, pnl };
+                }
+                return { ...p, ltp: 0, pnl: 0 };
+            }
+            catch (err) {
+                return { ...p, ltp: 0, pnl: 0 };
+            }
+        }));
+        res.json({ ok: true, data: positionsWithLtp });
+    }
+    catch (err) {
+        res.status(500).json({ ok: false, message: err.message });
+    }
+});
+router.get("/trade-history/:clientcode", auth_middleware_1.auth, async (req, res) => {
+    try {
+        const { clientcode } = req.params;
+        const user = req.user;
+        const userType = req.userType;
+        if (userType === 'user' && user.client_key !== clientcode) {
+            return res.status(403).json({ ok: false, message: "Unauthorized access" });
+        }
+        const history = await Position_model_1.Position.find({ clientcode, status: "CLOSED" }).sort({ exitAt: -1 }).lean();
+        res.json({ ok: true, data: history });
+    }
+    catch (err) {
+        res.status(500).json({ ok: false, message: err.message });
+    }
+});
+router.get("/broker-responses", auth_middleware_1.auth, async (req, res) => {
+    try {
+        const userId = req.id;
+        // Get last 50 responses for this user
+        const responses = await BrokerResponse_1.BrokerResponse.find({ userId })
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .lean();
+        res.json({ ok: true, data: responses });
+    }
+    catch (err) {
+        res.status(500).json({ ok: false, message: err.message || String(err) });
     }
 });
 exports.default = router;

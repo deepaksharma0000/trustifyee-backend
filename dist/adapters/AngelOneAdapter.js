@@ -61,6 +61,23 @@ class AngelOneAdapter {
             throw new Error(`generateSession failed: ${JSON.stringify(data)}`);
         }
     }
+    // ------------ OAUTH / PUBLISHER LOGIN FLOW ------------
+    async generateSessionByAuthToken(authToken) {
+        const body = { refreshToken: authToken };
+        try {
+            const resp = await this.client.post(this.tokenPath, body, {
+                headers: this.baseHeaders()
+            });
+            logger_1.log.debug("Angel generateTokens (OAuth) response:", resp.data);
+            return resp.data;
+        }
+        catch (err) {
+            const status = err?.response?.status;
+            const data = err?.response?.data || err.message;
+            logger_1.log.error("generateTokensByAuthToken failed", status, data);
+            throw new Error(`generateTokensByAuthToken failed: ${JSON.stringify(data)}`);
+        }
+    }
     // ------------ GENERIC AUTHP POST / GET ------------
     async authPost(jwtToken, path, body) {
         try {
@@ -125,6 +142,10 @@ class AngelOneAdapter {
     // ------------ ORDER STATUS ------------
     async getOrderStatus(jwtToken, brokerOrderId) {
         const path = `/rest/secure/angelbroking/order/v1/getOrder?orderId=${encodeURIComponent(brokerOrderId)}`;
+        return await this.authGet(jwtToken, path);
+    }
+    async getOrderBook(jwtToken) {
+        const path = "/rest/secure/angelbroking/order/v1/getOrderBook";
         return await this.authGet(jwtToken, path);
     }
     // ------------ LTP / MARKET DATA ------------

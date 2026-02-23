@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Position = void 0;
 const mongoose_1 = require("mongoose");
 const PositionSchema = new mongoose_1.Schema({
+    userId: { type: String, index: true },
     clientcode: { type: String, required: true },
     orderid: { type: String, required: true, unique: true },
     tradingsymbol: { type: String, required: true },
@@ -23,6 +24,8 @@ const PositionSchema = new mongoose_1.Schema({
     autoSquareOffEnabled: { type: Boolean, default: false },
     autoSquareOffTime: { type: Date },
     autoSquareOffStatus: { type: String, enum: ["PENDING", "COMPLETED", "FAILED", "CANCELLED"], default: "PENDING" },
-    autoSquareOffJobId: { type: String }
+    autoSquareOffJobId: { type: String },
+    signalId: { type: String, index: true },
+    signalType: { type: String, enum: ["ENTRY", "EXIT"] },
 }, { timestamps: true });
 exports.Position = (0, mongoose_1.model)("Position", PositionSchema);

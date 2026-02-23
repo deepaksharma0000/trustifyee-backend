@@ -198,6 +198,11 @@ export class AngelOneAdapter {
     return await this.authGet(jwtToken, path);
   }
 
+  async getOrderBook(jwtToken: string) {
+    const path = "/rest/secure/angelbroking/order/v1/getOrderBook";
+    return await this.authGet(jwtToken, path);
+  }
+
   // ------------ LTP / MARKET DATA ------------
   async getLtp(jwtToken: string, exchange: string, tradingsymbol: string, symboltoken: string) {
     const path = "/rest/secure/angelbroking/order/v1/getLtpData";

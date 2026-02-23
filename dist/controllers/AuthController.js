@@ -53,7 +53,10 @@ const userRegisterSchema = joi_1.default.object({
     group_service: joi_1.default.string().allow('', null),
     strategies: joi_1.default.array().items(joi_1.default.string()).optional(),
     api_key: joi_1.default.string().allow('', null).optional(),
-});
+    broker_verified: joi_1.default.boolean().optional(),
+    is_online: joi_1.default.boolean().optional(),
+    is_login: joi_1.default.boolean().optional(),
+}).unknown(true);
 const registerAdmin = async (req, res) => {
     try {
         const { error } = adminRegisterSchema.validate(req.body);
@@ -77,9 +80,11 @@ const registerAdmin = async (req, res) => {
         await newAdmin.save();
         const accessToken = (0, tokens_1.generateAccessToken)(newAdmin._id);
         const refreshToken = (0, tokens_1.generateRefreshToken)(newAdmin._id);
+        const adminObj = newAdmin.toObject();
+        delete adminObj.password;
         res.status(201).json({
             message: "Admin registration successful!",
-            data: newAdmin,
+            data: adminObj,
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },
@@ -98,19 +103,24 @@ const loginAdmin = async (req, res) => {
             return res.status(400).json({ error: "Email is not valid", status: false });
         if (!password)
             return res.status(400).json({ error: "Password is required", status: false });
-        const admin = await Admin_1.default.findOne({ email });
+        const admin = await Admin_1.default.findOne({ email }).select('+password');
         if (!admin)
             return res.status(404).json({ error: "Admin does not exist.", status: false });
         const isMatch = await bcryptjs_1.default.compare(password, admin.password);
         if (!isMatch)
             return res.status(400).json({ error: "Invalid password", status: false });
         admin.is_login = true;
+        // admin does not have is_online field, keep it as is_login for now or add to model
         await admin.save();
-        const accessToken = (0, tokens_1.generateAccessToken)(admin._id);
-        const refreshToken = (0, tokens_1.generateRefreshToken)(admin._id);
+        const accessToken = (0, tokens_1.generateAccessToken)(admin._id, admin.role || 'admin');
+        const refreshToken = (0, tokens_1.generateRefreshToken)(admin._id, admin.role || 'admin');
+        const adminObj = admin.toObject();
+        delete adminObj.password;
         res.status(200).json({
             message: "Login successful!",
-            data: admin,
+            data: adminObj,
+            user: adminObj, // For frontend compatibility
+            accessToken, // For frontend compatibility
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },
@@ -168,6 +178,7 @@ const registerUser = async (req, res) => {
             client_key: (0, encryption_1.maskKey)(newUser.client_key || ""),
             api_key: (0, encryption_1.maskKey)(newUser.api_key || "")
         };
+        delete maskedUser.password;
         res.status(201).json({
             message: "User registration successful!",
             data: maskedUser,
@@ -187,7 +198,7 @@ const loginUser = async (req, res) => {
             return res.status(400).json({ error: "User name is required", status: false });
         if (!password)
             return res.status(400).json({ error: "Password is required", status: false });
-        const user = await User_1.default.findOne({ user_name });
+        const user = await User_1.default.findOne({ user_name }).select('+password');
         if (!user)
             return res.status(404).json({ error: "User does not exist.", status: false });
         // Phase 1: Check account status
@@ -210,17 +221,22 @@ const loginUser = async (req, res) => {
         if (!isMatch)
             return res.status(400).json({ error: "Invalid password", status: false });
         user.is_login = true;
+        user.is_online = true;
         await user.save();
-        const accessToken = (0, tokens_1.generateAccessToken)(user._id);
-        const refreshToken = (0, tokens_1.generateRefreshToken)(user._id);
+        const accessToken = (0, tokens_1.generateAccessToken)(user._id, 'user');
+        const refreshToken = (0, tokens_1.generateRefreshToken)(user._id, 'user');
+        const userObj = user.toObject();
+        delete userObj.password;
         const maskedUser = {
-            ...user.toObject(),
+            ...userObj,
             client_key: (0, encryption_1.maskKey)(user.client_key || ""),
             api_key: (0, encryption_1.maskKey)(user.api_key || "")
         };
         res.status(200).json({
             message: "Login successful!",
             data: maskedUser,
+            user: maskedUser, // For frontend compatibility
+            accessToken, // For frontend compatibility
             status: true,
             access: { token: accessToken, issued_at: new Date() },
             refresh: { token: refreshToken, issued_at: new Date() },
@@ -254,7 +270,7 @@ const logoutUser = async (req, res) => {
         const userId = req.id;
         if (!userId)
             return res.status(401).json({ error: "Unauthorized", status: false });
-        await User_1.default.findByIdAndUpdate(userId, { is_login: false });
+        await User_1.default.findByIdAndUpdate(userId, { is_login: false, is_online: false });
         res.status(200).json({
             message: "User logged out successfully!",
             status: true

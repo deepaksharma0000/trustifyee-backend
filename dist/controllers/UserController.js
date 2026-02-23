@@ -3,14 +3,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getUserSearch = exports.getUsersByEndDate = exports.getUserTotalCount = exports.getLoggedInUsers = exports.deleteUser = exports.updateUser = void 0;
+exports.verifyUserBroker = exports.getUserSearch = exports.getUsersByEndDate = exports.getUserTotalCount = exports.getLoggedInUsers = exports.deleteUser = exports.updateUserBroker = exports.updateUser = void 0;
 const User_1 = __importDefault(require("../models/User"));
 const joi_1 = __importDefault(require("joi"));
-const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const encryption_1 = require("../utils/encryption");
+const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
+const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
 const updateUserSchema = joi_1.default.object({
-    user_name: joi_1.default.string().optional(),
-    email: joi_1.default.string().email().optional(),
     full_name: joi_1.default.string().optional(),
     phone_number: joi_1.default.string().optional(),
     broker: joi_1.default.string().allow('', null).optional(),
@@ -23,11 +22,10 @@ const updateUserSchema = joi_1.default.object({
     sub_admin: joi_1.default.string().allow('', null).optional(),
     service_to_month: joi_1.default.string().allow('', null).optional(),
     group_service: joi_1.default.string().allow('', null).optional(),
-    password: joi_1.default.string().min(6).optional(),
     strategies: joi_1.default.array().items(joi_1.default.string()).optional(),
-    api_key: joi_1.default.string().allow('', null).optional(),
-    client_key: joi_1.default.string().allow('', null).optional(),
-});
+    is_online: joi_1.default.boolean().optional(),
+    is_login: joi_1.default.boolean().optional(),
+}).unknown(true);
 const updateUser = async (req, res) => {
     try {
         const { id } = req.params;
@@ -35,27 +33,13 @@ const updateUser = async (req, res) => {
         if (error)
             return res.status(400).json({ error: error.message, status: false });
         const updateData = { ...value };
-        if (updateData.client_key && !updateData.client_key.startsWith('****')) {
-            updateData.client_key = (0, encryption_1.encrypt)(updateData.client_key);
-        }
-        else if (updateData.client_key && updateData.client_key.startsWith('****')) {
-            delete updateData.client_key;
-        }
-        else if (updateData.client_key === "") {
-            delete updateData.client_key;
-        }
-        if (updateData.api_key && !updateData.api_key.startsWith('****')) {
-            updateData.api_key = (0, encryption_1.encrypt)(updateData.api_key);
-        }
-        else if (updateData.api_key && updateData.api_key.startsWith('****')) {
-            delete updateData.api_key;
-        }
-        else if (updateData.api_key === "") {
-            delete updateData.api_key;
-        }
-        if (updateData.password) {
-            updateData.password = await bcryptjs_1.default.hash(updateData.password, 10);
-        }
+        // [CRITICAL] Backend Guard: NEVER allow these fields via general profile update
+        delete updateData.password;
+        delete updateData.email;
+        delete updateData.user_name;
+        delete updateData.client_key;
+        delete updateData.api_key;
+        delete updateData.broker_verified;
         const updatedUser = await User_1.default.findByIdAndUpdate(id, updateData, { new: true });
         if (!updatedUser)
             return res.status(404).json({ error: "User not found", status: false });
@@ -65,7 +49,7 @@ const updateUser = async (req, res) => {
             api_key: (0, encryption_1.maskKey)(updatedUser.api_key || "")
         };
         res.status(200).json({
-            message: "User updated successfully!",
+            message: "Profile updated successfully!",
             data: maskedUpdatedUser,
             status: true
         });
@@ -78,6 +62,31 @@ const updateUser = async (req, res) => {
     }
 };
 exports.updateUser = updateUser;
+const updateUserBroker = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { client_key, api_key } = req.body;
+        const updateData = {};
+        if (client_key)
+            updateData.client_key = (0, encryption_1.encrypt)(client_key);
+        if (api_key)
+            updateData.api_key = (0, encryption_1.encrypt)(api_key);
+        // Reset verification status whenever broker details change
+        updateData.broker_verified = false;
+        updateData.broker_connected = false;
+        const updatedUser = await User_1.default.findByIdAndUpdate(id, updateData, { new: true });
+        if (!updatedUser)
+            return res.status(404).json({ error: "User not found", status: false });
+        res.status(200).json({
+            message: "Broker details updated successfully! Pending admin approval.",
+            status: true
+        });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+exports.updateUserBroker = updateUserBroker;
 const deleteUser = async (req, res) => {
     try {
         const { id } = req.params;
@@ -93,7 +102,7 @@ const deleteUser = async (req, res) => {
 exports.deleteUser = deleteUser;
 const getLoggedInUsers = async (req, res) => {
     try {
-        const users = await User_1.default.find({ is_login: true });
+        const users = await User_1.default.find({ is_login: true }).select('-password');
         const maskedUsers = users.map(u => ({
             ...u.toObject(),
             client_key: (0, encryption_1.maskKey)(u.client_key || ""),
@@ -135,17 +144,17 @@ const getUsersByEndDate = async (req, res) => {
         else if (filter === "custom" && date) {
             query.end_date = { $lte: new Date(date) };
         }
-        const users = await User_1.default.find(query);
-        const maskedUsers = users.map(u => ({
+        const users = await User_1.default.find(query).select("-password");
+        const maskedUsers = users.map((u) => ({
             ...u.toObject(),
             client_key: (0, encryption_1.maskKey)(u.client_key || ""),
-            api_key: (0, encryption_1.maskKey)(u.api_key || "")
+            api_key: (0, encryption_1.maskKey)(u.api_key || ""),
         }));
         res.status(200).json({
             message: "Users fetched successfully!",
             count: users.length,
             data: maskedUsers,
-            status: true
+            status: true,
         });
     }
     catch (err) {
@@ -168,16 +177,16 @@ const getUserSearch = async (req, res) => {
         if (phoneTerm) {
             query.phone_number = { $regex: phoneTerm, $options: 'i' };
         }
-        const users = await User_1.default.find(query);
-        const maskedUsers = users.map(u => ({
+        const users = await User_1.default.find(query).select("-password");
+        const maskedUsers = users.map((u) => ({
             ...u.toObject(),
             client_key: (0, encryption_1.maskKey)(u.client_key || ""),
-            api_key: (0, encryption_1.maskKey)(u.api_key || "")
+            api_key: (0, encryption_1.maskKey)(u.api_key || ""),
         }));
         res.status(200).json({
             users: maskedUsers,
             total_users: users.length,
-            status: true
+            status: true,
         });
     }
     catch (err) {
@@ -185,3 +194,55 @@ const getUserSearch = async (req, res) => {
     }
 };
 exports.getUserSearch = getUserSearch;
+const verifyUserBroker = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { verified } = req.body;
+        if (!verified) {
+            await User_1.default.findByIdAndUpdate(id, { broker_verified: false, broker_connected: false });
+            return res.status(200).json({ message: "Broker unverified successfully!", status: true });
+        }
+        const user = await User_1.default.findById(id);
+        if (!user)
+            return res.status(404).json({ error: "User not found", status: false });
+        // [STEP 1] Check if keys exist
+        if (!user.client_key || !user.api_key) {
+            return res.status(400).json({ error: "Broker API Key or Client Code missing.", status: false });
+        }
+        // [STEP 2] Check for an active session (Access Token)
+        const client_code = (0, encryption_1.decrypt)(user.client_key);
+        const tokenData = await AngelTokens_1.default.findOne({ userId: user._id, clientcode: client_code });
+        if (!tokenData || !tokenData.jwtToken) {
+            return res.status(400).json({
+                error: "Access token missing. User MUST login to Angel One dashboard first to generate a session.",
+                status: false
+            });
+        }
+        // [STEP 3] Call Test API (Get Profile)
+        const adapter = new AngelOneAdapter_1.AngelOneAdapter();
+        const profile = await adapter.getProfile(tokenData.jwtToken);
+        if (profile && profile.status === true) {
+            user.broker_verified = true;
+            user.broker_connected = true; // Unlock
+            await user.save();
+            return res.status(200).json({
+                message: "Broker connection verified and connected successfully!",
+                status: true,
+                data: { broker_verified: true, broker_connected: true }
+            });
+        }
+        else {
+            // Success toggle failed because API rejected it
+            user.broker_connected = false;
+            await user.save();
+            return res.status(401).json({
+                error: "Broker validation failed (Profile API error). User needs to re-login to Angel One.",
+                status: false
+            });
+        }
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+exports.verifyUserBroker = verifyUserBroker;

@@ -36,11 +36,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // src/models/AngelTokens.ts
 const mongoose_1 = __importStar(require("mongoose"));
 const AngelTokensSchema = new mongoose_1.Schema({
-    clientcode: { type: String, required: true, unique: true, index: true },
+    userId: { type: mongoose_1.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    clientcode: { type: String, required: true, index: true },
     jwtToken: String,
     refreshToken: String,
     feedToken: String,
     expiresAt: Date
 }, { timestamps: true });
+// Make userId + clientcode unique together
+AngelTokensSchema.index({ userId: 1, clientcode: 1 }, { unique: true });
 const AngelTokensModel = mongoose_1.default.models.AngelTokens || mongoose_1.default.model("AngelTokens", AngelTokensSchema);
+// 🔥 Fix: Drop the old unique index on clientcode if it exists
+(async () => {
+    try {
+        await AngelTokensModel.collection.dropIndex('clientcode_1');
+        console.log('✅ Dropped old unique index clientcode_1');
+    }
+    catch (e) {
+        // Index might not exist, ignore
+    }
+})();
 exports.default = AngelTokensModel;

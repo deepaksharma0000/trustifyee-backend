@@ -7,7 +7,6 @@ import { config } from "./config";
 import InstrumentModel from "./models/Instrument";
 import authRoutes from "./routes/auth";
 import orderRoutes from "./routes/orders";
-import orderRoutess from "./routes/order.routes";
 import positionRoutes from "./routes/position.routes";
 import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly } from "./services/InstrumentService";
 import instrumentRoutes from "./routes/instruments";
@@ -111,7 +110,6 @@ async function start() {
     app.use("/api/orders", orderRoutes);
     app.use("/api/instruments", instrumentRoutes);
     app.use("/api/nifty", niftyRoutes);
-    app.use("/api/orders", orderRoutess);
     app.use("/api/positions", positionRoutes);
     app.use("/api/pnl", pnlRoutes);
     app.use("/api/positions", positionRoutes);

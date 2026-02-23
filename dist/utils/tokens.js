@@ -7,13 +7,17 @@ exports.generateRefreshToken = exports.generateAccessToken = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
-const ACCESS_SECRET = process.env.accessSecret || 'access_secret_key_123';
-const REFRESH_SECRET = process.env.refreshSecret || 'refresh_secret_key_123';
-const generateAccessToken = (userId) => {
-    return jsonwebtoken_1.default.sign({ user_id: userId }, ACCESS_SECRET, { expiresIn: '1d' }); // 1 day expiration
+const USER_ACCESS_SECRET = process.env.USER_ACCESS_SECRET || 'user_access_secret_123';
+const ADMIN_ACCESS_SECRET = process.env.ADMIN_ACCESS_SECRET || 'admin_access_secret_123';
+const USER_REFRESH_SECRET = process.env.USER_REFRESH_SECRET || 'user_refresh_secret_123';
+const ADMIN_REFRESH_SECRET = process.env.ADMIN_REFRESH_SECRET || 'admin_refresh_secret_123';
+const generateAccessToken = (userId, role = 'user') => {
+    const secret = (role === 'admin' || role === 'sub-admin') ? ADMIN_ACCESS_SECRET : USER_ACCESS_SECRET;
+    return jsonwebtoken_1.default.sign({ user_id: userId, role }, secret, { expiresIn: '1d' }); // 1 day expiration
 };
 exports.generateAccessToken = generateAccessToken;
-const generateRefreshToken = (userId) => {
-    return jsonwebtoken_1.default.sign({ user_id: userId }, REFRESH_SECRET, { expiresIn: '7d' }); // 7 days expiration
+const generateRefreshToken = (userId, role = 'user') => {
+    const secret = (role === 'admin' || role === 'sub-admin') ? ADMIN_REFRESH_SECRET : USER_REFRESH_SECRET;
+    return jsonwebtoken_1.default.sign({ user_id: userId, role }, secret, { expiresIn: '7d' }); // 7 days expiration
 };
 exports.generateRefreshToken = generateRefreshToken;

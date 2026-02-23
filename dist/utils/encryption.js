@@ -49,8 +49,10 @@ const decrypt = (text) => {
 };
 exports.decrypt = decrypt;
 const maskKey = (key) => {
-    if (!key || key.length < 8)
-        return '********';
+    if (!key || key.trim() === "")
+        return "";
+    if (key.length < 8)
+        return "********";
     return '****' + key.slice(-4);
 };
 exports.maskKey = maskKey;

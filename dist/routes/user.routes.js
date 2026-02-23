@@ -7,10 +7,12 @@ const express_1 = __importDefault(require("express"));
 const UserController_1 = require("../controllers/UserController");
 const auth_middleware_1 = require("../middleware/auth.middleware");
 const router = express_1.default.Router();
-router.put('/user/update-register/:id', auth_middleware_1.auth, UserController_1.updateUser);
-router.delete('/user/delete-client/:id', auth_middleware_1.auth, UserController_1.deleteUser);
-router.get('/user/logged-in', auth_middleware_1.auth, UserController_1.getLoggedInUsers);
-router.get('/user/total-count', auth_middleware_1.auth, UserController_1.getUserTotalCount);
-router.get('/user/by-enddate', auth_middleware_1.auth, UserController_1.getUsersByEndDate);
-router.get('/user/user-search', auth_middleware_1.auth, UserController_1.getUserSearch);
+router.put('/user/update-register/:id', auth_middleware_1.adminAuth, UserController_1.updateUser);
+router.put('/user/update-broker/:id', auth_middleware_1.userAuth, UserController_1.updateUserBroker); // [NEW] Split API
+router.delete('/user/delete-client/:id', auth_middleware_1.adminAuth, UserController_1.deleteUser);
+router.get('/user/logged-in', auth_middleware_1.adminAuth, UserController_1.getLoggedInUsers);
+router.get('/user/total-count', auth_middleware_1.adminAuth, UserController_1.getUserTotalCount);
+router.get('/user/by-enddate', auth_middleware_1.adminAuth, UserController_1.getUsersByEndDate);
+router.get('/user/user-search', auth_middleware_1.adminAuth, UserController_1.getUserSearch);
+router.post('/user/verify-broker/:id', auth_middleware_1.adminAuth, UserController_1.verifyUserBroker);
 exports.default = router;

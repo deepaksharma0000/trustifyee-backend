@@ -119,6 +119,16 @@ export async function getOrderStatusForClient(
     throw new Error("No active session for this user");
   }
 
+  const orderBookResp = await adapter.getOrderBook(tokens.jwtToken);
+
+  if (orderBookResp && orderBookResp.status && Array.isArray(orderBookResp.data)) {
+    const order = orderBookResp.data.find((o: any) => o.orderid === orderId);
+    if (order) {
+      return { status: true, data: order };
+    }
+  }
+
+  // Fallback to singular getOrder if book check fails
   return await adapter.getOrderStatus(tokens.jwtToken, orderId);
 }
 

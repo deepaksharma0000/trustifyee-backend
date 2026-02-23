@@ -10,6 +10,7 @@ const NiftyOptionService_1 = require("../services/NiftyOptionService");
 const User_1 = __importDefault(require("../models/User"));
 const OrderService_1 = require("../services/OrderService");
 const Position_model_1 = require("../models/Position.model");
+const encryption_1 = require("../utils/encryption");
 const handleWebhookSignal = async (req, res) => {
     try {
         const { action, symbol, secret } = req.body;
@@ -45,10 +46,17 @@ const handleWebhookSignal = async (req, res) => {
         // 5. Fire Orders for all users
         const results = await Promise.all(activeUsers.map(async (user) => {
             try {
-                const clientcode = user.client_key || user.panel_client_key;
+                let clientcode = user.client_key || user.panel_client_key;
                 if (!clientcode)
                     return { user: user.user_name, status: "No client code" };
-                const resp = await (0, OrderService_1.placeOrderForClient)(clientcode, {
+                // Decrypt clientcode for token lookup
+                try {
+                    clientcode = (0, encryption_1.decrypt)(clientcode);
+                }
+                catch (e) {
+                    logger_1.log.warn(`Failed to decrypt client_key for webhook user ${user.user_name}`);
+                }
+                const resp = await (0, OrderService_1.placeOrderForClient)(user._id, clientcode, {
                     exchange: "NFO",
                     tradingsymbol: targetOption.tradingsymbol,
                     side: "BUY",
@@ -60,6 +68,7 @@ const handleWebhookSignal = async (req, res) => {
                 if (resp && resp.status === true) {
                     // Save to Database
                     await Position_model_1.Position.create({
+                        userId: user._id,
                         clientcode,
                         orderid: resp.data.orderid,
                         tradingsymbol: targetOption.tradingsymbol,
