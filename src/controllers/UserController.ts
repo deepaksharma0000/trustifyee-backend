@@ -139,15 +139,24 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
         } else if (filter === "active") {
             query.end_date = { $gte: today };
         } else if (filter === "custom" && date) {
-            query.end_date = { $lte: new Date(date as string) };
+            // Include up to the end of the specified date
+            const customDate = new Date(date as string);
+            customDate.setHours(23, 59, 59, 999);
+            query.end_date = { $lte: customDate };
         }
 
+        console.log(`[getUsersByEndDate] Final Query:`, JSON.stringify(query));
+
         const users = await User.find(query).select("-password");
+
+        console.log(`[getUsersByEndDate] Found ${users.length} users`);
+
         const maskedUsers = users.map((u) => ({
             ...u.toObject(),
             client_key: maskKey(u.client_key || ""),
             api_key: maskKey(u.api_key || ""),
         }));
+
         res.status(200).json({
             message: "Users fetched successfully!",
             count: users.length,
@@ -156,6 +165,7 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
         });
 
     } catch (err: any) {
+        console.error(`[getUsersByEndDate] Error:`, err);
         res.status(500).json({ error: err.message, status: false });
     }
 }

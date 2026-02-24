@@ -90,8 +90,7 @@ async function start() {
       ? config.corsOrigins
       : ["http://localhost:8080", "http://localhost:3000", "https://6920-2405-201-300b-721e-a4ea-b208-cd7d-2464.ngrok-free.app"];
 
-    // app.use(cors({ origin: allowedOrigins, credentials: true }));
-    app.use(cors({ origin: true }));
+    app.use(cors({ origin: true, credentials: true }));
 
     app.use(bodyParser.json());
 
