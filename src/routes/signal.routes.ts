@@ -1,10 +1,10 @@
 import express from 'express';
-import { executeSignal, getActiveSignals } from '../controllers/SignalController';
-import { auth } from '../middleware/auth.middleware';
+import { executeSignal, getAllSignals } from '../controllers/SignalController';
+import { auth, adminAuth } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
-router.get('/active', auth, getActiveSignals);
+router.get('/all', adminAuth, getAllSignals);
 router.post('/execute', auth, executeSignal);
 
 export default router;

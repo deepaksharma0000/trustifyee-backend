@@ -6,7 +6,8 @@ import mongoose from "mongoose";
 import { config } from "./config";
 import InstrumentModel from "./models/Instrument";
 import authRoutes from "./routes/auth";
-import orderRoutes from "./routes/orders";
+import ordersRoutesPlural from "./routes/orders";
+import orderRoutesSingular from "./routes/order.routes";
 import positionRoutes from "./routes/position.routes";
 import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly } from "./services/InstrumentService";
 import instrumentRoutes from "./routes/instruments";
@@ -106,7 +107,8 @@ async function start() {
     app.use("/api", adminModuleRoutes);
 
     app.use("/api/auth", authRoutes);
-    app.use("/api/orders", orderRoutes);
+    app.use("/api/orders", ordersRoutesPlural);
+    app.use("/api/order", orderRoutesSingular);
     app.use("/api/instruments", instrumentRoutes);
     app.use("/api/nifty", niftyRoutes);
     app.use("/api/positions", positionRoutes);

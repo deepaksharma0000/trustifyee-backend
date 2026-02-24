@@ -82,11 +82,26 @@ export const executeSignal = async (req: Request, res: Response) => {
     }
 };
 
-export const getActiveSignals = async (req: Request, res: Response) => {
+export const getAllSignals = async (req: Request, res: Response) => {
     try {
-        const signals = await Signal.find({ status: "ACTIVE" }).sort({ createdAt: -1 });
-        res.status(200).json({ ok: true, data: signals });
+        const { strategy, search } = req.query;
+        let query: any = {};
+
+        if (strategy && strategy !== 'All') {
+            query.strategy = strategy;
+        }
+
+        if (search) {
+            query.$or = [
+                { symbol: { $regex: search, $options: 'i' } },
+                { tradingsymbol: { $regex: search, $options: 'i' } },
+                { strategy: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const signals = await Signal.find(query).sort({ createdAt: -1 });
+        res.status(200).json({ status: true, data: signals });
     } catch (err: any) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: err.message, status: false });
     }
 };
