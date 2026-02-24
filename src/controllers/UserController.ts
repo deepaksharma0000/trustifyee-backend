@@ -102,7 +102,14 @@ export const deleteUser = async (req: Request, res: Response) => {
 
 export const getLoggedInUsers = async (req: Request, res: Response) => {
     try {
-        const users = await User.find({ is_login: true }).select('-password');
+        const { filter } = req.query;
+        let query: any = { is_login: true };
+
+        if (filter === 'offline') {
+            query = { is_login: { $ne: true } };
+        }
+
+        const users = await User.find(query).select('-password');
         const maskedUsers = users.map(u => ({
             ...u.toObject(),
             client_key: maskKey(u.client_key || ""),
