@@ -22,6 +22,7 @@ const updateUserSchema = Joi.object({
     strategies: Joi.array().items(Joi.string()).optional(),
     is_online: Joi.boolean().optional(),
     is_login: Joi.boolean().optional(),
+    is_star: Joi.boolean().optional(),
 }).unknown(true);
 
 export const updateUser = async (req: Request, res: Response) => {
@@ -117,6 +118,25 @@ export const getLoggedInUsers = async (req: Request, res: Response) => {
         }));
         res.status(200).json({
             message: "Logged-in users fetched successfully!",
+            count: users.length,
+            data: maskedUsers,
+            status: true
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+}
+
+export const getStarUsers = async (req: Request, res: Response) => {
+    try {
+        const users = await User.find({ is_star: true }).select('-password');
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: maskKey(u.client_key || ""),
+            api_key: maskKey(u.api_key || "")
+        }));
+        res.status(200).json({
+            message: "Star clients fetched successfully!",
             count: users.length,
             data: maskedUsers,
             status: true
@@ -270,3 +290,22 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
         res.status(500).json({ error: err.message, status: false });
     }
 };
+
+export const toggleStarClient = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const user = await User.findById(id);
+        if (!user) return res.status(404).json({ error: "User not found", status: false });
+
+        user.is_star = !user.is_star;
+        await user.save();
+
+        res.status(200).json({
+            message: `Client ${user.is_star ? 'added to' : 'removed from'} favorites`,
+            is_star: user.is_star,
+            status: true
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+}
