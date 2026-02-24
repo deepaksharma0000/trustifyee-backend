@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import nodemailer from 'nodemailer';
+import Ticket from '../models/Ticket';
 
 export class HelpController {
     public static async submitRequest(req: Request, res: Response): Promise<void> {
@@ -11,7 +12,17 @@ export class HelpController {
                 return;
             }
 
-            console.log(`[Help Center] New request from ${username} (${email})`);
+            // Save Ticket to Database
+            const newTicket = new Ticket({
+                username,
+                fullName,
+                mobile,
+                email,
+                message
+            });
+            await newTicket.save();
+
+            console.log(`[Help Center] New ticket saved and request from ${username} (${email})`);
 
             // Check if SMTP is configured
             const isPlaceholder = !process.env.SMTP_USER || process.env.SMTP_USER.includes('your-email') || !process.env.SMTP_PASS;

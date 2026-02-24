@@ -141,6 +141,10 @@ async function start() {
     app.use("/api/help", helpRoutes);
     app.use("/api/signals", signalRoutes);
     app.use("/api/angelone/auth", angeloneAuthRoutes);
+    const messageRoutes = require("./routes/message.routes").default;
+    app.use("/api/messages", messageRoutes);
+    const ticketRoutes = require("./routes/ticket.routes").default;
+    app.use("/api/tickets", ticketRoutes);
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
 
