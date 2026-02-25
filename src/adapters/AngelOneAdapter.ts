@@ -214,6 +214,15 @@ export class AngelOneAdapter {
     return await this.authPost(jwtToken, path, body);
   }
 
+  async getMarketData(jwtToken: string, mode: "LTP" | "QUOTE" | "FULL", exchangeTokens: Record<string, string[]>) {
+    const path = "/rest/secure/angelbroking/market/v1/quote";
+    const body = {
+      mode,
+      exchangeTokens
+    };
+    return await this.authPost(jwtToken, path, body);
+  }
+
   // ------------ REFRESH TOKEN (OPTIONAL) ------------
 
   async generateTokensUsingRefresh(refreshToken: string) {

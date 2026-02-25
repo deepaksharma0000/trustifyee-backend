@@ -17,6 +17,11 @@ import AngelTokensModel from "../models/AngelTokens";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { placeAngelOrder } from "../services/angel.service";
 import { BrokerResponse } from "../models/BrokerResponse";
+import {
+  getGlobalTradeHistory,
+  getUniqueSymbols,
+  exportGlobalTradeHistory
+} from "../controllers/order.controller";
 
 const router = express.Router();
 
@@ -677,6 +682,10 @@ router.get("/broker-responses", auth, async (req: any, res) => {
     res.status(500).json({ ok: false, message: err.message || String(err) });
   }
 });
+
+router.get("/history-all", auth, adminOnly, getGlobalTradeHistory);
+router.get("/unique-symbols", auth, adminOnly, getUniqueSymbols);
+router.get("/export-all", auth, adminOnly, exportGlobalTradeHistory);
 
 export default router;
 

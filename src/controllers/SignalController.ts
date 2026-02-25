@@ -6,6 +6,9 @@ import { placeOrderForClient } from '../services/OrderService';
 import { log } from '../utils/logger';
 import { decrypt } from '../utils/encryption';
 import AngelTokensModel from '../models/AngelTokens';
+import { getInstrumentLtp } from '../services/MarketDataService';
+import InstrumentModel from '../models/Instrument';
+import UpstoxInstrumentModel from '../models/UpstoxInstrument';
 
 export const executeSignal = async (req: Request, res: Response) => {
     try {
@@ -32,12 +35,31 @@ export const executeSignal = async (req: Request, res: Response) => {
         if (!client_key) return res.status(400).json({ error: "Broker connection details missing", status: false });
 
         // Calculate quantity (assuming lot size = 1 if not provided, else multiply)
-        // Note: Real lot size should come from contract, but here user specifies lots
         const quantity = (lots || 1) * signal.quantity;
 
         log.info(`Executing signal ${signalId} for user ${user.user_name} with ${lots} lots`);
 
         try {
+            // Fetch live LTP if signal price is 0 or basic check
+            let entryPrice = signal.price;
+            try {
+                // Find symboltoken/instrument_key
+                let symboltoken = "";
+                const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
+                if (inst) symboltoken = inst.symboltoken;
+                else {
+                    const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean();
+                    if (upstoxInst) symboltoken = upstoxInst.instrument_key;
+                }
+
+                if (symboltoken) {
+                    const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
+                    if (ltp > 0) entryPrice = ltp;
+                }
+            } catch (ltpErr) {
+                log.warn("Could not fetch live LTP for signal execution, using signal price");
+            }
+
             const resp = await placeOrderForClient(userId, client_key, {
                 exchange: signal.exchange,
                 tradingsymbol: signal.tradingsymbol,
@@ -57,12 +79,13 @@ export const executeSignal = async (req: Request, res: Response) => {
                 exchange: signal.exchange,
                 side: signal.side,
                 quantity: quantity,
-                entryPrice: signal.price, // Or fetch live LTP
+                entryPrice: entryPrice,
                 status: "OPEN",
                 strategy: signal.strategy,
                 mode: "live",
                 signalId: signal._id,
-                signalType: signal.signalType
+                signalType: signal.signalType,
+                symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.instrument_key
             });
 
             res.status(200).json({
@@ -78,6 +101,122 @@ export const executeSignal = async (req: Request, res: Response) => {
 
     } catch (err: any) {
         log.error("Execution error:", err);
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+
+export const broadcastSignal = async (req: Request, res: Response) => {
+    try {
+        const { signalId } = req.body;
+        if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
+
+        const signal = await Signal.findById(signalId);
+        if (!signal || signal.status !== "ACTIVE") {
+            return res.status(404).json({ error: "Signal not found or already processed", status: false });
+        }
+
+        log.info(`📡 Broadcasting Signal ${signalId} (${signal.tradingsymbol}) to all active users...`);
+
+        // Find all users eligible for live/auto trading
+        const users = await User.find({
+            status: "active",
+            trading_status: "enabled",
+        }).lean();
+
+        if (users.length === 0) {
+            return res.status(200).json({ status: true, message: "No active users to broadcast to." });
+        }
+
+        const results = await Promise.all(users.map(async (user: any) => {
+            try {
+                let clientcode = user.client_key;
+                if (!clientcode) return { userId: user._id, status: "skipped", reason: "no client code" };
+
+                // Decrypt
+                try { clientcode = decrypt(clientcode); } catch (e) { }
+
+                if (user.licence === "Demo") {
+                    // Logic for Demo (Paper)
+                    const paperId = `SIG-PAPER-${Date.now()}-${Math.random()}`;
+                    await Position.create({
+                        userId: user._id,
+                        clientcode,
+                        orderid: paperId,
+                        tradingsymbol: signal.tradingsymbol,
+                        exchange: signal.exchange,
+                        side: signal.side,
+                        quantity: signal.quantity,
+                        entryPrice: signal.price,
+                        status: "OPEN",
+                        strategy: signal.strategy,
+                        mode: "paper",
+                        signalId: signal._id
+                    });
+                    return { userId: user._id, status: "paper_ok" };
+                }
+
+                // Live Execution
+                let entryPrice = signal.price;
+                try {
+                    let symboltoken = "";
+                    const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
+                    if (inst) symboltoken = inst.symboltoken;
+                    else {
+                        const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
+                        if (upstoxInst) symboltoken = upstoxInst.instrument_key;
+                    }
+
+                    if (symboltoken) {
+                        const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
+                        if (ltp > 0) entryPrice = ltp;
+                    }
+                } catch (e) { }
+
+                const resp = await placeOrderForClient(user._id, clientcode, {
+                    exchange: signal.exchange,
+                    tradingsymbol: signal.tradingsymbol,
+                    side: signal.side,
+                    transactiontype: signal.side,
+                    quantity: signal.quantity,
+                    ordertype: "MARKET",
+                });
+
+                const orderid = resp?.data?.orderid || `BROKER-${Date.now()}`;
+                await Position.create({
+                    userId: user._id,
+                    clientcode,
+                    orderid,
+                    tradingsymbol: signal.tradingsymbol,
+                    exchange: signal.exchange,
+                    side: signal.side,
+                    quantity: signal.quantity,
+                    entryPrice: entryPrice,
+                    status: "OPEN",
+                    strategy: signal.strategy,
+                    mode: "live",
+                    signalId: signal._id,
+                    symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.instrument_key
+                });
+
+                return { userId: user._id, status: "live_ok" };
+            } catch (err: any) {
+                return { userId: user._id, status: "error", error: err.message };
+            }
+        }));
+
+        // Mark signal as CLOSED so it cannot be broadcasted again
+        signal.status = "CLOSED";
+        await signal.save();
+
+        res.status(200).json({
+            status: true,
+            message: "Broadcast completed",
+            totalUsers: users.length,
+            results
+        });
+
+    } catch (err: any) {
+        log.error("Broadcast failed:", err);
         res.status(500).json({ error: err.message, status: false });
     }
 };

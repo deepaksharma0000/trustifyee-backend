@@ -6,8 +6,7 @@ import mongoose from "mongoose";
 import { config } from "./config";
 import InstrumentModel from "./models/Instrument";
 import authRoutes from "./routes/auth";
-import ordersRoutesPlural from "./routes/orders";
-import orderRoutesSingular from "./routes/order.routes";
+import orderRoutes from "./routes/orders";
 import positionRoutes from "./routes/position.routes";
 import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly } from "./services/InstrumentService";
 import instrumentRoutes from "./routes/instruments";
@@ -107,8 +106,8 @@ async function start() {
     app.use("/api", adminModuleRoutes);
 
     app.use("/api/auth", authRoutes);
-    app.use("/api/orders", ordersRoutesPlural);
-    app.use("/api/order", orderRoutesSingular);
+    app.use("/api/orders", orderRoutes);
+    app.use("/api/order", orderRoutes);
     app.use("/api/instruments", instrumentRoutes);
     app.use("/api/nifty", niftyRoutes);
     app.use("/api/positions", positionRoutes);
@@ -141,6 +140,7 @@ async function start() {
     app.use("/api/alice/ins", aliceInstrumentsRoutes);
     app.use("/api/help", helpRoutes);
     app.use("/api/signals", signalRoutes);
+    app.use("/api/signal", signalRoutes);
     app.use("/api/angelone/auth", angeloneAuthRoutes);
     const messageRoutes = require("./routes/message.routes").default;
     app.use("/api/messages", messageRoutes);
