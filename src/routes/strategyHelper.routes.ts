@@ -2,6 +2,8 @@
 import { Router } from "express";
 import { auth } from "../middleware/auth.middleware";
 import { resolveStrategyLegs, getAllStrategies } from "../services/StrategyEngine";
+import { addStrategy, getStrategies } from "../controllers/StrategyController";
+import Strategy from "../models/Strategy";
 import { log } from "../utils/logger";
 
 const router = Router();
@@ -11,13 +13,33 @@ const router = Router();
  */
 router.get("/list", auth, async (_req, res) => {
     try {
-        const strategies = getAllStrategies();
-        return res.json({ ok: true, strategies });
+        const staticStrategies = getAllStrategies();
+        const dbStrategies = await Strategy.find().sort({ created_at: -1 });
+
+        const combined = [
+            ...staticStrategies.map(s => ({ name: s.name, type: 'static' })),
+            ...dbStrategies.map(s => ({ name: s.strategy_name, type: 'db' }))
+        ];
+
+        // Remove duplicates by name
+        const unique = combined.filter((v, i, a) => a.findIndex(t => t.name === v.name) === i);
+
+        return res.json({ ok: true, strategies: unique });
     } catch (err: any) {
         log.error("Get strategies error:", err.message);
         return res.status(500).json({ ok: false, error: err.message });
     }
 });
+
+/**
+ * Add a new strategy (from DB controller)
+ */
+router.post("/add-strategies", auth, addStrategy);
+
+/**
+ * Get all strategies from DB
+ */
+router.get("/all", auth, getStrategies);
 
 /**
  * Auto-select strikes based on strategy

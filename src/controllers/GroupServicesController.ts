@@ -22,15 +22,20 @@ export const getSegments = async (req: Request, res: Response) => {
 
 export const addGroup = async (req: Request, res: Response) => {
     try {
-        const { name, segment_id } = req.body;
-        if (!name || !segment_id) return res.status(400).json({ message: "Name and segment_id are required", status: false });
+        const { groupdetails, services_id } = req.body;
+        const name = groupdetails?.name;
 
-        const newGroup = new Group({ name, segment_id });
+        if (!name) return res.status(400).json({ message: "Group Name is required", status: false });
+
+        const newGroup = new Group({
+            name,
+            services: services_id || []
+        });
         await newGroup.save();
 
         res.status(201).json({
-            message: "Group created successfully!",
-            group_id: newGroup._id,
+            message: "successfully Add!",
+            data: newGroup,
             status: true,
         });
     } catch (err: any) {
@@ -40,19 +45,20 @@ export const addGroup = async (req: Request, res: Response) => {
 
 export const getAllGroups = async (req: Request, res: Response) => {
     try {
-        const groups = await Group.find().populate('segment_id', 'name').sort({ _id: -1 });
+        const groups = await Group.find().sort({ _id: -1 });
 
         const formatted = groups.map((g: any) => ({
-            value: g._id,
-            label: g.name,
-            segment_name: g.segment_id?.name,
-            segment_id: g.segment_id?._id,
-            created_at: g.created_at,
-            updated_at: g.updated_at
+            _id: g._id,
+            name: g.name,
+            description: g.description,
+            result: g.services, // Mapping services to 'result' for backward compatibility with your example
+            resultCount: g.services.length,
+            createdAt: g.created_at,
+            updatedAt: g.updated_at
         }));
 
         res.status(200).json({
-            message: "Groups fetched successfully!",
+            message: "Get All successfully",
             count: formatted.length,
             data: formatted,
             status: true,
@@ -79,6 +85,21 @@ export const getGroupById = async (req: Request, res: Response) => {
             status: true,
         });
 
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+}
+
+export const deleteGroup = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const deleted = await Group.findByIdAndDelete(id);
+        if (!deleted) return res.status(404).json({ message: "Group not found", status: false });
+
+        res.status(200).json({
+            message: "successfully Deleted!",
+            status: true,
+        });
     } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });
     }

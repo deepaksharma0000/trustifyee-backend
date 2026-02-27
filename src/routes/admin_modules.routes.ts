@@ -2,7 +2,7 @@ import express from 'express';
 import { postInquiry, getInquiries } from '../controllers/InquiryController';
 import { addStrategy, getStrategies, getStrategyById } from '../controllers/StrategyController';
 import { postClientSave, getClientByUserId, getAllClients, deleteClient } from '../controllers/ClientSaveController';
-import { getSegments, addGroup, getAllGroups, getGroupById } from '../controllers/GroupServicesController';
+import { getSegments, addGroup, getAllGroups, getGroupById, deleteGroup } from '../controllers/GroupServicesController';
 import { auth } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -27,5 +27,6 @@ router.get('/group/segments', auth, getSegments);
 router.post('/group/add', auth, addGroup);
 router.get('/group/all', auth, getAllGroups);
 router.get('/group/:id', auth, getGroupById);
+router.delete('/group/:id', auth, deleteGroup);
 
 export default router;

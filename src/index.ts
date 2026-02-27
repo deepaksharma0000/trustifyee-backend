@@ -31,6 +31,7 @@ import strategyHelperRoutes from "./routes/strategyHelper.routes";
 import helpRoutes from "./routes/help";
 import signalRoutes from "./routes/signal.routes";
 import angeloneAuthRoutes from "./routes/angeloneAuth";
+import productRoutes from "./routes/product.routes";
 
 
 
@@ -141,6 +142,7 @@ async function start() {
     app.use("/api/help", helpRoutes);
     app.use("/api/signals", signalRoutes);
     app.use("/api/signal", signalRoutes);
+    app.use("/api/product", productRoutes);
     app.use("/api/angelone/auth", angeloneAuthRoutes);
     const messageRoutes = require("./routes/message.routes").default;
     app.use("/api/messages", messageRoutes);

@@ -37,6 +37,7 @@
     "mongoose": "^7.5.0",
     "multer": "^2.0.2",
     "nodemailer": "^8.0.1",
+    "p-limit": "^2.3.0",
     "qs": "^6.14.0",
     "speakeasy": "^2.0.0",
     "tough-cookie": "^6.0.0",

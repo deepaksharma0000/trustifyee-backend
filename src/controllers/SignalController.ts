@@ -9,6 +9,9 @@ import AngelTokensModel from '../models/AngelTokens';
 import { getInstrumentLtp } from '../services/MarketDataService';
 import InstrumentModel from '../models/Instrument';
 import UpstoxInstrumentModel from '../models/UpstoxInstrument';
+import { SignalExecutionResult } from '../models/SignalExecutionResult';
+import mongoose from 'mongoose';
+import pLimit from 'p-limit';
 
 export const executeSignal = async (req: Request, res: Response) => {
     try {
@@ -110,113 +113,189 @@ export const broadcastSignal = async (req: Request, res: Response) => {
         const { signalId } = req.body;
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
-        const signal = await Signal.findById(signalId);
-        if (!signal || signal.status !== "ACTIVE") {
-            return res.status(404).json({ error: "Signal not found or already processed", status: false });
+        // 1. Atomic Lock Protection
+        const signal = await Signal.findOneAndUpdate(
+            { _id: signalId, status: "ACTIVE" },
+            { $set: { status: "EXECUTION_IN_PROGRESS" } },
+            { new: true }
+        );
+
+        if (!signal) {
+            return res.status(400).json({
+                status: false,
+                error: "Signal not found or already being processed"
+            });
         }
 
-        log.info(`📡 Broadcasting Signal ${signalId} (${signal.tradingsymbol}) to all active users...`);
+        log.info(`[SIGNAL_EXECUTION] Broadcast started for Signal: ${signalId} (${signal.tradingsymbol})`);
 
-        // Find all users eligible for live/auto trading
+        // 2. Find all eligible users
         const users = await User.find({
             status: "active",
             trading_status: "enabled",
         }).lean();
 
         if (users.length === 0) {
-            return res.status(200).json({ status: true, message: "No active users to broadcast to." });
+            signal.status = "FAILED";
+            await signal.save();
+            log.warn(`[SIGNAL_EXECUTION] Broadcast aborted: No active users for Signal: ${signalId}`);
+            return res.status(200).json({ status: true, message: "No active users to broadcast to.", finalStatus: "FAILED" });
         }
 
-        const results = await Promise.all(users.map(async (user: any) => {
-            try {
-                let clientcode = user.client_key;
-                if (!clientcode) return { userId: user._id, status: "skipped", reason: "no client code" };
+        const totalUsers = users.length;
+        const concurrency = Number(process.env.BROADCAST_CONCURRENCY) || 10;
+        const limit = pLimit(concurrency);
 
-                // Decrypt
-                try { clientcode = decrypt(clientcode); } catch (e) { }
-
-                if (user.licence === "Demo") {
-                    // Logic for Demo (Paper)
-                    const paperId = `SIG-PAPER-${Date.now()}-${Math.random()}`;
-                    await Position.create({
-                        userId: user._id,
-                        clientcode,
-                        orderid: paperId,
-                        tradingsymbol: signal.tradingsymbol,
-                        exchange: signal.exchange,
-                        side: signal.side,
-                        quantity: signal.quantity,
-                        entryPrice: signal.price,
-                        status: "OPEN",
-                        strategy: signal.strategy,
-                        mode: "paper",
-                        signalId: signal._id
-                    });
-                    return { userId: user._id, status: "paper_ok" };
-                }
-
-                // Live Execution
-                let entryPrice = signal.price;
+        // 3. Controlled Parallel Execution
+        const results = await Promise.all(users.map(user =>
+            limit(async () => {
+                const userId = user._id;
                 try {
-                    let symboltoken = "";
-                    const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
-                    if (inst) symboltoken = inst.symboltoken;
-                    else {
-                        const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
-                        if (upstoxInst) symboltoken = upstoxInst.instrument_key;
+                    // 4. Duplicate Check
+                    const existingResult = await SignalExecutionResult.findOne({ signalId, userId });
+                    if (existingResult) {
+                        return { userId, status: "skipped", reason: "already_executed" };
                     }
 
-                    if (symboltoken) {
-                        const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
-                        if (ltp > 0) entryPrice = ltp;
+                    let clientcode = user.client_key;
+                    if (!clientcode) {
+                        await SignalExecutionResult.create({
+                            signalId,
+                            userId,
+                            broker: user.broker || "UNKNOWN",
+                            status: "FAILED",
+                            errorMessage: "No client code configured",
+                            executedAt: new Date()
+                        });
+                        return { userId, status: "FAILED", error: "No client code" };
                     }
-                } catch (e) { }
 
-                const resp = await placeOrderForClient(user._id, clientcode, {
-                    exchange: signal.exchange,
-                    tradingsymbol: signal.tradingsymbol,
-                    side: signal.side,
-                    transactiontype: signal.side,
-                    quantity: signal.quantity,
-                    ordertype: "MARKET",
-                });
+                    // Decrypt
+                    try { clientcode = decrypt(clientcode); } catch (e) { }
 
-                const orderid = resp?.data?.orderid || `BROKER-${Date.now()}`;
-                await Position.create({
-                    userId: user._id,
-                    clientcode,
-                    orderid,
-                    tradingsymbol: signal.tradingsymbol,
-                    exchange: signal.exchange,
-                    side: signal.side,
-                    quantity: signal.quantity,
-                    entryPrice: entryPrice,
-                    status: "OPEN",
-                    strategy: signal.strategy,
-                    mode: "live",
-                    signalId: signal._id,
-                    symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.instrument_key
-                });
+                    let orderid = "";
+                    let sideRes = signal.side;
 
-                return { userId: user._id, status: "live_ok" };
-            } catch (err: any) {
-                return { userId: user._id, status: "error", error: err.message };
-            }
-        }));
+                    if (user.licence === "Demo") {
+                        // Logic for Demo (Paper)
+                        orderid = `SIG-PAPER-${Date.now()}-${Math.random()}`;
+                        await Position.create({
+                            userId: user._id,
+                            clientcode,
+                            orderid: orderid,
+                            tradingsymbol: signal.tradingsymbol,
+                            exchange: signal.exchange,
+                            side: signal.side,
+                            quantity: signal.quantity,
+                            entryPrice: signal.price,
+                            status: "OPEN",
+                            strategy: signal.strategy,
+                            mode: "paper",
+                            signalId: signal._id
+                        });
+                    } else {
+                        // Live Execution
+                        let entryPrice = signal.price;
+                        try {
+                            let symboltoken = "";
+                            const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
+                            if (inst) symboltoken = inst.symboltoken;
+                            else {
+                                const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
+                                if (upstoxInst) symboltoken = upstoxInst.instrument_key;
+                            }
 
-        // Mark signal as CLOSED so it cannot be broadcasted again
-        signal.status = "CLOSED";
+                            if (symboltoken) {
+                                const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
+                                if (ltp > 0) entryPrice = ltp;
+                            }
+                        } catch (e) { }
+
+                        const resp = await placeOrderForClient(user._id, clientcode, {
+                            exchange: signal.exchange,
+                            tradingsymbol: signal.tradingsymbol,
+                            side: signal.side,
+                            transactiontype: signal.side,
+                            quantity: signal.quantity,
+                            ordertype: "MARKET",
+                        });
+
+                        orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `BROKER-${Date.now()}`;
+
+                        await Position.create({
+                            userId: user._id,
+                            clientcode,
+                            orderid,
+                            tradingsymbol: signal.tradingsymbol,
+                            exchange: signal.exchange,
+                            side: signal.side,
+                            quantity: signal.quantity,
+                            entryPrice: entryPrice,
+                            status: "OPEN",
+                            strategy: signal.strategy,
+                            mode: "live",
+                            signalId: signal._id,
+                            symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.instrument_key
+                        });
+                    }
+
+                    // 5. Track Success
+                    await SignalExecutionResult.create({
+                        signalId,
+                        userId,
+                        broker: user.broker || "ANGELONE",
+                        orderId: orderid,
+                        status: "SUCCESS",
+                        executedAt: new Date()
+                    });
+                    return { userId, status: "SUCCESS", orderid };
+
+                } catch (err: any) {
+                    // 6. Track Failure
+                    await SignalExecutionResult.create({
+                        signalId,
+                        userId,
+                        broker: user.broker || "ANGELONE",
+                        status: "FAILED",
+                        errorMessage: err.message || "Unknown execution error",
+                        executedAt: new Date()
+                    });
+                    return { userId, status: "FAILED", error: err.message };
+                }
+            })
+        ));
+
+        // 7. Success/Fail Counts Derived Safe from Results
+        const successCount = results.filter((r: any) => r.status === "SUCCESS").length;
+        const failCount = results.filter((r: any) => r.status === "FAILED").length;
+
+        // 7. Final Status Resolution
+        let finalStatus: any = "FAILED";
+        if (successCount === totalUsers) {
+            finalStatus = "CLOSED";
+        } else if (successCount > 0) {
+            finalStatus = "PARTIAL";
+        } else {
+            finalStatus = "FAILED";
+        }
+
+        signal.status = finalStatus;
         await signal.save();
+
+        log.info(`[SIGNAL_EXECUTION] Completed. Signal: ${signalId}, Success: ${successCount}, Failed: ${failCount}, Final Status: ${finalStatus}`);
 
         res.status(200).json({
             status: true,
             message: "Broadcast completed",
-            totalUsers: users.length,
+            totalUsers,
+            successCount,
+            failCount,
+            finalStatus,
             results
         });
 
     } catch (err: any) {
-        log.error("Broadcast failed:", err);
+        log.error("[SIGNAL_EXECUTION] Fatal error during broadcast:", err);
         res.status(500).json({ error: err.message, status: false });
     }
 };
@@ -238,8 +317,24 @@ export const getAllSignals = async (req: Request, res: Response) => {
             ];
         }
 
-        const signals = await Signal.find(query).sort({ createdAt: -1 });
-        res.status(200).json({ status: true, data: signals });
+        const signals = await Signal.find(query).sort({ createdAt: -1 }).lean();
+
+        // Enhance with execution stats
+        const enhancedSignals = await Promise.all(signals.map(async (sig: any) => {
+            const results = await SignalExecutionResult.find({ signalId: sig._id }).select('status');
+            const successCount = results.filter(r => r.status === 'SUCCESS').length;
+            const failCount = results.filter(r => r.status === 'FAILED').length;
+
+            return {
+                ...sig,
+                totalExecutions: results.length,
+                successCount,
+                failCount,
+                currentStatus: sig.status
+            };
+        }));
+
+        res.status(200).json({ status: true, data: enhancedSignals });
     } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });
     }
