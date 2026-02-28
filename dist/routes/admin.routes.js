@@ -9,6 +9,8 @@ const auth_middleware_1 = require("../middleware/auth.middleware");
 const upload_middleware_1 = require("../middleware/upload.middleware");
 const router = express_1.default.Router();
 router.get('/admin/get-admin/:id', auth_middleware_1.adminAuth, AdminController_1.getAdminById);
+router.get('/admin/get-admin', auth_middleware_1.adminAuth, AdminController_1.getAllAdmins); // Normal list view
+router.get('/admin/get-admin/', auth_middleware_1.adminAuth, AdminController_1.getAllAdmins); // Fallback for trailing slash
 router.get('/admin/all', auth_middleware_1.adminAuth, AdminController_1.getAllAdmins);
 router.put('/admin/update-register/:id', auth_middleware_1.adminAuth, upload_middleware_1.upload.single('profile_img'), AdminController_1.updateAdmin);
 router.put('/admin/update-admin/:id', auth_middleware_1.adminAuth, upload_middleware_1.upload.single('profile_img'), AdminController_1.updateAdmin);

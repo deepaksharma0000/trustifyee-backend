@@ -158,6 +158,14 @@ class AngelOneAdapter {
         };
         return await this.authPost(jwtToken, path, body);
     }
+    async getMarketData(jwtToken, mode, exchangeTokens) {
+        const path = "/rest/secure/angelbroking/market/v1/quote";
+        const body = {
+            mode,
+            exchangeTokens
+        };
+        return await this.authPost(jwtToken, path, body);
+    }
     // ------------ REFRESH TOKEN (OPTIONAL) ------------
     async generateTokensUsingRefresh(refreshToken) {
         const body = { refreshToken: (0, encryption_1.decrypt)(refreshToken) };

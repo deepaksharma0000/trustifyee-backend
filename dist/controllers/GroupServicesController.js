@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getGroupById = exports.getAllGroups = exports.addGroup = exports.getSegments = void 0;
+exports.deleteGroup = exports.getGroupById = exports.getAllGroups = exports.addGroup = exports.getSegments = void 0;
 const GroupServices_1 = require("../models/GroupServices");
 const getSegments = async (req, res) => {
     try {
@@ -24,14 +24,18 @@ const getSegments = async (req, res) => {
 exports.getSegments = getSegments;
 const addGroup = async (req, res) => {
     try {
-        const { name, segment_id } = req.body;
-        if (!name || !segment_id)
-            return res.status(400).json({ message: "Name and segment_id are required", status: false });
-        const newGroup = new GroupServices_1.Group({ name, segment_id });
+        const { groupdetails, services_id } = req.body;
+        const name = groupdetails?.name;
+        if (!name)
+            return res.status(400).json({ message: "Group Name is required", status: false });
+        const newGroup = new GroupServices_1.Group({
+            name,
+            services: services_id || []
+        });
         await newGroup.save();
         res.status(201).json({
-            message: "Group created successfully!",
-            group_id: newGroup._id,
+            message: "successfully Add!",
+            data: newGroup,
             status: true,
         });
     }
@@ -42,17 +46,18 @@ const addGroup = async (req, res) => {
 exports.addGroup = addGroup;
 const getAllGroups = async (req, res) => {
     try {
-        const groups = await GroupServices_1.Group.find().populate('segment_id', 'name').sort({ _id: -1 });
+        const groups = await GroupServices_1.Group.find().sort({ _id: -1 });
         const formatted = groups.map((g) => ({
-            value: g._id,
-            label: g.name,
-            segment_name: g.segment_id?.name,
-            segment_id: g.segment_id?._id,
-            created_at: g.created_at,
-            updated_at: g.updated_at
+            _id: g._id,
+            name: g.name,
+            description: g.description,
+            result: g.services, // Mapping services to 'result' for backward compatibility with your example
+            resultCount: g.services.length,
+            createdAt: g.created_at,
+            updatedAt: g.updated_at
         }));
         res.status(200).json({
-            message: "Groups fetched successfully!",
+            message: "Get All successfully",
             count: formatted.length,
             data: formatted,
             status: true,
@@ -83,3 +88,19 @@ const getGroupById = async (req, res) => {
     }
 };
 exports.getGroupById = getGroupById;
+const deleteGroup = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const deleted = await GroupServices_1.Group.findByIdAndDelete(id);
+        if (!deleted)
+            return res.status(404).json({ message: "Group not found", status: false });
+        res.status(200).json({
+            message: "successfully Deleted!",
+            status: true,
+        });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+exports.deleteGroup = deleteGroup;

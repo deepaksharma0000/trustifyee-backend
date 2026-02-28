@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MarketStatusService = exports.NSE_HOLIDAYS_2025 = exports.NSE_HOLIDAYS_2024 = void 0;
+exports.MarketStatusService = exports.NSE_HOLIDAYS_2026 = exports.NSE_HOLIDAYS_2025 = exports.NSE_HOLIDAYS_2024 = void 0;
 const moment_timezone_1 = __importDefault(require("moment-timezone"));
 // List of holidays (YYYY-MM-DD)
 // This can be fetched from DB or external API in future
@@ -25,10 +25,20 @@ exports.NSE_HOLIDAYS_2024 = [
 ];
 exports.NSE_HOLIDAYS_2025 = [
     "2025-01-26",
-    // Add more as needed
     "2025-12-25"
 ];
-const HOLIDAYS = [...exports.NSE_HOLIDAYS_2024, ...exports.NSE_HOLIDAYS_2025];
+exports.NSE_HOLIDAYS_2026 = [
+    "2026-01-26", // Republic Day
+    "2026-02-18", // Mahashivratri (Expected)
+    "2026-03-24", // Holi
+    "2026-04-03", // Good Friday
+    "2026-04-14", // Ambedkar Jayanti
+    "2026-05-01", // Maharashtra Day
+    "2026-08-15", // Independence Day
+    "2026-10-02", // Gandhi Jayanti
+    "2026-12-25", // Christmas
+];
+const HOLIDAYS = [...exports.NSE_HOLIDAYS_2024, ...exports.NSE_HOLIDAYS_2025, ...exports.NSE_HOLIDAYS_2026];
 class MarketStatusService {
     /**
      * Check if the market is currently open.

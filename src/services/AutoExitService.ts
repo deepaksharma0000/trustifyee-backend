@@ -32,8 +32,8 @@ try {
 }
 
 export class AutoExitService {
-    static async scheduleExit(orderId: string, exitTime: Date | string) {
-        if (!autoExitQueue) return null;
+    static async scheduleExit(orderId: string, exitTime: Date | string): Promise<string | undefined> {
+        if (!autoExitQueue) return undefined;
 
         const istTime = moment.tz(exitTime, "Asia/Kolkata");
         const now = moment.tz("Asia/Kolkata");
@@ -60,7 +60,7 @@ export class AutoExitService {
             return job.id;
         } catch (err: any) {
             log.warn(`[AutoExit] Redis push failed (${err.message}). Defaulting to MongoDB Polling fallback.`);
-            return null; // Silent fallback
+            return undefined; // Silent fallback
         }
     }
 

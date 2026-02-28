@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.HelpController = void 0;
 const nodemailer_1 = __importDefault(require("nodemailer"));
+const Ticket_1 = __importDefault(require("../models/Ticket"));
 class HelpController {
     static async submitRequest(req, res) {
         try {
@@ -13,7 +14,16 @@ class HelpController {
                 res.status(400).json({ ok: false, message: 'All fields are required' });
                 return;
             }
-            console.log(`[Help Center] New request from ${username} (${email})`);
+            // Save Ticket to Database
+            const newTicket = new Ticket_1.default({
+                username,
+                fullName,
+                mobile,
+                email,
+                message
+            });
+            await newTicket.save();
+            console.log(`[Help Center] New ticket saved and request from ${username} (${email})`);
             // Check if SMTP is configured
             const isPlaceholder = !process.env.SMTP_USER || process.env.SMTP_USER.includes('your-email') || !process.env.SMTP_PASS;
             if (isPlaceholder) {

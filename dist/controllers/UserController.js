@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.verifyUserBroker = exports.getUserSearch = exports.getUsersByEndDate = exports.getUserTotalCount = exports.getLoggedInUsers = exports.deleteUser = exports.updateUserBroker = exports.updateUser = void 0;
+exports.toggleStarClient = exports.verifyUserBroker = exports.getUserSearch = exports.getUsersByEndDate = exports.getUserTotalCount = exports.getStarUsers = exports.getLoggedInUsers = exports.deleteUser = exports.updateUserBroker = exports.updateUser = void 0;
 const User_1 = __importDefault(require("../models/User"));
 const joi_1 = __importDefault(require("joi"));
 const encryption_1 = require("../utils/encryption");
@@ -25,6 +25,7 @@ const updateUserSchema = joi_1.default.object({
     strategies: joi_1.default.array().items(joi_1.default.string()).optional(),
     is_online: joi_1.default.boolean().optional(),
     is_login: joi_1.default.boolean().optional(),
+    is_star: joi_1.default.boolean().optional(),
 }).unknown(true);
 const updateUser = async (req, res) => {
     try {
@@ -102,7 +103,12 @@ const deleteUser = async (req, res) => {
 exports.deleteUser = deleteUser;
 const getLoggedInUsers = async (req, res) => {
     try {
-        const users = await User_1.default.find({ is_login: true }).select('-password');
+        const { filter } = req.query;
+        let query = { is_login: true };
+        if (filter === 'offline') {
+            query = { is_login: { $ne: true } };
+        }
+        const users = await User_1.default.find(query).select('-password');
         const maskedUsers = users.map(u => ({
             ...u.toObject(),
             client_key: (0, encryption_1.maskKey)(u.client_key || ""),
@@ -120,6 +126,26 @@ const getLoggedInUsers = async (req, res) => {
     }
 };
 exports.getLoggedInUsers = getLoggedInUsers;
+const getStarUsers = async (req, res) => {
+    try {
+        const users = await User_1.default.find({ is_star: true }).select('-password');
+        const maskedUsers = users.map(u => ({
+            ...u.toObject(),
+            client_key: (0, encryption_1.maskKey)(u.client_key || ""),
+            api_key: (0, encryption_1.maskKey)(u.api_key || "")
+        }));
+        res.status(200).json({
+            message: "Star clients fetched successfully!",
+            count: users.length,
+            data: maskedUsers,
+            status: true
+        });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+exports.getStarUsers = getStarUsers;
 const getUserTotalCount = async (req, res) => {
     try {
         const count = await User_1.default.countDocuments();
@@ -142,9 +168,14 @@ const getUsersByEndDate = async (req, res) => {
             query.end_date = { $gte: today };
         }
         else if (filter === "custom" && date) {
-            query.end_date = { $lte: new Date(date) };
+            // Include up to the end of the specified date
+            const customDate = new Date(date);
+            customDate.setHours(23, 59, 59, 999);
+            query.end_date = { $lte: customDate };
         }
+        console.log(`[getUsersByEndDate] Final Query:`, JSON.stringify(query));
         const users = await User_1.default.find(query).select("-password");
+        console.log(`[getUsersByEndDate] Found ${users.length} users`);
         const maskedUsers = users.map((u) => ({
             ...u.toObject(),
             client_key: (0, encryption_1.maskKey)(u.client_key || ""),
@@ -158,6 +189,7 @@ const getUsersByEndDate = async (req, res) => {
         });
     }
     catch (err) {
+        console.error(`[getUsersByEndDate] Error:`, err);
         res.status(500).json({ error: err.message, status: false });
     }
 };
@@ -246,3 +278,22 @@ const verifyUserBroker = async (req, res) => {
     }
 };
 exports.verifyUserBroker = verifyUserBroker;
+const toggleStarClient = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = await User_1.default.findById(id);
+        if (!user)
+            return res.status(404).json({ error: "User not found", status: false });
+        user.is_star = !user.is_star;
+        await user.save();
+        res.status(200).json({
+            message: `Client ${user.is_star ? 'added to' : 'removed from'} favorites`,
+            is_star: user.is_star,
+            status: true
+        });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+exports.toggleStarClient = toggleStarClient;

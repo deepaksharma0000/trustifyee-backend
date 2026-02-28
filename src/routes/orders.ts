@@ -17,6 +17,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { placeAngelOrder } from "../services/angel.service";
 import { AutoExitService } from "../services/AutoExitService";
+import { MarketStatusService } from "../services/MarketStatusService";
 import { BrokerResponse } from "../models/BrokerResponse";
 import {
   getGlobalTradeHistory,
@@ -530,7 +531,6 @@ router.post("/save", auth, adminOnly, async (req, res) => {
       autoSquareOffTime
     } = req.body;
 
-    const MarketStatusService = require("../services/MarketStatusService").MarketStatusService;
     try {
       MarketStatusService.validateOrderRequest();
     } catch (err: any) {
@@ -563,7 +563,6 @@ router.post("/save", auth, adminOnly, async (req, res) => {
     });
 
     if (autoSquareOffEnabled && autoSquareOffTime) {
-      const AutoExitService = require("../services/AutoExitService").AutoExitService;
       const jobId = await AutoExitService.scheduleExit(orderid, new Date(autoSquareOffTime));
       newPosition.autoSquareOffJobId = jobId;
       await newPosition.save();
@@ -587,7 +586,6 @@ router.post("/close", async (req, res, next) => {
   try {
     const { clientcode, orderid } = req.body;
 
-    const MarketStatusService = require("../services/MarketStatusService").MarketStatusService;
     try {
       if (req.headers['x-system-secret'] !== 'INTERNAL_JOB_SECRET') {
         MarketStatusService.validateOrderRequest();
@@ -634,7 +632,6 @@ router.post("/close", async (req, res, next) => {
     await position.save();
 
     if (position.autoSquareOffEnabled && position.autoSquareOffJobId) {
-      const AutoExitService = require("../services/AutoExitService").AutoExitService;
       await AutoExitService.cancelExit(position.orderid);
       position.autoSquareOffStatus = "CANCELLED";
       await position.save();
@@ -751,7 +748,7 @@ router.post("/update-auto-exit", auth, adminOnly, async (req, res) => {
     }
 
     // 2. Schedule new job if enabled
-    let jobId: string | undefined | null = undefined;
+    let jobId: string | undefined = undefined;
     let finalExitDate: Date | undefined = undefined;
 
     if (autoSquareOffEnabled && autoSquareOffTime) {

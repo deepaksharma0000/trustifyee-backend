@@ -8,5 +8,8 @@ router.post("/save", auth_middleware_1.auth, auth_middleware_1.adminOnly, order_
 router.post("/close", auth_middleware_1.auth, auth_middleware_1.adminOnly, order_controller_1.closeOrder);
 router.get("/active-positions/:clientcode", auth_middleware_1.auth, order_controller_1.getActivePositions);
 router.get("/trade-history/:clientcode", auth_middleware_1.auth, order_controller_1.getTradeHistory);
+router.get("/history-all", auth_middleware_1.auth, auth_middleware_1.adminOnly, order_controller_1.getGlobalTradeHistory);
+router.get("/export-all", auth_middleware_1.auth, auth_middleware_1.adminOnly, order_controller_1.exportGlobalTradeHistory);
+router.get("/unique-symbols", auth_middleware_1.auth, auth_middleware_1.adminOnly, order_controller_1.getUniqueSymbols);
 router.get("/status/:clientcode/:orderid", auth_middleware_1.auth, order_controller_1.getOrderStatus);
 exports.default = router;

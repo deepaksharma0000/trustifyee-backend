@@ -34,29 +34,12 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const mongoose_1 = __importStar(require("mongoose"));
-const UserSchema = new mongoose_1.Schema({
-    user_name: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    full_name: { type: String },
-    client_key: { type: String, unique: true, sparse: true },
-    phone_number: { type: String },
-    licence: { type: String, enum: ['Live', 'Demo'], default: 'Live' },
-    to_month: { type: String },
-    sub_admin: { type: String },
-    service_to_month: { type: String },
-    group_service: { type: String },
-    broker: { type: String },
-    status: { type: String, enum: ['active', 'inactive'], default: 'active' },
-    trading_status: { type: String, enum: ['enabled', 'disabled'], default: 'enabled' },
-    start_date: { type: Date },
-    end_date: { type: Date },
-    password: { type: String, select: false },
-    is_login: { type: Boolean, default: false },
-    strategies: { type: [String], default: [] },
-    api_key: { type: String },
-    broker_verified: { type: Boolean, default: false },
-    broker_connected: { type: Boolean, default: false },
-    is_online: { type: Boolean, default: false },
-    is_star: { type: Boolean, default: false },
+const TicketSchema = new mongoose_1.Schema({
+    username: { type: String, required: true },
+    fullName: { type: String, required: true },
+    mobile: { type: String, required: true },
+    email: { type: String, required: true },
+    message: { type: String, required: true },
+    status: { type: String, enum: ['Open', 'Closed', 'Pending'], default: 'Open' },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
-exports.default = mongoose_1.default.model('User', UserSchema);
+exports.default = mongoose_1.default.model('Ticket', TicketSchema);

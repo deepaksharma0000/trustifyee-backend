@@ -6,7 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.startMarketStream = startMarketStream;
 const ws_1 = require("ws");
 const AngelOneAdapter_1 = require("../adapters/AngelOneAdapter");
+const UpstoxAdapter_1 = require("../adapters/UpstoxAdapter");
 const AngelTokens_1 = __importDefault(require("../models/AngelTokens"));
+const UpstoxTokens_1 = __importDefault(require("../models/UpstoxTokens"));
 const config_1 = require("../config");
 const logger_1 = require("../utils/logger");
 const MIN_FETCH_MS = 1500;
@@ -39,7 +41,6 @@ async function refreshAngelSession(session, adapter) {
 }
 function startMarketStream(server) {
     const wss = new ws_1.Server({ server, path: "/ws/market" });
-    const adapter = new AngelOneAdapter_1.AngelOneAdapter();
     wss.on("connection", (ws) => {
         const state = { intervalMs: DEFAULT_INTERVAL_MS, items: [] };
         const stopTimer = () => {
@@ -58,50 +59,103 @@ function startMarketStream(server) {
             }
             state.timer = setInterval(async () => {
                 try {
-                    const session = await AngelTokens_1.default.findOne({}).sort({ updatedAt: -1 }).lean();
-                    if (!session?.jwtToken) {
-                        ws.send(JSON.stringify({ type: "error", message: "AngelOne session missing" }));
+                    // Fetch both sessions
+                    const [angelSession, upstoxSession] = await Promise.all([
+                        AngelTokens_1.default.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean(),
+                        UpstoxTokens_1.default.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean()
+                    ]);
+                    if (!angelSession?.jwtToken && !upstoxSession?.accessToken) {
+                        // log.warn("No active broker session found for WS stream");
                         return;
                     }
-                    let jwtToken = session.jwtToken;
+                    let jwtToken = angelSession?.jwtToken;
+                    let upstoxToken = upstoxSession?.accessToken;
                     const results = [];
                     const now = Date.now();
                     const limitedItems = state.items.slice(0, MAX_ITEMS);
-                    for (const item of limitedItems) {
-                        const cached = quoteCache.get(item.symboltoken);
-                        if (cached && now - cached.ts < MIN_FETCH_MS) {
-                            results.push({
-                                symboltoken: item.symboltoken,
-                                tradingsymbol: item.tradingsymbol,
-                                ltp: cached.ltp,
-                                oi: cached.oi,
-                                ts: cached.ts,
-                                cached: true,
+                    // Batching for AngelOne
+                    const angelItems = limitedItems.filter(item => !item.symboltoken.includes("|") && item.symboltoken.length <= 20);
+                    const upstoxItems = limitedItems.filter(item => item.symboltoken.includes("|") || item.symboltoken.length > 20);
+                    // Handle AngelOne Batched
+                    if (angelItems.length > 0 && jwtToken) {
+                        const angelAdapter = new AngelOneAdapter_1.AngelOneAdapter();
+                        try {
+                            const exchangeTokens = {};
+                            angelItems.forEach(item => {
+                                if (!exchangeTokens[item.exchange])
+                                    exchangeTokens[item.exchange] = [];
+                                exchangeTokens[item.exchange].push(item.symboltoken);
                             });
-                            continue;
+                            let resp = await angelAdapter.getMarketData(jwtToken, "FULL", exchangeTokens);
+                            if (isInvalidTokenResponse(resp)) {
+                                const refreshed = await refreshAngelSession(angelSession, angelAdapter);
+                                jwtToken = refreshed.jwtToken;
+                                resp = await angelAdapter.getMarketData(jwtToken, "FULL", exchangeTokens);
+                            }
+                            if (resp && resp.status === true && resp.data && resp.data.fetched) {
+                                resp.data.fetched.forEach((data) => {
+                                    const token = data.symbolToken;
+                                    const ltp = Number(data.ltp || 0);
+                                    const close = Number(data.close || ltp);
+                                    const oi = Number(data.oi || data.openInterest || 0);
+                                    const volume = Number(data.volume || data.tradeVolume || 0);
+                                    let percentChange = Number(data.percentChange || 0);
+                                    // Fallback: Calculate percentChange if it's 0 but there's a difference between ltp and close
+                                    if (percentChange === 0 && ltp !== 0 && close !== 0 && ltp !== close) {
+                                        percentChange = Number((((ltp - close) / close) * 100).toFixed(2));
+                                    }
+                                    quoteCache.set(token, { ltp, oi, ts: Date.now(), volume, percentChange });
+                                    results.push({
+                                        symboltoken: token,
+                                        ltp,
+                                        oi,
+                                        volume,
+                                        percentChange,
+                                        ts: Date.now()
+                                    });
+                                });
+                            }
                         }
-                        let resp = await adapter.getLtp(jwtToken, item.exchange, item.tradingsymbol, item.symboltoken);
-                        if (isInvalidTokenResponse(resp)) {
-                            const refreshed = await refreshAngelSession(session, adapter);
-                            jwtToken = refreshed.jwtToken;
-                            resp = await adapter.getLtp(jwtToken, item.exchange, item.tradingsymbol, item.symboltoken);
+                        catch (err) {
+                            logger_1.log.error("Angel Market Data Batch failed:", err);
                         }
-                        const data = resp?.data || {};
-                        const ltp = Number(data.ltp || data.last_traded_price || 0);
-                        const oi = data.openInterest ?? data.oi ?? data.open_interest ?? null;
-                        quoteCache.set(item.symboltoken, { ltp, oi, ts: Date.now() });
-                        results.push({
-                            symboltoken: item.symboltoken,
-                            tradingsymbol: item.tradingsymbol,
-                            ltp,
-                            oi,
-                            ts: Date.now(),
-                        });
                     }
-                    ws.send(JSON.stringify({ type: "tick", items: results }));
+                    // Handle Upstox (keeping it simple for now as it's secondary)
+                    if (upstoxItems.length > 0 && upstoxToken) {
+                        const upstoxAdapter = new UpstoxAdapter_1.UpstoxAdapter();
+                        for (const item of upstoxItems) {
+                            try {
+                                const resp = await upstoxAdapter.getLtp(upstoxToken, item.symboltoken);
+                                const data = resp?.data || {};
+                                let entry = data[item.symboltoken];
+                                if (!entry) {
+                                    const altKey = item.symboltoken.replace("|", ":");
+                                    entry = data[altKey];
+                                }
+                                const ltp = Number(entry?.last_price || 0);
+                                const oi = Number(entry?.oi || 0);
+                                const volume = Number(entry?.volume || 0);
+                                const percentChange = Number(entry?.cp || 0); // Upstox often uses cp for change percent
+                                quoteCache.set(item.symboltoken, { ltp, oi, ts: Date.now(), volume, percentChange });
+                                results.push({
+                                    symboltoken: item.symboltoken,
+                                    tradingsymbol: item.tradingsymbol,
+                                    ltp,
+                                    oi,
+                                    volume,
+                                    percentChange,
+                                    ts: Date.now()
+                                });
+                            }
+                            catch (err) { }
+                        }
+                    }
+                    if (results.length > 0) {
+                        ws.send(JSON.stringify({ type: "tick", items: results }));
+                    }
                 }
                 catch (err) {
-                    ws.send(JSON.stringify({ type: "error", message: err.message || String(err) }));
+                    // ws.send(JSON.stringify({ type: "error", message: err.message || String(err) }));
                 }
             }, Math.max(state.intervalMs, DEFAULT_INTERVAL_MS));
         };

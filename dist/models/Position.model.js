@@ -27,5 +27,9 @@ const PositionSchema = new mongoose_1.Schema({
     autoSquareOffJobId: { type: String },
     signalId: { type: String, index: true },
     signalType: { type: String, enum: ["ENTRY", "EXIT"] },
+    signalTime: { type: Date },
+    tradeType: { type: String },
+    productType: { type: String },
+    exitQty: { type: Number },
 }, { timestamps: true });
 exports.Position = (0, mongoose_1.model)("Position", PositionSchema);

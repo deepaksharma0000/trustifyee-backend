@@ -34,6 +34,7 @@ const strategyHelper_routes_1 = __importDefault(require("./routes/strategyHelper
 const help_1 = __importDefault(require("./routes/help"));
 const signal_routes_1 = __importDefault(require("./routes/signal.routes"));
 const angeloneAuth_1 = __importDefault(require("./routes/angeloneAuth"));
+const product_routes_1 = __importDefault(require("./routes/product.routes"));
 const aliceAuth_1 = __importDefault(require("./routes/aliceAuth"));
 const aliceOrders_1 = __importDefault(require("./routes/aliceOrders"));
 const aliceInstruments_1 = __importDefault(require("./routes/aliceInstruments"));
@@ -80,8 +81,7 @@ async function start() {
         const allowedOrigins = config_1.config.corsOrigins.length > 0
             ? config_1.config.corsOrigins
             : ["http://localhost:8080", "http://localhost:3000", "https://6920-2405-201-300b-721e-a4ea-b208-cd7d-2464.ngrok-free.app"];
-        // app.use(cors({ origin: allowedOrigins, credentials: true }));
-        app.use((0, cors_1.default)({ origin: true }));
+        app.use((0, cors_1.default)({ origin: true, credentials: true }));
         app.use(body_parser_1.default.json());
         // Angel One - Old syncs removed to favor the optimized one above
         // Static
@@ -93,6 +93,7 @@ async function start() {
         app.use("/api", admin_modules_routes_1.default);
         app.use("/api/auth", auth_1.default);
         app.use("/api/orders", orders_1.default);
+        app.use("/api/order", orders_1.default);
         app.use("/api/instruments", instruments_1.default);
         app.use("/api/nifty", nifty_1.default);
         app.use("/api/positions", position_routes_1.default);
@@ -121,7 +122,13 @@ async function start() {
         app.use("/api/alice/ins", aliceInstruments_1.default);
         app.use("/api/help", help_1.default);
         app.use("/api/signals", signal_routes_1.default);
+        app.use("/api/signal", signal_routes_1.default);
+        app.use("/api/product", product_routes_1.default);
         app.use("/api/angelone/auth", angeloneAuth_1.default);
+        const messageRoutes = require("./routes/message.routes").default;
+        app.use("/api/messages", messageRoutes);
+        const ticketRoutes = require("./routes/ticket.routes").default;
+        app.use("/api/tickets", ticketRoutes);
         app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
         const server = http_1.default.createServer(app);
         (0, marketStream_1.startMarketStream)(server);

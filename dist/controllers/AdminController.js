@@ -46,16 +46,17 @@ const getAdminById = async (req, res) => {
 exports.getAdminById = getAdminById;
 const getAllAdmins = async (req, res) => {
     try {
-        const admins = await Admin_1.default.find().select("full_name mobile email");
-        if (!admins || admins.length === 0)
-            return res.status(404).json({ message: "No admins found", status: false });
+        // Fetch only sub-admins and include all operational fields
+        const admins = await Admin_1.default.find({ role: 'sub-admin' }).select("-password");
+        console.log(`[GET_ALL_ADMINS] Found ${admins.length} sub-admins`);
         res.status(200).json({
             message: "Admins fetched successfully",
             status: true,
-            results: admins
+            results: admins || []
         });
     }
     catch (err) {
+        console.error(`[GET_ALL_ADMINS_ERROR]`, err);
         res.status(500).json({ error: err.message, status: false });
     }
 };

@@ -27,4 +27,5 @@ router.get('/group/segments', auth_middleware_1.auth, GroupServicesController_1.
 router.post('/group/add', auth_middleware_1.auth, GroupServicesController_1.addGroup);
 router.get('/group/all', auth_middleware_1.auth, GroupServicesController_1.getAllGroups);
 router.get('/group/:id', auth_middleware_1.auth, GroupServicesController_1.getGroupById);
+router.delete('/group/:id', auth_middleware_1.auth, GroupServicesController_1.deleteGroup);
 exports.default = router;

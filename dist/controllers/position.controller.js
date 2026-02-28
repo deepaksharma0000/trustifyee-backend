@@ -8,9 +8,14 @@ const getOpenPositions = async (req, res) => {
         const userId = req.id;
         const isAdminRequested = clientcode === 'ADMIN_ALL';
         // 1. Fetch from DB
-        // Special case for Admins: Show ALL open positions in the system
-        // Special case for Demo users: Show ALL open positions (legacy compatibility)
-        const query = { status: { $in: ["OPEN", "COMPLETE"] } };
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const query = {
+            $or: [
+                { status: { $in: ["OPEN", "COMPLETE"] } },
+                { status: "CLOSED", updatedAt: { $gte: today } }
+            ]
+        };
         if (clientcode !== 'ADMIN_DEMO' && !isAdminRequested) {
             if (userId) {
                 query.userId = userId;
@@ -28,36 +33,62 @@ const getOpenPositions = async (req, res) => {
         // Attempt to get token for LTP fetch
         try {
             const AngelTokensModel = require("../models/AngelTokens").default;
+            const UpstoxTokensModel = require("../models/UpstoxTokens").default;
             const { AngelOneAdapter } = require("../adapters/AngelOneAdapter");
+            const { UpstoxAdapter } = require("../adapters/UpstoxAdapter");
             const InstrumentModel = require("../models/Instrument").default;
-            const tokens = await AngelTokensModel.findOne(userId ? { userId, clientcode } : { clientcode });
-            if (tokens?.jwtToken) {
-                const adapter = new AngelOneAdapter();
-                positionsWithLtp = await Promise.all(positions.map(async (p) => {
-                    try {
-                        let currentSymbolToken = p.symboltoken;
-                        // If symboltoken missing, try to find from Instrument
+            const [angelTokens, upstoxTokens] = await Promise.all([
+                AngelTokensModel.findOne(userId ? { userId, clientcode } : { clientcode }).lean(),
+                UpstoxTokensModel.findOne(userId ? { userId } : {}).sort({ updatedAt: -1 }).lean()
+            ]);
+            const angelAdapter = new AngelOneAdapter();
+            const upstoxAdapter = new UpstoxAdapter();
+            positionsWithLtp = await Promise.all(positions.map(async (p) => {
+                try {
+                    let currentSymbolToken = p.symboltoken;
+                    // Detect broker
+                    const isUpstox = currentSymbolToken?.includes("|") || p.exchange === "NSE_FO" || (currentSymbolToken && currentSymbolToken.length > 20);
+                    let ltp = 0;
+                    if (isUpstox && upstoxTokens?.accessToken) {
+                        // Try find token if missing
+                        if (!currentSymbolToken) {
+                            const UpstoxInstrumentModel = require("../models/UpstoxInstrument").default;
+                            const inst = await UpstoxInstrumentModel.findOne({ tradingsymbol: p.tradingsymbol });
+                            currentSymbolToken = inst?.instrument_key;
+                        }
+                        if (currentSymbolToken) {
+                            const resp = await upstoxAdapter.getLtp(upstoxTokens.accessToken, currentSymbolToken);
+                            const data = resp?.data || {};
+                            let entry = data[currentSymbolToken];
+                            if (!entry) {
+                                const altKey = currentSymbolToken.replace("|", ":");
+                                entry = data[altKey];
+                            }
+                            ltp = Number(entry?.last_price || 0);
+                        }
+                    }
+                    else if (!isUpstox && angelTokens?.jwtToken) {
                         if (!currentSymbolToken) {
                             const inst = await InstrumentModel.findOne({ tradingsymbol: p.tradingsymbol, exchange: p.exchange });
                             currentSymbolToken = inst?.symboltoken;
                         }
                         if (currentSymbolToken) {
-                            // LTP Call
-                            const ltpResp = await adapter.getLtp(tokens.jwtToken, p.exchange, p.tradingsymbol, currentSymbolToken);
-                            const ltp = ltpResp?.data?.ltp || 0;
-                            const pnl = p.side === "BUY"
-                                ? (ltp - p.entryPrice) * p.quantity
-                                : (p.entryPrice - ltp) * p.quantity;
-                            return { ...p, ltp, pnl, livePrice: ltp }; // livePrice for frontend compatibility
+                            const ltpResp = await angelAdapter.getLtp(angelTokens.jwtToken, p.exchange, p.tradingsymbol, currentSymbolToken);
+                            ltp = ltpResp?.data?.ltp || 0;
                         }
-                        return { ...p, ltp: 0, pnl: 0, livePrice: 0 };
                     }
-                    catch (innerErr) {
-                        // LTP fetch failed for this specific position (e.g. symbol error), return basic data
-                        return { ...p, ltp: 0, pnl: 0, livePrice: 0 };
+                    if (ltp > 0) {
+                        const pnl = p.side === "BUY"
+                            ? (ltp - p.entryPrice) * p.quantity
+                            : (p.entryPrice - ltp) * p.quantity;
+                        return { ...p, ltp, pnl, livePrice: ltp };
                     }
-                }));
-            }
+                    return { ...p, ltp: 0, pnl: 0, livePrice: 0 };
+                }
+                catch (innerErr) {
+                    return { ...p, ltp: 0, pnl: 0, livePrice: 0 };
+                }
+            }));
         }
         catch (adapterErr) {
             console.warn("LTP Fetch skipped or failed (Market might be closed or token invalid):", adapterErr);

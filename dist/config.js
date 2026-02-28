@@ -7,10 +7,10 @@ exports.config = void 0;
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 exports.config = {
-    port: process.env.PORT ? Number(process.env.PORT) : 3000,
+    port: process.env.PORT ? Number(process.env.PORT) : 4000,
     nodeEnv: process.env.NODE_ENV || "development",
     mongoUri: process.env.MONGO_URI || "mongodb://localhost:27017/angelone",
-    appBaseUrl: process.env.APP_BASE_URL || "",
+    appBaseUrl: process.env.APP_BASE_URL || "http://localhost:4000",
     corsOrigins: (process.env.CORS_ORIGINS || "")
         .split(",")
         .map((s) => s.trim())

@@ -7,6 +7,7 @@ const express_1 = __importDefault(require("express"));
 const SignalController_1 = require("../controllers/SignalController");
 const auth_middleware_1 = require("../middleware/auth.middleware");
 const router = express_1.default.Router();
-router.get('/active', auth_middleware_1.auth, SignalController_1.getActiveSignals);
+router.get('/all', auth_middleware_1.adminAuth, SignalController_1.getAllSignals);
 router.post('/execute', auth_middleware_1.auth, SignalController_1.executeSignal);
+router.post('/broadcast', auth_middleware_1.auth, auth_middleware_1.adminAuth, SignalController_1.broadcastSignal);
 exports.default = router;

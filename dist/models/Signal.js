@@ -12,7 +12,7 @@ const SignalSchema = new mongoose_1.Schema({
     expiry: { type: Date },
     price: { type: Number, required: true },
     quantity: { type: Number, required: true },
-    status: { type: String, enum: ["ACTIVE", "EXPIRED", "CLOSED"], default: "ACTIVE" },
+    status: { type: String, enum: ["ACTIVE", "EXECUTION_IN_PROGRESS", "CLOSED", "PARTIAL", "FAILED", "EXPIRED"], default: "ACTIVE" },
     strategy: { type: String },
     adminOrderId: { type: String },
     signalType: { type: String, enum: ["ENTRY", "EXIT"], default: "ENTRY" },

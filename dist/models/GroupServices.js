@@ -41,6 +41,14 @@ const SegmentSchema = new mongoose_1.Schema({
 exports.Segment = mongoose_1.default.model('Segment', SegmentSchema);
 const GroupSchema = new mongoose_1.Schema({
     name: { type: String, required: true },
-    segment_id: { type: mongoose_1.Schema.Types.ObjectId, ref: 'Segment', required: true },
+    description: { type: String, default: null },
+    services: [{
+            service_id: { type: String, required: true },
+            name: { type: String, required: true },
+            segment: { type: String, required: true },
+            group_qty: { type: Number, default: 0 },
+            lotsize: { type: String, default: "1" },
+            product_type: { type: Number, default: 1 } // 1: Intraday, 2: Carry Forward
+        }]
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 exports.Group = mongoose_1.default.model('Group', GroupSchema);
