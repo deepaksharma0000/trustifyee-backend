@@ -2,11 +2,14 @@ import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
+import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
+import AliceTokensModel from "../models/AliceTokens";
 import { config } from "../config";
 import { log } from "../utils/logger";
 
 const adapter = new AngelOneAdapter();
 const upstoxAdapter = new UpstoxAdapter();
+const aliceAdapter = new AliceBlueAdapter();
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
 const CACHE_MS = 10000; // Increased to 10s to further reduce API load
 let cooldownUntil = 0;
@@ -226,6 +229,20 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
                 if (resp && isRateLimitError(resp)) {
                     cooldownUntil = now + 60000;
                     log.warn(`Instrument LTP Rate limited (${tradingsymbol}). Cooling down 60s.`);
+                }
+            }
+
+            // Fallback to AliceBlue if Angel fails or if we want to check Alice
+            const aliceSession = await AliceTokensModel.findOne({ sessionId: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean() as any;
+            if (aliceSession?.sessionId) {
+                const resp = await aliceAdapter.getLtp(aliceSession.sessionId, exchange, symboltoken);
+                // AliceBlue check response
+                if (resp && resp.stat === "Ok" && resp.data) {
+                    const ltp = Number(resp.data.lp); // lp is last price in AliceBlue
+                    if (!Number.isNaN(ltp) && ltp > 0) {
+                        ltpCache.set(cacheKey, { ltp, ts: now });
+                        return ltp;
+                    }
                 }
             }
         }

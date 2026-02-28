@@ -3,11 +3,12 @@ import User from "../models/User";
 import { AlgoRun } from "../models/AlgoRun";
 import { AlgoTrade } from "../models/AlgoTrade";
 import { Position } from "../models/Position.model";
-import { getLiveIndexLtp } from "./MarketDataService";
+import { getLiveIndexLtp, getInstrumentLtp } from "./MarketDataService";
 import { getATMStrike, getNearestStrike } from "../utils/optionUtils";
 import { placeOrderForClient } from "./OrderService";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
+import AliceTokensModel from "../models/AliceTokens";
 import {
   resolveStrategyLegs,
   getStrategyConfig,
@@ -97,14 +98,11 @@ async function resolveOptions(symbol: AlgoSymbol, expiry: Date) {
 }
 
 async function getEntryPrice(
-  jwtToken: string,
   exchange: string,
   tradingsymbol: string,
   symboltoken: string
 ) {
-  const adapter = new AngelOneAdapter();
-  const resp = await adapter.getLtp(jwtToken, exchange, tradingsymbol, symboltoken);
-  return Number(resp?.data?.ltp || 0);
+  return await getInstrumentLtp(exchange, tradingsymbol, symboltoken);
 }
 
 async function squareOffPosition(position: any) {
@@ -118,19 +116,14 @@ async function squareOffPosition(position: any) {
     ordertype: "MARKET",
   });
 
-  const session = await AngelTokensModel.findOne({ userId: position.userId, clientcode: position.clientcode }).lean();
-  const exitPrice =
-    session?.jwtToken && position.symboltoken
-      ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
-      : 0;
-
   position.status = "CLOSED";
   position.exitOrderId =
     resp?.data?.orderid ||
     resp?.data?.data?.orderid ||
+    resp?.data?.brokerOrderId ||
     "MANUAL";
   position.exitAt = new Date();
-  position.exitPrice = exitPrice;
+  position.exitPrice = await getEntryPrice(position.exchange, position.tradingsymbol, position.symboltoken);
   await position.save();
 }
 
@@ -146,9 +139,7 @@ async function enforceRisk(run: any) {
   let totalPnl = 0;
 
   for (const p of openPositions) {
-    const session = await AngelTokensModel.findOne({ userId: (p as any).userId, clientcode: p.clientcode }).lean();
-    if (!session?.jwtToken || !p.symboltoken) continue;
-    const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
+    const ltp = await getEntryPrice(p.exchange, p.tradingsymbol, p.symboltoken ?? "");
 
     const pnl =
       p.side === "BUY"
@@ -222,10 +213,11 @@ async function placeTradesForRun(run: any) {
     let angelSession: any = null;
 
     if (user.licence === "Live") {
-      angelSession = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean();
+      const angelSession = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean();
+      const aliceSession = !angelSession ? await AliceTokensModel.findOne({ clientcode }).lean() : null;
 
-      const broker_connected = !!angelSession && user.broker_verified; // Added broker_verified check
-      const token_valid = !!(angelSession?.jwtToken);
+      const broker_connected = (!!angelSession || !!aliceSession) && user.broker_verified;
+      const token_valid = !!(angelSession?.jwtToken || (aliceSession as any)?.sessionId);
 
       const trading_ready = (
         user.status === "active" &&
@@ -311,12 +303,10 @@ async function placeTradesForRun(run: any) {
         const orderid =
           resp?.data?.orderid ||
           resp?.data?.data?.orderid ||
+          resp?.data?.brokerOrderId ||
           `BROKER-${Date.now()}-${Math.random()}`;
 
-        // Uses the session fetched above
-        const entryPrice = angelSession?.jwtToken && opt.symboltoken
-          ? await getEntryPrice(angelSession.jwtToken, "NFO", opt.tradingsymbol, opt.symboltoken)
-          : 0;
+        const entryPrice = await getEntryPrice("NFO", opt.tradingsymbol, opt.symboltoken);
 
         await Position.create({
           userId: String(user._id),

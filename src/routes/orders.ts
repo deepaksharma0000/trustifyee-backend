@@ -768,7 +768,7 @@ router.post("/update-auto-exit", auth, adminOnly, async (req, res) => {
     // 3. Update DB
     position.autoSquareOffEnabled = autoSquareOffEnabled;
     position.autoSquareOffTime = finalExitDate;
-    position.autoSquareOffJobId = jobId;
+    position.autoSquareOffJobId = jobId ?? undefined;
     position.autoSquareOffStatus = autoSquareOffEnabled ? "PENDING" : "CANCELLED";
 
     await position.save();

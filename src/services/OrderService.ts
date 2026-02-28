@@ -5,6 +5,8 @@ import UpstoxInstrumentModel from "../models/UpstoxInstrument";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { log } from "../utils/logger";
+import AliceTokensModel from "../models/AliceTokens";
+import { placeAliceOrderForClient, getAliceOrderStatusForClient } from "./AliceOrderService";
 
 const adapter = new AngelOneAdapter();
 const upstoxAdapter = new UpstoxAdapter();
@@ -34,8 +36,13 @@ export async function placeOrderForClient(
   // 2. Check Upstox tokens if Angel fails or if clientcode looks like Upstox
   const upstoxTokens = !angelTokens?.jwtToken ? await UpstoxTokensModel.findOne({ userId }).lean() as any : null;
 
-  if (!angelTokens?.jwtToken && !upstoxTokens?.accessToken) {
-    throw new Error("No active broker session found for this user (Angel or Upstox)");
+  // 3. Check AliceBlue tokens
+  const aliceTokens = (!angelTokens?.jwtToken && !upstoxTokens?.accessToken)
+    ? await AliceTokensModel.findOne({ clientcode }).lean() as any
+    : null;
+
+  if (!angelTokens?.jwtToken && !upstoxTokens?.accessToken && !aliceTokens?.sessionId) {
+    throw new Error("No active broker session found for this user (Angel, Upstox or Alice)");
   }
 
   const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
@@ -120,6 +127,24 @@ export async function placeOrderForClient(
     return { status: true, data: resp.data }; // Match AngelOne response structure loosely
   }
 
+  // Case C: AliceBlue
+  if (aliceTokens?.sessionId) {
+    log.info(`Routing order to AliceBlue for ${clientcode}`);
+    const resp = await placeAliceOrderForClient(clientcode, {
+      exchange: orderInput.exchange,
+      tradingsymbol: orderInput.tradingsymbol,
+      transactiontype: txType,
+      quantity: orderInput.quantity,
+      ordertype: orderInput.ordertype,
+      price: orderInput.price,
+      producttype: orderInput.producttype,
+      duration: orderInput.duration,
+      symboltoken: orderInput.symboltoken,
+      triggerPrice: orderInput.triggerPrice
+    });
+    return resp;
+  }
+
   throw new Error("Execution failed: No valid broker flow matched");
 }
 
@@ -143,6 +168,11 @@ export async function getOrderStatusForClient(
     // Upstox order status usually via order history or specific ID
     // Simplification for now
     return { status: true, data: { status: "unknown", message: "Upstox status check pending" } };
+  }
+
+  const aliceTokens = await AliceTokensModel.findOne({ clientcode }).lean() as any;
+  if (aliceTokens?.sessionId) {
+    return await getAliceOrderStatusForClient(clientcode, orderId);
   }
 
   throw new Error("No active session for this user");

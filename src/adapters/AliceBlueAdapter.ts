@@ -216,6 +216,27 @@ export class AliceBlueAdapter {
     return await this.authPost(sessionId, this.orderStatusPath, body);
   }
 
+  /**
+   * Fetch LTP for a given instrument.
+   * AliceBlue /market/v1/quotes (GET) depends on the API version, 
+   * but usually LTP is found in the contract master or a separate quotes API.
+   * According to latest a3 APIs:
+   * GET /open-api/market/v1/quotes?exchange=NFO&token=12345
+   */
+  async getLtp(sessionId: string, exchange: string, token: string) {
+    const path = "/open-api/market/v1/quotes";
+    const params = { exchange: exchange.toUpperCase(), token };
+    try {
+      const resp = await this.authGet(sessionId, path, params);
+      // AliceBlue quotes usually return an array or a specific structure
+      // e.g. { "stat": "Ok", "data": { "lp": "123.45", ... } }
+      return resp;
+    } catch (err: any) {
+      log.error(`Alice getLtp failed for ${exchange} ${token}:`, err.message);
+      return null;
+    }
+  }
+
 
 
 

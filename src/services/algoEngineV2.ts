@@ -6,6 +6,7 @@ import { Position } from "../models/Position.model";
 import { placeOrderForClient } from "./OrderService";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
+import AliceTokensModel from "../models/AliceTokens";
 import {
     resolveStrategyLegs,
     getStrategyConfig,
@@ -37,7 +38,6 @@ function isEodTime(now = new Date()) {
 }
 
 async function getEntryPrice(
-    jwtToken: string,
     exchange: string,
     tradingsymbol: string,
     symboltoken: string
@@ -56,19 +56,14 @@ async function squareOffPosition(position: any) {
         ordertype: "MARKET",
     });
 
-    const session = await AngelTokensModel.findOne({ userId: position.userId, clientcode: position.clientcode }).lean() as any;
-    const exitPrice =
-        session?.jwtToken && position.symboltoken
-            ? await getEntryPrice(session.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken)
-            : 0;
-
     position.status = "CLOSED";
     position.exitOrderId =
         resp?.data?.orderid ||
         resp?.data?.data?.orderid ||
+        resp?.data?.brokerOrderId ||
         "MANUAL";
     position.exitAt = new Date();
-    position.exitPrice = exitPrice;
+    position.exitPrice = await getEntryPrice(position.exchange, position.tradingsymbol, position.symboltoken);
     await position.save();
 }
 
@@ -84,9 +79,7 @@ async function enforceRisk(run: any) {
     let totalPnl = 0;
 
     for (const p of openPositions) {
-        const session = await AngelTokensModel.findOne({ userId: (p as any).userId, clientcode: p.clientcode }).lean() as any;
-        if (!session?.jwtToken || !p.symboltoken) continue;
-        const ltp = await getEntryPrice(session.jwtToken, p.exchange, p.tradingsymbol, p.symboltoken);
+        const ltp = await getEntryPrice(p.exchange ?? "", p.tradingsymbol ?? "", p.symboltoken ?? "");
 
         const pnl =
             p.side === "BUY"
@@ -169,9 +162,17 @@ async function placeTradesForRun(run: any) {
         }
 
         // 🔥 Security: Check if Live user has necessary keys
-        if (user.licence === 'Live' && (!user.broker || !user.api_key)) {
-            log.warn(`⚠️ User ${user.user_name} is Live but missing Broker or API Key. Skipping.`);
-            continue;
+        if (user.licence === 'Live') {
+            const angelSession = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean();
+            const aliceSession = !angelSession ? await AliceTokensModel.findOne({ clientcode }).lean() : null;
+
+            const broker_connected = (!!angelSession || !!aliceSession) && user.broker_verified;
+            const token_valid = !!(angelSession?.jwtToken || (aliceSession as any)?.sessionId);
+
+            if (!broker_connected || !token_valid) {
+                log.warn(`⚠️ User ${user.user_name} is Live but missing Broker connection or Session. Skipping.`);
+                continue;
+            }
         }
 
         for (const leg of resolvedLegs) {
@@ -223,12 +224,10 @@ async function placeTradesForRun(run: any) {
                 const orderid =
                     resp?.data?.orderid ||
                     resp?.data?.data?.orderid ||
+                    resp?.data?.brokerOrderId ||
                     `BROKER-${Date.now()}-${Math.random()}`;
 
-                const session = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean() as any;
-                const entryPrice = session?.jwtToken && leg.symboltoken
-                    ? await getEntryPrice(session.jwtToken, "NFO", leg.tradingsymbol, leg.symboltoken)
-                    : 0;
+                const entryPrice = await getEntryPrice("NFO", leg.tradingsymbol, leg.symboltoken);
 
                 await Position.create({
                     userId: String(user._id),
