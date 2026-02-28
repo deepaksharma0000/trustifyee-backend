@@ -16,16 +16,26 @@ import { decrypt, encrypt } from "../utils/encryption";
 import AngelTokensModel from "../models/AngelTokens";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { placeAngelOrder } from "../services/angel.service";
+import { AutoExitService } from "../services/AutoExitService";
 import { BrokerResponse } from "../models/BrokerResponse";
 import {
   getGlobalTradeHistory,
   getUniqueSymbols,
   exportGlobalTradeHistory
 } from "../controllers/order.controller";
+import moment from "moment-timezone";
 
 const router = express.Router();
 
-router.post("/place", auth, adminOnly, async (req, res) => {
+router.post("/place", async (req, res, next) => {
+  // Allow internal system calls to bypass auth
+  if (req.headers['x-system-secret'] === 'INTERNAL_JOB_SECRET') {
+    (req as any).user = { role: 'admin', user_name: 'SYSTEM' };
+    (req as any).userType = 'admin';
+    return next();
+  }
+  return auth(req, res, next);
+}, adminOnly, async (req, res) => {
   const { clientcode } = req.body;
   if (!clientcode) {
     return res.status(400).json({ error: "clientcode required" });
@@ -101,6 +111,9 @@ router.post("/place", auth, adminOnly, async (req, res) => {
       status: "OPEN",
       stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
       targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+      tradeType: req.body.tradeType || "Manual",
+      signalTime: new Date(),
+      productType: req.body.producttype || "INTRADAY",
     });
 
     return res.json({ ok: true, resp, orderid });
@@ -177,6 +190,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           mode: "paper",
           stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
           targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+          tradeType: req.body.tradeType || "Manual",
+          signalTime: new Date(),
+          productType: req.body.producttype || "INTRADAY",
         });
         return { userId: user._id, status: "paper", orderid: paperOrderId };
       }
@@ -262,6 +278,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           mode: "live",
           stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
           targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+          tradeType: req.body.tradeType || "Manual",
+          signalTime: new Date(),
+          productType: req.body.producttype || "INTRADAY",
         });
 
         // Log ACTUAL Response
@@ -423,6 +442,9 @@ router.post("/place-user", auth, async (req, res) => {
       mode: "live",
       stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
       targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+      tradeType: req.body.tradeType || "Manual",
+      signalTime: new Date(),
+      productType: req.body.producttype || "INTRADAY",
     });
 
     // Log ACTUAL Response
@@ -536,7 +558,8 @@ router.post("/save", auth, adminOnly, async (req, res) => {
       status: "OPEN",
       autoSquareOffEnabled: autoSquareOffEnabled || false,
       autoSquareOffTime: autoSquareOffTime ? new Date(autoSquareOffTime) : undefined,
-      autoSquareOffStatus: autoSquareOffEnabled ? "PENDING" : undefined
+      autoSquareOffStatus: autoSquareOffEnabled ? "PENDING" : undefined,
+      productType: req.body.producttype || "INTRADAY",
     });
 
     if (autoSquareOffEnabled && autoSquareOffTime) {
@@ -553,13 +576,22 @@ router.post("/save", auth, adminOnly, async (req, res) => {
   }
 });
 
-router.post("/close", auth, adminOnly, async (req, res) => {
+router.post("/close", async (req, res, next) => {
+  if (req.headers['x-system-secret'] === 'INTERNAL_JOB_SECRET') {
+    (req as any).user = { role: 'admin', user_name: 'SYSTEM' };
+    (req as any).userType = 'admin';
+    return next();
+  }
+  return auth(req, res, next);
+}, adminOnly, async (req, res) => {
   try {
     const { clientcode, orderid } = req.body;
 
     const MarketStatusService = require("../services/MarketStatusService").MarketStatusService;
     try {
-      MarketStatusService.validateOrderRequest();
+      if (req.headers['x-system-secret'] !== 'INTERNAL_JOB_SECRET') {
+        MarketStatusService.validateOrderRequest();
+      }
     } catch (err: any) {
       return res.status(400).json({ ok: false, message: err.message });
     }
@@ -576,21 +608,28 @@ router.post("/close", auth, adminOnly, async (req, res) => {
 
     const exitSide = position.side === "BUY" ? "SELL" : "BUY";
 
-    const angelResp = await placeAngelOrder({
-      clientcode,
-      tradingsymbol: position.tradingsymbol,
+    const orderInput: PlaceOrderInput = {
       exchange: position.exchange,
+      tradingsymbol: position.tradingsymbol,
       side: exitSide,
+      transactiontype: exitSide,
       quantity: position.quantity,
       ordertype: "MARKET",
-    });
+      producttype: position.productType as any || "INTRADAY",
+      symboltoken: position.symboltoken
+    };
 
-    if (!angelResp?.ok) {
-      return res.status(400).json({ ok: false, message: angelResp?.error || "Angel exit order failed" });
+    const resp = await placeOrderForClient(position.userId, clientcode, orderInput);
+
+    if (resp && resp.status === false) {
+      return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
     }
 
+    const orderid_resp = resp?.data?.orderid || resp?.data?.data?.orderid || "MANUAL";
+
     position.status = "CLOSED";
-    position.exitOrderId = angelResp.resp?.data?.orderid || "MANUAL";
+    position.exitOrderId = orderid_resp;
+    position.exitQty = position.quantity;
     position.exitAt = new Date();
     await position.save();
 
@@ -686,6 +725,61 @@ router.get("/broker-responses", auth, async (req: any, res) => {
 router.get("/history-all", auth, adminOnly, getGlobalTradeHistory);
 router.get("/unique-symbols", auth, adminOnly, getUniqueSymbols);
 router.get("/export-all", auth, adminOnly, exportGlobalTradeHistory);
+
+// 🔥 NEW: Update Auto Exit Time for an existing position
+router.post("/update-auto-exit", auth, adminOnly, async (req, res) => {
+  try {
+    const { orderid, autoSquareOffTime, autoSquareOffEnabled } = req.body;
+    log.info(`[AutoExitRoute] Request for ${orderid}:`, { autoSquareOffTime, autoSquareOffEnabled });
+
+    if (!orderid) return res.status(400).json({ ok: false, message: "orderid required" });
+
+    const position = await Position.findOne({ orderid });
+    if (!position) {
+      log.warn(`[AutoExitRoute] Position ${orderid} not found`);
+      return res.status(404).json({ ok: false, message: "Position not found" });
+    }
+
+    // 1. Cancel existing job if any
+    try {
+      if (position.autoSquareOffJobId) {
+        log.debug(`[AutoExitRoute] Cancelling previous job ${position.autoSquareOffJobId}`);
+        await AutoExitService.cancelExit(orderid);
+      }
+    } catch (cancelErr) {
+      log.warn(`[AutoExitRoute] Cancel job failed for ${orderid} (ignoring):`, cancelErr);
+    }
+
+    // 2. Schedule new job if enabled
+    let jobId: string | undefined | null = undefined;
+    let finalExitDate: Date | undefined = undefined;
+
+    if (autoSquareOffEnabled && autoSquareOffTime) {
+      const istDate = moment.tz(autoSquareOffTime, "Asia/Kolkata");
+      if (!istDate.isValid()) {
+        throw new Error("Invalid date format provided");
+      }
+
+      finalExitDate = istDate.toDate();
+      log.info(`[AutoExitRoute] Scheduling new job at ${istDate.format()} for ${orderid}`);
+      jobId = await AutoExitService.scheduleExit(orderid, autoSquareOffTime);
+    }
+
+    // 3. Update DB
+    position.autoSquareOffEnabled = autoSquareOffEnabled;
+    position.autoSquareOffTime = finalExitDate;
+    position.autoSquareOffJobId = jobId;
+    position.autoSquareOffStatus = autoSquareOffEnabled ? "PENDING" : "CANCELLED";
+
+    await position.save();
+    log.info(`[AutoExitRoute] Successfully updated DB for ${orderid}`);
+
+    res.json({ ok: true, message: "Auto exit updated successfully" });
+  } catch (err: any) {
+    log.error("[AutoExitRoute] Error:", err.message);
+    res.status(500).json({ ok: false, message: err.message || "Internal server error" });
+  }
+});
 
 export default router;
 

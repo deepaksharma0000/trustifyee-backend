@@ -26,6 +26,10 @@ export interface IPosition extends Document {
   autoSquareOffJobId?: string;
   signalId?: string;
   signalType?: "ENTRY" | "EXIT";
+  signalTime?: Date;
+  tradeType?: string;
+  productType?: string;
+  exitQty?: number;
 }
 
 const PositionSchema = new Schema<IPosition>(
@@ -54,6 +58,10 @@ const PositionSchema = new Schema<IPosition>(
     autoSquareOffJobId: { type: String },
     signalId: { type: String, index: true },
     signalType: { type: String, enum: ["ENTRY", "EXIT"] },
+    signalTime: { type: Date },
+    tradeType: { type: String },
+    productType: { type: String },
+    exitQty: { type: Number },
   },
   { timestamps: true }
 );

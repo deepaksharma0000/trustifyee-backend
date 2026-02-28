@@ -21,11 +21,22 @@ export const NSE_HOLIDAYS_2024 = [
 
 export const NSE_HOLIDAYS_2025 = [
     "2025-01-26",
-    // Add more as needed
     "2025-12-25"
 ];
 
-const HOLIDAYS = [...NSE_HOLIDAYS_2024, ...NSE_HOLIDAYS_2025];
+export const NSE_HOLIDAYS_2026 = [
+    "2026-01-26", // Republic Day
+    "2026-02-18", // Mahashivratri (Expected)
+    "2026-03-24", // Holi
+    "2026-04-03", // Good Friday
+    "2026-04-14", // Ambedkar Jayanti
+    "2026-05-01", // Maharashtra Day
+    "2026-08-15", // Independence Day
+    "2026-10-02", // Gandhi Jayanti
+    "2026-12-25", // Christmas
+];
+
+const HOLIDAYS = [...NSE_HOLIDAYS_2024, ...NSE_HOLIDAYS_2025, ...NSE_HOLIDAYS_2026];
 
 export class MarketStatusService {
     /**

@@ -8,9 +8,15 @@ export const getOpenPositions = async (req: Request, res: Response) => {
     const isAdminRequested = clientcode === 'ADMIN_ALL';
 
     // 1. Fetch from DB
-    // Special case for Admins: Show ALL open positions in the system
-    // Special case for Demo users: Show ALL open positions (legacy compatibility)
-    const query: any = { status: { $in: ["OPEN", "COMPLETE"] } };
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const query: any = {
+      $or: [
+        { status: { $in: ["OPEN", "COMPLETE"] } },
+        { status: "CLOSED", updatedAt: { $gte: today } }
+      ]
+    };
 
     if (clientcode !== 'ADMIN_DEMO' && !isAdminRequested) {
       if (userId) {
