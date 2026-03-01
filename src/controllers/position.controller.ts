@@ -43,9 +43,16 @@ export const getOpenPositions = async (req: Request, res: Response) => {
       const { UpstoxAdapter } = require("../adapters/UpstoxAdapter");
       const InstrumentModel = require("../models/Instrument").default;
 
+      // ── For ADMIN_ALL: find any available valid token ──────────────────
+      // We cannot use clientcode='ADMIN_ALL' as a key — no token exists for it.
+      // Instead, pick the most-recently-updated live token from the DB.
       const [angelTokens, upstoxTokens] = await Promise.all([
-        AngelTokensModel.findOne(userId ? { userId, clientcode } : { clientcode }).lean(),
-        UpstoxTokensModel.findOne(userId ? { userId } : {}).sort({ updatedAt: -1 }).lean()
+        isAdminRequested
+          ? AngelTokensModel.findOne({}).sort({ updatedAt: -1 }).lean()
+          : AngelTokensModel.findOne(userId ? { userId } : { clientcode }).lean(),
+        isAdminRequested
+          ? UpstoxTokensModel.findOne({}).sort({ updatedAt: -1 }).lean()
+          : UpstoxTokensModel.findOne(userId ? { userId } : {}).sort({ updatedAt: -1 }).lean()
       ]);
 
       const angelAdapter = new AngelOneAdapter();
