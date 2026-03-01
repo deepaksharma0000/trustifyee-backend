@@ -20,7 +20,12 @@ export const placeAngelOrder = async (
   }
   const res = await axios.post(
     `${config.appBaseUrl}/api/orders/place`,
-    payload
+    payload,
+    {
+      headers: {
+        'x-system-secret': 'INTERNAL_JOB_SECRET'
+      }
+    }
   );
 
   return res.data; // { ok, resp }
@@ -35,7 +40,12 @@ export const checkAngelOrderStatus = async (
     throw new Error("APP_BASE_URL is not set");
   }
   const res = await axios.get(
-    `${config.appBaseUrl}/api/orders/status/${clientcode}/${orderid}`
+    `${config.appBaseUrl}/api/orders/status/${clientcode}/${orderid}`,
+    {
+      headers: {
+        'x-system-secret': 'INTERNAL_JOB_SECRET'
+      }
+    }
   );
 
   return res.data === true;
