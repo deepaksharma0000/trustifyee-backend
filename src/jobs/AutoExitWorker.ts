@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { Position } from "../models/Position.model";
-import { placeAngelOrder } from "../services/angel.service";
+import { closeAngelOrder } from "../services/angel.service";
 import { log } from "../utils/logger";
 
 const connection = {
@@ -33,27 +33,18 @@ export const initAutoExitWorker = () => {
                 try {
                     log.info(`[AutoExitWorker] Executing Market Exit for ${orderId}: ${position.tradingsymbol} ${position.quantity} ${exitSide}`);
 
-                    const angelResp = await placeAngelOrder({
-                        clientcode: position.clientcode,
-                        tradingsymbol: position.tradingsymbol,
-                        exchange: position.exchange,
-                        side: exitSide,
-                        quantity: position.quantity,
-                        ordertype: "MARKET",
-                        variety: "NORMAL",
-                        producttype: position.productType || "CARRYFORWARD",
-                    });
+                    const angelResp = await closeAngelOrder(
+                        position.clientcode,
+                        position.orderid
+                    );
 
                     if (!angelResp?.ok) {
-                        throw new Error(angelResp?.error || "Broker exit order failed");
+                        throw new Error(angelResp?.message || "Broker exit order failed");
                     }
 
-                    position.status = "CLOSED";
-                    position.exitOrderId = angelResp.resp?.data?.orderid || "AUTO-EXIT";
-                    position.exitQty = position.quantity;
-                    position.exitAt = new Date();
+                    // Note: /api/orders/close already updates position status and exit details in DB.
+                    // We just update the job status here.
                     position.autoSquareOffStatus = "COMPLETED";
-
                     await position.save();
                     log.info(`[AutoExitWorker] Successfully squared off ${orderId}`);
 

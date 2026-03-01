@@ -31,6 +31,26 @@ export const placeAngelOrder = async (
   return res.data; // { ok, resp }
 };
 
+export const closeAngelOrder = async (
+  clientcode: string,
+  orderid: string
+) => {
+  if (!config.appBaseUrl) {
+    throw new Error("APP_BASE_URL is not set");
+  }
+  const res = await axios.post(
+    `${config.appBaseUrl}/api/orders/close`,
+    { clientcode, orderid },
+    {
+      headers: {
+        'x-system-secret': 'INTERNAL_JOB_SECRET'
+      }
+    }
+  );
+
+  return res.data;
+};
+
 // ✅ ye function alag hi rahega
 export const checkAngelOrderStatus = async (
   clientcode: string,
