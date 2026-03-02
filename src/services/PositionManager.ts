@@ -105,19 +105,32 @@ async function executeExit(position: any, jwtToken: string, reason: string) {
             quantity: position.quantity,
             ordertype: "MARKET",
             symboltoken: position.symboltoken,
-            producttype: "INTRADAY" // or carry over from position
+            producttype: "INTRADAY"
         });
 
         if (apiRes && (apiRes.status === true || apiRes.status === "success")) {
             // Update DB
             position.status = "CLOSED";
-            position.exitPrice = 0; // we don't know exact execution price yet, need orderbook fetch or assume LTP
+            position.exitPrice = 0; 
             position.exitAt = new Date();
             position.exitOrderId = apiRes.data?.orderid;
             await position.save();
             log.info(`✅ Auto-Exit Success: ${position.tradingsymbol}`);
         } else {
-            log.error(`❌ Auto-Exit Failed API: ${JSON.stringify(apiRes)}`);
+            const errCode = apiRes?.errorcode || apiRes?.errorCode;
+            const errMsg = apiRes?.message || "Unknown API Error";
+
+            if (errCode === "AG8001") {
+                log.error(`❌ Session Expired for ${position.clientcode}: Please Re-Connect Broker.`);
+            } else if (errCode === "AB4014") {
+                log.error(`❌ Lot Size Mismatch for ${position.tradingsymbol}: Broker rejected qty ${position.quantity}. Closing in DB to prevent loop.`);
+                // Mark as failed to avoid infinite loop
+                position.status = "FAILED";
+                position.remarks = `Exit failed: ${errMsg}`;
+                await position.save();
+            } else {
+                log.error(`❌ Auto-Exit Failed API: ${JSON.stringify(apiRes)}`);
+            }
         }
     } catch (err: any) {
         log.error(`❌ Auto-Exit Exception: ${err.message}`);

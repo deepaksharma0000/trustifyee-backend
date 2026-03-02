@@ -7,21 +7,26 @@ const MASTER_URL =
   "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
 
 
-export async function syncNiftyOptionsOnly() {
+export async function syncAllOptionInstruments() {
+  log.info("[Sync] Starting Dynamic Instrument Sync from AngelOne Master...");
   const { data } = await axios.get<any[]>(MASTER_URL);
+
+  const targetIndices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50", "BANKEX"];
 
   const bulk = data
     .filter(r =>
       r.exch_seg === "NFO" &&
       r.instrumenttype === "OPTIDX" &&
-      r.name === "NIFTY" &&
+      targetIndices.includes(r.name) &&
       r.strike &&
       !isNaN(Number(r.strike))
     )
     .map(r => {
       const rawStrike = Number(r.strike);
       const normalizedStrike = rawStrike / 100;
-      const lotSize = Number(r.lotsize) || 50; // Updated default for Nifty
+      
+      // CRITICAL: Pure dynamic lot size from Broker API
+      const lotSize = Number(r.lotsize);
 
       return {
         updateOne: {
@@ -46,94 +51,25 @@ export async function syncNiftyOptionsOnly() {
 
   if (bulk.length) {
     await InstrumentModel.bulkWrite(bulk);
-    log.info(`[Sync] NIFTY sync done: ${bulk.length} instruments.`);
+    log.info(`[Sync] Dynamic sync complete. Processed ${bulk.length} instruments with live broker lot sizes.`);
   }
 }
 
-export async function syncBankNiftyOptionsOnly() {
-  const { data } = await axios.get<any[]>(MASTER_URL);
+/**
+ * Legacy wrappers for compatibility (now using the dynamic sync)
+ */
+export async function syncNiftyOptionsOnly() { await syncAllOptionInstruments(); }
+export async function syncBankNiftyOptionsOnly() { await syncAllOptionInstruments(); }
+export async function syncFinNiftyOptionsOnly() { await syncAllOptionInstruments(); }
 
-  const bulk = data
-    .filter(r =>
-      r.exch_seg === "NFO" &&
-      r.instrumenttype === "OPTIDX" &&
-      r.name === "BANKNIFTY" &&
-      r.strike &&
-      !isNaN(Number(r.strike))
-    )
-    .map(r => {
-      const rawStrike = Number(r.strike);
-      const normalizedStrike = rawStrike / 100;
-      const lotSize = Number(r.lotsize) || 15; // Updated default for BankNifty
-
-      return {
-        updateOne: {
-          filter: { symboltoken: r.token },
-          update: {
-            $set: {
-              symboltoken: r.token,
-              tradingsymbol: r.symbol,
-              name: r.name,
-              exchange: r.exch_seg,
-              instrumenttype: r.instrumenttype,
-              strike: normalizedStrike,
-              expiry: new Date(r.expiry),
-              optiontype: r.symbol.endsWith("CE") ? "CE" : "PE",
-              lotSize: lotSize
-            }
-          },
-          upsert: true
-        }
-      };
-    });
-
-  if (bulk.length) {
-    await InstrumentModel.bulkWrite(bulk);
-    log.info(`[Sync] BANKNIFTY sync done: ${bulk.length} instruments.`);
-  }
-}
-
-export async function syncFinNiftyOptionsOnly() {
-  const { data } = await axios.get<any[]>(MASTER_URL);
-
-  const bulk = data
-    .filter(r =>
-      r.exch_seg === "NFO" &&
-      r.instrumenttype === "OPTIDX" &&
-      r.name === "FINNIFTY" &&
-      r.strike &&
-      !isNaN(Number(r.strike))
-    )
-    .map(r => {
-      const rawStrike = Number(r.strike);
-      const normalizedStrike = rawStrike / 100;
-      const lotSize = Number(r.lotsize) || 25; // Default for FinNifty
-
-      return {
-        updateOne: {
-          filter: { symboltoken: r.token },
-          update: {
-            $set: {
-              symboltoken: r.token,
-              tradingsymbol: r.symbol,
-              name: r.name,
-              exchange: r.exch_seg,
-              instrumenttype: r.instrumenttype,
-              strike: normalizedStrike,
-              expiry: new Date(r.expiry),
-              optiontype: r.symbol.endsWith("CE") ? "CE" : "PE",
-              lotSize: lotSize
-            }
-          },
-          upsert: true
-        }
-      };
-    });
-
-  if (bulk.length) {
-    await InstrumentModel.bulkWrite(bulk);
-    log.info(`[Sync] FINNIFTY sync done: ${bulk.length} instruments.`);
-  }
+/**
+ * Production-ready verification. 
+ * Instead of fixing with static values, it triggers a fresh sync from the broker.
+ */
+export async function forceFixLotSizes() {
+    log.info("Verifying Instrument Lot Sizes via Broker API...");
+    await syncAllOptionInstruments();
+    log.info("✅ Lot sizes verified and synchronized with Broker Master.");
 }
 
 

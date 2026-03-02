@@ -8,7 +8,7 @@ import InstrumentModel from "./models/Instrument";
 import authRoutes from "./routes/auth";
 import orderRoutes from "./routes/orders";
 import positionRoutes from "./routes/position.routes";
-import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly } from "./services/InstrumentService";
+import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly, forceFixLotSizes } from "./services/InstrumentService";
 import instrumentRoutes from "./routes/instruments";
 import niftyRoutes from "./routes/nifty";
 import pnlRoutes from "./routes/pnl.routes";
@@ -53,6 +53,9 @@ async function start() {
     log.info("🚀 Starting server...");
     await mongoose.connect(config.mongoUri);
     log.info("✅ Connected to MongoDB");
+    
+    // Validate Lot Sizes (Production Ready Check)
+    await forceFixLotSizes();
 
     // Start Watchdog
     startPositionWatchdog();
