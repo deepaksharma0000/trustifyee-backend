@@ -119,28 +119,40 @@ export const getOpenPositions = async (req: Request, res: Response) => {
       // Fallback: return positions without LTP updates
     }
 
-    // 3. Auto-sync missing Entry Prices for Live trades if 0
-    await Promise.all(positionsWithLtp.map(async (p: any) => {
-        if (!p.entryPrice || p.entryPrice === 0) {
-            if (p.mode === "live" && p.orderid) {
-                try {
-                    // Try to heal by ID or by Symbol fuzzy match
-                    const statusResp = await getOrderStatusForClient(p.userId, p.clientcode, p.orderid, p.tradingsymbol);
-                    let bData = statusResp?.data || statusResp;
-                    if (Array.isArray(bData)) bData = bData[bData.length - 1]; // Use latest
-                    if (bData && (bData.averageprice || bData.price)) {
-                        const newPrice = Number(bData.averageprice || bData.price);
-                        if (newPrice > 0) {
-                           await Position.findByIdAndUpdate(p._id, { entryPrice: newPrice });
-                           p.entryPrice = newPrice; 
-                        }
+    // 3. Auto-sync missing Entry Prices for Live trades if 0 (Optimized for Rate Limits)
+    const recentPositions = positionsWithLtp.filter((p: any) => 
+        (!p.entryPrice || p.entryPrice === 0) && 
+        p.mode === "live" && 
+        p.orderid &&
+        // Only heal orders from the last 15 minutes to avoid hitting rate limits for old junk
+        (new Date().getTime() - new Date(p.createdAt).getTime() < 15 * 60 * 1000)
+    );
+
+    if (recentPositions.length > 0) {
+        // Limit to max 3 heals per refresh cycle to stay under broker rate limits
+        const toHeal = recentPositions.slice(0, 3);
+        
+        for (const p of toHeal) {
+            try {
+                // Add a small delay between each broker call (600ms)
+                await new Promise(r => setTimeout(r, 600));
+                
+                const statusResp = await getOrderStatusForClient(p.userId, p.clientcode, p.orderid, p.tradingsymbol);
+                let bData = statusResp?.data || statusResp;
+                if (Array.isArray(bData)) bData = bData[bData.length - 1];
+                
+                if (bData && (bData.averageprice || bData.price)) {
+                    const newPrice = Number(bData.averageprice || bData.price);
+                    if (newPrice > 0) {
+                        await Position.findByIdAndUpdate(p._id, { entryPrice: newPrice });
+                        p.entryPrice = newPrice;
                     }
-                } catch (e) {
-                    // silent sync
                 }
+            } catch (e) {
+                // ignore and continue
             }
         }
-    }));
+    }
 
     res.json({
       ok: true,

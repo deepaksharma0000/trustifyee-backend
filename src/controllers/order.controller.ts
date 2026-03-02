@@ -259,7 +259,6 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
     }
 
     if (indexSymbol && indexSymbol !== 'All') {
-      // Index symbol usually matches start of tradingsymbol like BANKNIFTY
       query.tradingsymbol = { $regex: `^${indexSymbol}`, $options: 'i' };
     }
 
@@ -271,7 +270,7 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
       query.status = status;
     }
 
-    if (req.query.symbol) {
+    if (req.query.symbol && req.query.symbol !== 'All') {
       query.tradingsymbol = { $regex: req.query.symbol as string, $options: 'i' };
     }
 
@@ -280,20 +279,38 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
       query.quantity = lotNum;
     }
 
-    const trades = await Position.find(query).sort({ createdAt: -1 }).lean();
+    const trades = await Position.find(query).sort({ createdAt: -1 }).limit(100).lean();
 
-    // Calculate total realised P/L
-    let totalPnl = 0;
-    const tradesWithPnl = trades.map(t => {
+    // Helper to get LTP for Open trades
+    const adapter = new AngelOneAdapter();
+    const tradesWithPnl = await Promise.all(trades.map(async (t) => {
       let pnl = 0;
+      let exitPrice = t.exitPrice || 0;
+
       if (t.status === 'CLOSED' && t.exitPrice) {
         pnl = t.side === 'BUY'
           ? (t.exitPrice - t.entryPrice) * t.quantity
           : (t.entryPrice - t.exitPrice) * t.quantity;
+      } else if (t.status === 'OPEN') {
+        try {
+          // Fetch LTP for LIVE calculation
+          const tokens = await AngelTokensModel.findOne({ clientcode: t.clientcode });
+          if (tokens?.jwtToken) {
+            const ltpResp = await adapter.getLtp(tokens.jwtToken, t.exchange, t.tradingsymbol, t.symboltoken);
+            const ltp = ltpResp?.data?.ltp || 0;
+            exitPrice = ltp;
+            pnl = t.side === 'BUY'
+              ? (ltp - t.entryPrice) * t.quantity
+              : (t.entryPrice - ltp) * t.quantity;
+          }
+        } catch (e) {
+          // Fallback to 0 if failed
+        }
       }
-      totalPnl += pnl;
-      return { ...t, pnl };
-    });
+      return { ...t, pnl, currentPrice: exitPrice };
+    }));
+
+    const totalPnl = tradesWithPnl.reduce((acc, curr) => acc + (curr.pnl || 0), 0);
 
     res.json({ ok: true, data: tradesWithPnl, totalRealisedPnl: totalPnl });
   } catch (err: any) {
@@ -303,29 +320,77 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
 
 export const exportGlobalTradeHistory = async (req: Request, res: Response) => {
   try {
-    const trades = await Position.find().sort({ createdAt: -1 }).lean();
+    const { fromDate, toDate, indexSymbol, strategy, status, lots } = req.query;
+    let query: any = {};
+
+    if (fromDate && toDate) {
+      const start = new Date(fromDate as string);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(toDate as string);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt = { $gte: start, $lte: end };
+    }
+
+    if (indexSymbol && indexSymbol !== 'All') {
+      query.tradingsymbol = { $regex: `^${indexSymbol}`, $options: 'i' };
+    }
+
+    if (strategy && strategy !== 'All') {
+      query.strategy = strategy;
+    }
+
+    if (status && status !== 'All') {
+      query.status = status;
+    }
+
+    const lotNum = Number(req.query.lots);
+    if (req.query.lots && !isNaN(lotNum) && lotNum > 0) {
+      query.quantity = lotNum;
+    }
+
+    const trades = await Position.find(query).sort({ createdAt: -1 }).lean();
 
     if (!trades.length) {
       return res.status(404).json({ ok: false, message: "No trades to export" });
     }
 
     const columns = [
-      "tradingsymbol", "exchange", "side", "quantity",
-      "entryPrice", "exitPrice", "status", "createdAt", "exitAt", "strategy"
+      "signalTime", "tradingsymbol", "strategy", "side", 
+      "quantity", "exitQty", "entryPrice", "exitPrice", "pnl"
+    ];
+
+    const labels = [
+      "Signal Time", "Symbol", "Strategy", "Entry Type",
+      "Entry Qty", "Exit Qty", "Entry Price", "Exit Price", "Total P/L"
     ];
 
     const escapeCsv = (val: any) => {
       if (val === null || val === undefined) return "";
-      const s = val instanceof Date ? val.toISOString() : String(val);
+      if (val instanceof Date) return val.toLocaleString();
+      const s = String(val);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
 
-    const header = columns.join(",");
-    const rows = trades.map(t => columns.map(c => escapeCsv((t as any)[c])).join(","));
+    const header = labels.join(",");
+    const rows = trades.map((t: any) => {
+       // Calculate PNL for export if not present
+       let pnl = 0;
+       if (t.status === 'CLOSED' && t.exitPrice) {
+          pnl = t.side === 'BUY' 
+            ? (t.exitPrice - t.entryPrice) * t.quantity
+            : (t.entryPrice - t.exitPrice) * t.quantity;
+       }
+       t.pnl = pnl.toFixed(2);
+       t.signalTime = t.createdAt;
+       t.exitQty = t.exitQty || t.quantity;
+
+       return columns.map(c => escapeCsv(t[c])).join(",");
+    });
+
     const csv = [header, ...rows].join("\n");
 
     res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", "attachment; filename=\"trade-history.csv\"");
+    res.setHeader("Content-Disposition", `attachment; filename="trade-history-${new Date().getTime()}.csv"`);
     return res.send(csv);
   } catch (err: any) {
     res.status(500).json({ ok: false, message: err.message });
