@@ -120,38 +120,38 @@ export const getOpenPositions = async (req: Request, res: Response) => {
     }
 
     // 3. Auto-sync missing Entry Prices for Live trades if 0 (Optimized for Rate Limits)
-    const recentPositions = positionsWithLtp.filter((p: any) => 
-        (!p.entryPrice || p.entryPrice === 0) && 
-        p.mode === "live" && 
-        p.orderid &&
-        // Only heal orders from the last 15 minutes to avoid hitting rate limits for old junk
-        (new Date().getTime() - new Date(p.createdAt).getTime() < 15 * 60 * 1000)
+    const recentPositions = positionsWithLtp.filter((p: any) =>
+      (!p.entryPrice || p.entryPrice === 0) &&
+      p.mode === "live" &&
+      p.orderid &&
+      // Only heal orders from the last 15 minutes to avoid hitting rate limits for old junk
+      (new Date().getTime() - new Date(p.createdAt).getTime() < 15 * 60 * 1000)
     );
 
     if (recentPositions.length > 0) {
-        // Limit to max 3 heals per refresh cycle to stay under broker rate limits
-        const toHeal = recentPositions.slice(0, 3);
-        
-        for (const p of toHeal) {
-            try {
-                // Add a small delay between each broker call (600ms)
-                await new Promise(r => setTimeout(r, 600));
-                
-                const statusResp = await getOrderStatusForClient(p.userId, p.clientcode, p.orderid, p.tradingsymbol);
-                let bData = statusResp?.data || statusResp;
-                if (Array.isArray(bData)) bData = bData[bData.length - 1];
-                
-                if (bData && (bData.averageprice || bData.price)) {
-                    const newPrice = Number(bData.averageprice || bData.price);
-                    if (newPrice > 0) {
-                        await Position.findByIdAndUpdate(p._id, { entryPrice: newPrice });
-                        p.entryPrice = newPrice;
-                    }
-                }
-            } catch (e) {
-                // ignore and continue
+      // Limit to max 3 heals per refresh cycle to stay under broker rate limits
+      const toHeal = recentPositions.slice(0, 3);
+
+      for (const p of toHeal) {
+        try {
+          // Add a small delay between each broker call (600ms)
+          await new Promise(r => setTimeout(r, 600));
+
+          const statusResp = await getOrderStatusForClient(p.userId, p.clientcode, p.orderid, p.tradingsymbol);
+          let bData = statusResp?.data || statusResp;
+          if (Array.isArray(bData)) bData = bData[bData.length - 1];
+
+          if (bData && (bData.averageprice || bData.price)) {
+            const newPrice = Number(bData.averageprice || bData.price);
+            if (newPrice > 0) {
+              await Position.findByIdAndUpdate(p._id, { entryPrice: newPrice });
+              p.entryPrice = newPrice;
             }
+          }
+        } catch (e) {
+          // ignore and continue
         }
+      }
     }
 
     res.json({
@@ -192,8 +192,8 @@ export const closePosition = async (req: Request, res: Response) => {
       symboltoken: position.symboltoken
     };
 
-    // 1. Place Exit Order with Broker
-    const resp = await placeOrderForClient(position.userId, clientcode, orderInput);
+    // 1. Place Exit Order with Broker - Use the clientcode from the position (req.body.clientcode might be 'ADMIN_ALL')
+    const resp = await placeOrderForClient(position.userId, position.clientcode, orderInput);
 
     if (resp && resp.status === false) {
       return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
@@ -204,7 +204,7 @@ export const closePosition = async (req: Request, res: Response) => {
     // 2. Capture Exit Price (LTP)
     let exitPrice = 0;
     try {
-      const tokens = await AngelTokensModel.findOne({ clientcode });
+      const tokens = await AngelTokensModel.findOne({ clientcode: position.clientcode });
       if (tokens?.jwtToken && position.symboltoken) {
         const adapter = new AngelOneAdapter();
         const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
@@ -224,13 +224,13 @@ export const closePosition = async (req: Request, res: Response) => {
 
     // 4. Cancel Auto Exit Job if any
     try {
-        const { AutoExitService } = require("../services/AutoExitService");
-        if (position.autoSquareOffEnabled) {
-            await AutoExitService.cancelExit(position.orderid);
-            position.autoSquareOffStatus = "CANCELLED";
-            await position.save();
-        }
-    } catch (e) {}
+      const { AutoExitService } = require("../services/AutoExitService");
+      if (position.autoSquareOffEnabled) {
+        await AutoExitService.cancelExit(position.orderid);
+        position.autoSquareOffStatus = "CANCELLED";
+        await position.save();
+      }
+    } catch (e) { }
 
     res.json({ ok: true, message: "Position squared off successfully", orderid: orderid_resp });
   } catch (err: any) {

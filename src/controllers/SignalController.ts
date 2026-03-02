@@ -12,11 +12,18 @@ import UpstoxInstrumentModel from '../models/UpstoxInstrument';
 import { SignalExecutionResult } from '../models/SignalExecutionResult';
 import mongoose from 'mongoose';
 import pLimit from 'p-limit';
+import { SystemSetting } from '../models/SystemSetting';
 
 export const executeSignal = async (req: Request, res: Response) => {
     try {
         const { signalId, lots } = req.body;
-        const userId = (req as any).id; // from auth middleware
+        const userId = (req as any).id;
+
+        // 1. Global Kill Switch Check
+        const globalStatus = await SystemSetting.findOne({ key: 'global_trading_status' }).lean() as any;
+        if (globalStatus && globalStatus.value === "disabled") {
+            return res.status(403).json({ error: "ALL TRADING IS GLOBALLY DISABLED BY ADMIN (KILL SWITCH ACTIVE)", status: false });
+        }
 
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
@@ -111,6 +118,13 @@ export const executeSignal = async (req: Request, res: Response) => {
 export const broadcastSignal = async (req: Request, res: Response) => {
     try {
         const { signalId } = req.body;
+
+        // 1. Global Kill Switch Check
+        const globalStatus = await SystemSetting.findOne({ key: 'global_trading_status' }).lean() as any;
+        if (globalStatus && globalStatus.value === "disabled") {
+            return res.status(403).json({ error: "ALL TRADING IS GLOBALLY DISABLED BY ADMIN (KILL SWITCH ACTIVE)", status: false });
+        }
+
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
         // 1. Atomic Lock Protection
@@ -192,7 +206,7 @@ export const broadcastSignal = async (req: Request, res: Response) => {
                                     const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
                                     if (ltp > 0) paperEntryPrice = ltp;
                                 }
-                            } catch (e) { log.warn("Signal paper LTP fetch failed", e.message); }
+                            } catch (e: any) { log.warn("Signal paper LTP fetch failed", e.message); }
                         }
 
                         orderid = `SIG-PAPER-${Date.now()}-${Math.random()}`;
@@ -355,5 +369,33 @@ export const getAllSignals = async (req: Request, res: Response) => {
         res.status(200).json({ status: true, data: enhancedSignals });
     } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });
+    }
+};
+
+export const getActiveSignals = async (req: Request, res: Response) => {
+    try {
+        const signals = await Signal.find({ status: { $in: ['ACTIVE', 'EXECUTION_IN_PROGRESS'] } })
+            .sort({ createdAt: -1 })
+            .limit(20)
+            .lean();
+
+        // Enhance with execution stats
+        const data = await Promise.all(signals.map(async (sig: any) => {
+            const results = await SignalExecutionResult.find({ signalId: sig._id }).select('status');
+            const successCount = results.filter(r => r.status === 'SUCCESS').length;
+            const failCount = results.filter(r => r.status === 'FAILED').length;
+
+            return {
+                ...sig,
+                totalExecutions: results.length,
+                successCount,
+                failCount,
+                currentStatus: sig.status
+            };
+        }));
+
+        res.status(200).json({ ok: true, status: true, data });
+    } catch (err: any) {
+        res.status(500).json({ ok: false, status: false, error: err.message });
     }
 };

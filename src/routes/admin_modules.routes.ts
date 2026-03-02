@@ -3,7 +3,8 @@ import { postInquiry, getInquiries } from '../controllers/InquiryController';
 import { addStrategy, getStrategies, getStrategyById } from '../controllers/StrategyController';
 import { postClientSave, getClientByUserId, getAllClients, deleteClient } from '../controllers/ClientSaveController';
 import { getSegments, addGroup, getAllGroups, getGroupById, deleteGroup } from '../controllers/GroupServicesController';
-import { auth } from '../middleware/auth.middleware';
+import { auth, adminOnly } from '../middleware/auth.middleware';
+import { getGlobalTradingStatus, updateGlobalTradingStatus, getActiveTradingUsers } from '../controllers/SystemSettingController';
 
 const router = express.Router();
 
@@ -28,5 +29,10 @@ router.post('/group/add', auth, addGroup);
 router.get('/group/all', auth, getAllGroups);
 router.get('/group/:id', auth, getGroupById);
 router.delete('/group/:id', auth, deleteGroup);
+
+// System Settings (Global Trading Status) - [NEW]
+router.get('/system/trading-status', auth, getGlobalTradingStatus);
+router.post('/system/trading-status', auth, updateGlobalTradingStatus); // Admin only recommended if you have adminOnly middleware
+router.get('/user/active-trading', auth, getActiveTradingUsers);
 
 export default router;

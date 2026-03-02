@@ -92,15 +92,15 @@ router.post("/place", async (req, res, next) => {
     // Capture LTP as fallback
     let broadcastLtp = 0;
     try {
-        const adapter = new AngelOneAdapter();
-        const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({updatedAt: -1});
-        if (tokens?.jwtToken && symboltoken) {
-            const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
-            broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
-            if (broadcastLtp === 0 && ltpResp?.data) {
-                broadcastLtp = Number(ltpResp.data.lastPrice || 0);
-            }
+      const adapter = new AngelOneAdapter();
+      const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+      if (tokens?.jwtToken && symboltoken) {
+        const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
+        broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
+        if (broadcastLtp === 0 && ltpResp?.data) {
+          broadcastLtp = Number(ltpResp.data.lastPrice || 0);
         }
+      }
     } catch (e) { log.warn("LTP fetch failed in /place:", e.message); }
 
     // Pass the plain-text clientcode for token lookup
@@ -119,23 +119,23 @@ router.post("/place", async (req, res, next) => {
       `BROKER-${uuidv4()}`;
 
     if (orderid.startsWith("BROKER-")) {
-        log.warn(`Broker confirmation missing in /place for ${clientcode}. Resp:`, JSON.stringify(resp));
+      log.warn(`Broker confirmation missing in /place for ${clientcode}. Resp:`, JSON.stringify(resp));
     }
 
     // Capture real entry price if possible
     let entryPrice = 0;
     if (resp?.ok !== false) {
-       try {
-           // Allow small delay for broker execution
-           await new Promise(r => setTimeout(r, 2000));
-           const statusResp = await getOrderStatusForClient(targetUser._id, clientcode, orderid);
-           let bData = statusResp?.data || statusResp;
-           if (Array.isArray(bData)) bData = bData[0];
-           
-           if (bData && (bData.averageprice || bData.price)) {
-               entryPrice = Number(bData.averageprice || bData.price);
-           }
-       } catch (e) { log.warn("Price capture failed in /place:", e.message); }
+      try {
+        // Allow small delay for broker execution
+        await new Promise(r => setTimeout(r, 2000));
+        const statusResp = await getOrderStatusForClient(targetUser._id, clientcode, orderid);
+        let bData = statusResp?.data || statusResp;
+        if (Array.isArray(bData)) bData = bData[0];
+
+        if (bData && (bData.averageprice || bData.price)) {
+          entryPrice = Number(bData.averageprice || bData.price);
+        }
+      } catch (e) { log.warn("Price capture failed in /place:", e.message); }
     }
 
     if (entryPrice === 0) entryPrice = broadcastLtp;
@@ -215,17 +215,17 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     // Capture LTP ONCE for all users in broadcast
     let broadcastLtp = 0;
     try {
-        const adapter = new AngelOneAdapter();
-        // Use any active admin token
-        const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
-        if (tokens?.jwtToken && symboltoken) {
-            const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
-            broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
-            if (broadcastLtp === 0 && ltpResp?.data) {
-                // Secondary check for different response format
-                broadcastLtp = Number(ltpResp.data.lastPrice || 0);
-            }
+      const adapter = new AngelOneAdapter();
+      // Use any active admin token
+      const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+      if (tokens?.jwtToken && symboltoken) {
+        const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
+        broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
+        if (broadcastLtp === 0 && ltpResp?.data) {
+          // Secondary check for different response format
+          broadcastLtp = Number(ltpResp.data.lastPrice || 0);
         }
+      }
     } catch (e) { log.warn("LTP fetch for broadcast failed:", e.message); }
 
     const results = await Promise.all(users.map(async (user: any) => {
@@ -284,9 +284,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         }
 
         const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || (resp as any)?.orderid || `BROKER-${uuidv4()}`;
-        
+
         if (orderid.startsWith("BROKER-")) {
-            log.warn(`Broker confirmation missing for user ${user.clientcode}. Using UUID: ${orderid}. Full Resp:`, JSON.stringify(resp));
+          log.warn(`Broker confirmation missing for user ${user.clientcode}. Using UUID: ${orderid}. Full Resp:`, JSON.stringify(resp));
         }
 
         // 🕒 WAIT for Broker RMS to process (1.5 - 2 seconds)
@@ -336,10 +336,10 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         // Capture Price
         let entryPrice = 0;
         if (actualStatus === "SUCCESS") {
-            try {
-                const bData = finalBrokerData;
-                entryPrice = Number(bData?.averageprice || bData?.price || 0);
-            } catch (e) {}
+          try {
+            const bData = finalBrokerData;
+            entryPrice = Number(bData?.averageprice || bData?.price || 0);
+          } catch (e) { }
         }
         if (entryPrice === 0 && actualStatus === "SUCCESS") entryPrice = broadcastLtp;
 
@@ -444,7 +444,7 @@ router.post("/place-user", auth, async (req, res) => {
       // If it's already a multiple of lotSize and > lotSize, it might be units already.
       // But usually, Admin/User inputs lots in these specific UI fields.
       if (finalQuantity < 500) { // Safety threshold: if qty < 500, likely lots
-         finalQuantity = finalQuantity * instrument.lotSize;
+        finalQuantity = finalQuantity * instrument.lotSize;
       }
     }
 
@@ -463,14 +463,14 @@ router.post("/place-user", auth, async (req, res) => {
     // Capture LTP BEFORE deciding Demo vs Live for both fallback and demo entry
     let paperEntryPrice = 0;
     try {
-        const adapter = new AngelOneAdapter();
-        // Try to get any active admin/user token
-        const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({updatedAt: -1});
-        if (tokens?.jwtToken && symboltoken) {
-            const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", tradingsymbol, symboltoken);
-            paperEntryPrice = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
-            if (paperEntryPrice === 0 && ltpResp?.data) paperEntryPrice = Number(ltpResp.data.lastPrice || 0);
-        }
+      const adapter = new AngelOneAdapter();
+      // Try to get any active admin/user token
+      const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+      if (tokens?.jwtToken && symboltoken) {
+        const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", tradingsymbol, symboltoken);
+        paperEntryPrice = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
+        if (paperEntryPrice === 0 && ltpResp?.data) paperEntryPrice = Number(ltpResp.data.lastPrice || 0);
+      }
     } catch (e) { log.error("LTP fetch for paper trade failed", e.message); }
 
     if (user.licence === "Demo") {
@@ -503,7 +503,7 @@ router.post("/place-user", auth, async (req, res) => {
     const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || (resp as any)?.orderid || `BROKER-${uuidv4()}`;
 
     if (orderid.startsWith("BROKER-")) {
-        log.warn(`Broker confirmation missing in /place-user for ${clientcode}. Resp:`, JSON.stringify(resp));
+      log.warn(`Broker confirmation missing in /place-user for ${clientcode}. Resp:`, JSON.stringify(resp));
     }
 
     // 🕒 WAIT for Broker RMS
@@ -530,7 +530,7 @@ router.post("/place-user", auth, async (req, res) => {
           actualStatus = "REJECTED";
           actualMessage = brokerData.text || brokerData.message || "Rejected by Broker RMS";
         }
-        
+
         // Capture REAL entry price
         entryPrice = Number(brokerData.averageprice || brokerData.price || 0);
       }
@@ -539,10 +539,10 @@ router.post("/place-user", auth, async (req, res) => {
       actualStatus = "ERROR";
       actualMessage = "Verification failed: " + statusErr.message;
     }
-    
+
     // Fallback to paperEntryPrice (LTP) if order is complete but averageprice is 0
     if (actualStatus === "SUCCESS" && entryPrice === 0) {
-        entryPrice = paperEntryPrice;
+      entryPrice = paperEntryPrice;
     }
 
     await Position.create({
@@ -720,8 +720,9 @@ router.post("/close", async (req, res, next) => {
       return res.status(400).json({ ok: false, message: err.message });
     }
 
+    // Find position by orderid (which is unique) instead of using clientcode from request, 
+    // because clientcode might be 'ADMIN_ALL' when admin is closing the position.
     const position = await Position.findOne({
-      clientcode,
       orderid,
       status: "OPEN",
     });
@@ -743,7 +744,8 @@ router.post("/close", async (req, res, next) => {
       symboltoken: position.symboltoken
     };
 
-    const resp = await placeOrderForClient(position.userId, clientcode, orderInput);
+    // Use position's clientcode instead of the one from req.body
+    const resp = await placeOrderForClient(position.userId, position.clientcode, orderInput);
 
     if (resp && resp.status === false) {
       return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
@@ -754,14 +756,14 @@ router.post("/close", async (req, res, next) => {
     // Fetch Exit Price
     let exitPrice = 0;
     try {
-        const tokens = await AngelTokensModel.findOne({ clientcode });
-        if (tokens?.jwtToken && position.symboltoken) {
-            const adapter = new AngelOneAdapter();
-            const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
-            exitPrice = ltpResp?.data?.ltp || 0;
-        }
+      const tokens = await AngelTokensModel.findOne({ clientcode: position.clientcode });
+      if (tokens?.jwtToken && position.symboltoken) {
+        const adapter = new AngelOneAdapter();
+        const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
+        exitPrice = ltpResp?.data?.ltp || 0;
+      }
     } catch (e) {
-        log.warn("Failed to fetch exit price during square off", e);
+      log.warn("Failed to fetch exit price during square off", e);
     }
 
     position.status = "CLOSED";
