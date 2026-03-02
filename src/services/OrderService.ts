@@ -59,8 +59,9 @@ export async function placeOrderForClient(
       symbol.instrumenttype === "OPTIDX" &&
       (symbol.name === "NIFTY" || symbol.name === "BANKNIFTY" || symbol.name === "FINNIFTY")
     ) {
-      if (!symbol.lotSize) throw new Error("Lot size not found for index option");
-      finalQuantity = orderInput.quantity * symbol.lotSize;
+      if (symbol.lotSize && finalQuantity < 500) {
+        finalQuantity = finalQuantity * symbol.lotSize;
+      }
     }
 
     const payload = {
@@ -97,7 +98,7 @@ export async function placeOrderForClient(
     }
 
     let finalQuantity = orderInput.quantity;
-    if (symbol.lot_size) {
+    if (symbol.lot_size && finalQuantity < 500) {
       finalQuantity = orderInput.quantity * symbol.lot_size;
     }
 
@@ -126,16 +127,35 @@ export async function placeOrderForClient(
 export async function getOrderStatusForClient(
   userId: string | unknown,
   clientcode: string,
-  orderId: string
+  orderId: string,
+  symbolMatch?: string // Optional: Find by symbol if orderId is synthetic
 ) {
   const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
   if (angelTokens?.jwtToken) {
     const orderBookResp = await adapter.getOrderBook(angelTokens.jwtToken);
     if (orderBookResp && orderBookResp.status && Array.isArray(orderBookResp.data)) {
-      const order = orderBookResp.data.find((o: any) => o.orderid === orderId);
+      // 1. Try exact Match
+      let order = orderBookResp.data.find((o: any) => o.orderid === orderId);
+      
+      // 2. Try Fuzzy Match if ID is synthetic (BROKER-uuid)
+      if (!order && orderId.startsWith("BROKER-") && symbolMatch) {
+          log.info(`Fuzzy matching orderbook for ${symbolMatch} (synthetic ID: ${orderId})`);
+          // Find most recent order with matching symbol
+          order = orderBookResp.data.reverse().find((o: any) => 
+            o.tradingsymbol === symbolMatch && 
+            (o.orderstatus === "COMPLETE" || o.orderstatus === "OPEN")
+          );
+      }
+
       if (order) return { status: true, data: order };
     }
-    return await adapter.getOrderStatus(angelTokens.jwtToken, orderId);
+    
+    // If exact ID lookup is possible (not our UUID)
+    if (!orderId.startsWith("BROKER-")) {
+        return await adapter.getOrderStatus(angelTokens.jwtToken, orderId);
+    }
+    
+    return { status: false, message: "Order not found in broker book" };
   }
 
   const upstoxTokens = await UpstoxTokensModel.findOne({ userId }).lean() as any;

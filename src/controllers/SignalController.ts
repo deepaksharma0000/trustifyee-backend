@@ -177,7 +177,24 @@ export const broadcastSignal = async (req: Request, res: Response) => {
                     let sideRes = signal.side;
 
                     if (user.licence === "Demo") {
-                        // Logic for Demo (Paper)
+                        // Capture LTP for Paper trades if no price
+                        let paperEntryPrice = signal.price || 0;
+                        if (paperEntryPrice === 0) {
+                            try {
+                                let symboltoken = "";
+                                const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
+                                if (inst) symboltoken = inst.symboltoken;
+                                else {
+                                    const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
+                                    if (upstoxInst) symboltoken = upstoxInst.instrument_key;
+                                }
+                                if (symboltoken) {
+                                    const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
+                                    if (ltp > 0) paperEntryPrice = ltp;
+                                }
+                            } catch (e) { log.warn("Signal paper LTP fetch failed", e.message); }
+                        }
+
                         orderid = `SIG-PAPER-${Date.now()}-${Math.random()}`;
                         await Position.create({
                             userId: user._id,
@@ -187,11 +204,12 @@ export const broadcastSignal = async (req: Request, res: Response) => {
                             exchange: signal.exchange,
                             side: signal.side,
                             quantity: signal.quantity,
-                            entryPrice: signal.price,
+                            entryPrice: paperEntryPrice,
                             status: "OPEN",
                             strategy: signal.strategy,
                             mode: "paper",
-                            signalId: signal._id
+                            signalId: signal._id,
+                            tradeType: "Signal"
                         });
                     } else {
                         // Live Execution

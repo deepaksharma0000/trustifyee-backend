@@ -62,8 +62,6 @@ router.post("/place", async (req, res, next) => {
       triggerPrice: req.body.triggerPrice
     };
 
-    log.debug("Incoming place order:", { clientcode, orderPayload });
-
     // Resolve instrument
     const instrument = await InstrumentModel.findOne({
       tradingsymbol: orderPayload.tradingsymbol,
@@ -72,6 +70,13 @@ router.post("/place", async (req, res, next) => {
 
     if (!instrument) {
       return res.status(400).json({ error: "Instrument not found" });
+    }
+
+    // Resolve instrument lot size for expansion
+    if (instrument && instrument.instrumenttype === "OPTIDX" && instrument.lotSize) {
+      if (orderPayload.quantity < 500) { // Threshold for lot-to-unit expansion
+        orderPayload.quantity = orderPayload.quantity * instrument.lotSize;
+      }
     }
 
     const symboltoken = instrument.symboltoken as string;
@@ -84,6 +89,20 @@ router.post("/place", async (req, res, next) => {
       return res.status(404).json({ error: "User with this clientcode not found" });
     }
 
+    // Capture LTP as fallback
+    let broadcastLtp = 0;
+    try {
+        const adapter = new AngelOneAdapter();
+        const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({updatedAt: -1});
+        if (tokens?.jwtToken && symboltoken) {
+            const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
+            broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
+            if (broadcastLtp === 0 && ltpResp?.data) {
+                broadcastLtp = Number(ltpResp.data.lastPrice || 0);
+            }
+        }
+    } catch (e) { log.warn("LTP fetch failed in /place:", e.message); }
+
     // Pass the plain-text clientcode for token lookup
     const resp = await placeOrderForClient(targetUser._id, clientcode, orderPayload);
 
@@ -95,8 +114,31 @@ router.post("/place", async (req, res, next) => {
     const orderid =
       (resp as any)?.data?.orderid ||
       (resp as any)?.data?.data?.orderid ||
-      (resp as any)?.data?.orderId ||
+      (resp as any)?.orderId ||
+      (resp as any)?.orderid ||
       `BROKER-${uuidv4()}`;
+
+    if (orderid.startsWith("BROKER-")) {
+        log.warn(`Broker confirmation missing in /place for ${clientcode}. Resp:`, JSON.stringify(resp));
+    }
+
+    // Capture real entry price if possible
+    let entryPrice = 0;
+    if (resp?.ok !== false) {
+       try {
+           // Allow small delay for broker execution
+           await new Promise(r => setTimeout(r, 2000));
+           const statusResp = await getOrderStatusForClient(targetUser._id, clientcode, orderid);
+           let bData = statusResp?.data || statusResp;
+           if (Array.isArray(bData)) bData = bData[0];
+           
+           if (bData && (bData.averageprice || bData.price)) {
+               entryPrice = Number(bData.averageprice || bData.price);
+           }
+       } catch (e) { log.warn("Price capture failed in /place:", e.message); }
+    }
+
+    if (entryPrice === 0) entryPrice = broadcastLtp;
 
     await Position.create({
       userId: targetUser._id,
@@ -106,7 +148,7 @@ router.post("/place", async (req, res, next) => {
       exchange: orderPayload.exchange,
       side: orderPayload.side,
       quantity: orderPayload.quantity,
-      entryPrice: Number(orderPayload.price ?? 0),
+      entryPrice: entryPrice,
       symboltoken,
       strategy: req.body.strategy || "Manual",
       status: "OPEN",
@@ -149,6 +191,18 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       triggerPrice: req.body.triggerPrice
     };
 
+    const instrument = await InstrumentModel.findOne({
+      tradingsymbol: orderPayload.tradingsymbol,
+      exchange: orderPayload.exchange
+    }).lean() as any;
+
+    // Expansion for broadcast as well
+    if (instrument && instrument.instrumenttype === "OPTIDX" && instrument.lotSize) {
+      if (orderPayload.quantity < 500) {
+        orderPayload.quantity = orderPayload.quantity * instrument.lotSize;
+      }
+    }
+
     const users = await User.find({
       status: "active",
       trading_status: "enabled",
@@ -156,12 +210,23 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       broker_connected: true
     }).lean();
 
-    const instrument = await InstrumentModel.findOne({
-      tradingsymbol: orderPayload.tradingsymbol,
-      exchange: orderPayload.exchange
-    }).lean() as any;
-
     const symboltoken = instrument?.symboltoken as string | undefined;
+
+    // Capture LTP ONCE for all users in broadcast
+    let broadcastLtp = 0;
+    try {
+        const adapter = new AngelOneAdapter();
+        // Use any active admin token
+        const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+        if (tokens?.jwtToken && symboltoken) {
+            const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
+            broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
+            if (broadcastLtp === 0 && ltpResp?.data) {
+                // Secondary check for different response format
+                broadcastLtp = Number(ltpResp.data.lastPrice || 0);
+            }
+        }
+    } catch (e) { log.warn("LTP fetch for broadcast failed:", e.message); }
 
     const results = await Promise.all(users.map(async (user: any) => {
       let clientcode = user.client_key;
@@ -184,7 +249,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           exchange: orderPayload.exchange,
           side: orderPayload.side,
           quantity: orderPayload.quantity,
-          entryPrice: Number(orderPayload.price ?? 0),
+          entryPrice: broadcastLtp,
           symboltoken,
           strategy: req.body.strategy || "Manual",
           status: "OPEN",
@@ -218,7 +283,11 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           return { userId: user._id, status: "error", error: errMsg };
         }
 
-        const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || `BROKER-${uuidv4()}`;
+        const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || (resp as any)?.orderid || `BROKER-${uuidv4()}`;
+        
+        if (orderid.startsWith("BROKER-")) {
+            log.warn(`Broker confirmation missing for user ${user.clientcode}. Using UUID: ${orderid}. Full Resp:`, JSON.stringify(resp));
+        }
 
         // 🕒 WAIT for Broker RMS to process (1.5 - 2 seconds)
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -264,6 +333,16 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           actualMessage = "Sync failed: " + statusErr.message;
         }
 
+        // Capture Price
+        let entryPrice = 0;
+        if (actualStatus === "SUCCESS") {
+            try {
+                const bData = finalBrokerData;
+                entryPrice = Number(bData?.averageprice || bData?.price || 0);
+            } catch (e) {}
+        }
+        if (entryPrice === 0 && actualStatus === "SUCCESS") entryPrice = broadcastLtp;
+
         await Position.create({
           userId: user._id,
           clientcode,
@@ -272,7 +351,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           exchange: orderPayload.exchange,
           side: orderPayload.side,
           quantity: orderPayload.quantity,
-          entryPrice: Number(orderPayload.price ?? 0),
+          entryPrice: entryPrice,
           symboltoken,
           strategy: req.body.strategy || "Manual",
           status: actualStatus === "REJECTED" ? "REJECTED" : "OPEN",
@@ -354,19 +433,45 @@ router.post("/place-user", auth, async (req, res) => {
       symboltoken = match.symboltoken;
     }
 
-    if (!tradingsymbol) return res.status(400).json({ error: "tradingsymbol required" });
+    const instrument = await InstrumentModel.findOne({
+      tradingsymbol: tradingsymbol || "",
+      exchange: "NFO"
+    }).lean() as any;
+
+    let finalQuantity = Number(quantity) || 1;
+    if (instrument && instrument.instrumenttype === "OPTIDX" && instrument.lotSize) {
+      // If quantity is small (e.g. 1, 2, 5), assume it's lots and expand to units
+      // If it's already a multiple of lotSize and > lotSize, it might be units already.
+      // But usually, Admin/User inputs lots in these specific UI fields.
+      if (finalQuantity < 500) { // Safety threshold: if qty < 500, likely lots
+         finalQuantity = finalQuantity * instrument.lotSize;
+      }
+    }
 
     const orderPayload: PlaceOrderInput = {
       exchange: "NFO",
       tradingsymbol,
       side: side || "BUY",
       transactiontype: side || "BUY",
-      quantity: Number(quantity) || 1,
+      quantity: finalQuantity,
       ordertype: ordertype || "MARKET",
       price: 0,
       producttype: producttype || "INTRADAY",
       symboltoken
     };
+
+    // Capture LTP BEFORE deciding Demo vs Live for both fallback and demo entry
+    let paperEntryPrice = 0;
+    try {
+        const adapter = new AngelOneAdapter();
+        // Try to get any active admin/user token
+        const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({updatedAt: -1});
+        if (tokens?.jwtToken && symboltoken) {
+            const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", tradingsymbol, symboltoken);
+            paperEntryPrice = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
+            if (paperEntryPrice === 0 && ltpResp?.data) paperEntryPrice = Number(ltpResp.data.lastPrice || 0);
+        }
+    } catch (e) { log.error("LTP fetch for paper trade failed", e.message); }
 
     if (user.licence === "Demo") {
       const paperOrderId = `PAPER-${uuidv4()}`;
@@ -378,7 +483,7 @@ router.post("/place-user", auth, async (req, res) => {
         exchange: "NFO",
         side: orderPayload.side,
         quantity: orderPayload.quantity,
-        entryPrice: 0,
+        entryPrice: paperEntryPrice,
         symboltoken: orderPayload.symboltoken,
         strategy: req.body.strategy || "Manual",
         status: "OPEN",
@@ -395,15 +500,19 @@ router.post("/place-user", auth, async (req, res) => {
       return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
     }
 
-    const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || `BROKER-${uuidv4()}`;
+    const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || (resp as any)?.orderid || `BROKER-${uuidv4()}`;
+
+    if (orderid.startsWith("BROKER-")) {
+        log.warn(`Broker confirmation missing in /place-user for ${clientcode}. Resp:`, JSON.stringify(resp));
+    }
 
     // 🕒 WAIT for Broker RMS
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // 🔍 Fetch REAL Status from Broker
+    let entryPrice = 0;
     let actualStatus = "SUCCESS";
-    let actualMessage = "Order placed successfully";
-    let finalBrokerData = resp;
+    let actualMessage = "Order Placed Successfully";
+    let finalBrokerData = null;
 
     try {
       const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
@@ -421,11 +530,19 @@ router.post("/place-user", auth, async (req, res) => {
           actualStatus = "REJECTED";
           actualMessage = brokerData.text || brokerData.message || "Rejected by Broker RMS";
         }
+        
+        // Capture REAL entry price
+        entryPrice = Number(brokerData.averageprice || brokerData.price || 0);
       }
     } catch (statusErr: any) {
       log.warn("Direct user status check failed:", statusErr.message);
       actualStatus = "ERROR";
       actualMessage = "Verification failed: " + statusErr.message;
+    }
+    
+    // Fallback to paperEntryPrice (LTP) if order is complete but averageprice is 0
+    if (actualStatus === "SUCCESS" && entryPrice === 0) {
+        entryPrice = paperEntryPrice;
     }
 
     await Position.create({
@@ -436,7 +553,7 @@ router.post("/place-user", auth, async (req, res) => {
       exchange: "NFO",
       side: orderPayload.side,
       quantity: orderPayload.quantity,
-      entryPrice: 0,
+      entryPrice: entryPrice,
       symboltoken: orderPayload.symboltoken,
       strategy: req.body.strategy || "Manual",
       status: actualStatus === "REJECTED" ? "REJECTED" : "OPEN",
@@ -567,6 +684,8 @@ router.post("/save", auth, adminOnly, async (req, res) => {
       autoSquareOffTime: autoSquareOffTime ? new Date(autoSquareOffTime) : undefined,
       autoSquareOffStatus: autoSquareOffEnabled ? "PENDING" : undefined,
       productType: req.body.producttype || "INTRADAY",
+      strategy: req.body.strategy || "Manual",
+      tradeType: req.body.tradeType || "Manual",
     });
 
     if (autoSquareOffEnabled && autoSquareOffTime) {
@@ -632,9 +751,23 @@ router.post("/close", async (req, res, next) => {
 
     const orderid_resp = resp?.data?.orderid || resp?.data?.data?.orderid || "MANUAL";
 
+    // Fetch Exit Price
+    let exitPrice = 0;
+    try {
+        const tokens = await AngelTokensModel.findOne({ clientcode });
+        if (tokens?.jwtToken && position.symboltoken) {
+            const adapter = new AngelOneAdapter();
+            const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
+            exitPrice = ltpResp?.data?.ltp || 0;
+        }
+    } catch (e) {
+        log.warn("Failed to fetch exit price during square off", e);
+    }
+
     position.status = "CLOSED";
     position.exitOrderId = orderid_resp;
     position.exitQty = position.quantity;
+    position.exitPrice = exitPrice || position.targetPrice || position.stopLossPrice; // Fallback to target/SL as user suggested
     position.exitAt = new Date();
     await position.save();
 

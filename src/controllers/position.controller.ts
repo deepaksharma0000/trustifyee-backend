@@ -1,5 +1,10 @@
 import { Request, Response } from "express";
 import { Position } from "../models/Position.model";
+import { placeOrderForClient, getOrderStatusForClient } from "../services/OrderService";
+import AngelTokensModel from "../models/AngelTokens";
+import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
+import { log } from "../utils/logger";
+import { PlaceOrderInput } from "../services/OrderService";
 
 export const getOpenPositions = async (req: Request, res: Response) => {
   try {
@@ -114,6 +119,29 @@ export const getOpenPositions = async (req: Request, res: Response) => {
       // Fallback: return positions without LTP updates
     }
 
+    // 3. Auto-sync missing Entry Prices for Live trades if 0
+    await Promise.all(positionsWithLtp.map(async (p: any) => {
+        if (!p.entryPrice || p.entryPrice === 0) {
+            if (p.mode === "live" && p.orderid) {
+                try {
+                    // Try to heal by ID or by Symbol fuzzy match
+                    const statusResp = await getOrderStatusForClient(p.userId, p.clientcode, p.orderid, p.tradingsymbol);
+                    let bData = statusResp?.data || statusResp;
+                    if (Array.isArray(bData)) bData = bData[bData.length - 1]; // Use latest
+                    if (bData && (bData.averageprice || bData.price)) {
+                        const newPrice = Number(bData.averageprice || bData.price);
+                        if (newPrice > 0) {
+                           await Position.findByIdAndUpdate(p._id, { entryPrice: newPrice });
+                           p.entryPrice = newPrice; 
+                        }
+                    }
+                } catch (e) {
+                    // silent sync
+                }
+            }
+        }
+    }));
+
     res.json({
       ok: true,
       data: positionsWithLtp,
@@ -126,16 +154,75 @@ export const getOpenPositions = async (req: Request, res: Response) => {
     });
   }
 };
-export const closePosition = async (
-  req: Request,
-  res: Response
-) => {
-  const { orderid } = req.body;
+export const closePosition = async (req: Request, res: Response) => {
+  try {
+    const { orderid, clientcode } = req.body;
+    const user = (req as any).user;
 
-  await Position.findOneAndUpdate(
-    { orderid },
-    { status: "CLOSED" }
-  );
+    const position = await Position.findOne({
+      orderid,
+      status: { $in: ["OPEN", "COMPLETE"] }
+    });
 
-  res.json({ ok: true });
+    if (!position) {
+      return res.status(404).json({ ok: false, message: "Open position not found" });
+    }
+
+    const exitSide = position.side === "BUY" ? "SELL" : "BUY";
+    const orderInput: PlaceOrderInput = {
+      exchange: position.exchange,
+      tradingsymbol: position.tradingsymbol,
+      side: exitSide,
+      transactiontype: exitSide,
+      quantity: position.quantity,
+      ordertype: "MARKET",
+      producttype: (position as any).productType || "INTRADAY",
+      symboltoken: position.symboltoken
+    };
+
+    // 1. Place Exit Order with Broker
+    const resp = await placeOrderForClient(position.userId, clientcode, orderInput);
+
+    if (resp && resp.status === false) {
+      return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
+    }
+
+    const orderid_resp = resp?.data?.orderid || resp?.data?.data?.orderid || "MANUAL";
+
+    // 2. Capture Exit Price (LTP)
+    let exitPrice = 0;
+    try {
+      const tokens = await AngelTokensModel.findOne({ clientcode });
+      if (tokens?.jwtToken && position.symboltoken) {
+        const adapter = new AngelOneAdapter();
+        const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
+        exitPrice = ltpResp?.data?.ltp || 0;
+      }
+    } catch (e) {
+      log.warn("Failed to fetch exit price in position controller", e);
+    }
+
+    // 3. Update DB
+    position.status = "CLOSED";
+    position.exitOrderId = orderid_resp;
+    position.exitQty = position.quantity;
+    position.exitPrice = exitPrice || position.targetPrice || position.stopLossPrice;
+    position.exitAt = new Date();
+    await position.save();
+
+    // 4. Cancel Auto Exit Job if any
+    try {
+        const { AutoExitService } = require("../services/AutoExitService");
+        if (position.autoSquareOffEnabled) {
+            await AutoExitService.cancelExit(position.orderid);
+            position.autoSquareOffStatus = "CANCELLED";
+            await position.save();
+        }
+    } catch (e) {}
+
+    res.json({ ok: true, message: "Position squared off successfully", orderid: orderid_resp });
+  } catch (err: any) {
+    log.error("Close position error:", err.message);
+    res.status(500).json({ ok: false, message: "Failed to close position: " + err.message });
+  }
 };
