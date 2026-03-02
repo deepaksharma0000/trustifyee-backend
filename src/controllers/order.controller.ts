@@ -295,7 +295,7 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
         try {
           // Fetch LTP for LIVE calculation
           const tokens = await AngelTokensModel.findOne({ clientcode: t.clientcode });
-          if (tokens?.jwtToken) {
+          if (tokens?.jwtToken && t.symboltoken) {
             const ltpResp = await adapter.getLtp(tokens.jwtToken, t.exchange, t.tradingsymbol, t.symboltoken);
             const ltp = ltpResp?.data?.ltp || 0;
             exitPrice = ltp;
@@ -355,7 +355,7 @@ export const exportGlobalTradeHistory = async (req: Request, res: Response) => {
     }
 
     const columns = [
-      "signalTime", "tradingsymbol", "strategy", "side", 
+      "signalTime", "tradingsymbol", "strategy", "side",
       "quantity", "exitQty", "entryPrice", "exitPrice", "pnl"
     ];
 
@@ -373,18 +373,18 @@ export const exportGlobalTradeHistory = async (req: Request, res: Response) => {
 
     const header = labels.join(",");
     const rows = trades.map((t: any) => {
-       // Calculate PNL for export if not present
-       let pnl = 0;
-       if (t.status === 'CLOSED' && t.exitPrice) {
-          pnl = t.side === 'BUY' 
-            ? (t.exitPrice - t.entryPrice) * t.quantity
-            : (t.entryPrice - t.exitPrice) * t.quantity;
-       }
-       t.pnl = pnl.toFixed(2);
-       t.signalTime = t.createdAt;
-       t.exitQty = t.exitQty || t.quantity;
+      // Calculate PNL for export if not present
+      let pnl = 0;
+      if (t.status === 'CLOSED' && t.exitPrice) {
+        pnl = t.side === 'BUY'
+          ? (t.exitPrice - t.entryPrice) * t.quantity
+          : (t.entryPrice - t.exitPrice) * t.quantity;
+      }
+      t.pnl = pnl.toFixed(2);
+      t.signalTime = t.createdAt;
+      t.exitQty = t.exitQty || t.quantity;
 
-       return columns.map(c => escapeCsv(t[c])).join(",");
+      return columns.map(c => escapeCsv(t[c])).join(",");
     });
 
     const csv = [header, ...rows].join("\n");

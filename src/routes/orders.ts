@@ -101,7 +101,7 @@ router.post("/place", async (req, res, next) => {
           broadcastLtp = Number(ltpResp.data.lastPrice || 0);
         }
       }
-    } catch (e) { log.warn("LTP fetch failed in /place:", e.message); }
+    } catch (e: any) { log.warn("LTP fetch failed in /place:", e.message); }
 
     // Pass the plain-text clientcode for token lookup
     const resp = await placeOrderForClient(targetUser._id, clientcode, orderPayload);
@@ -135,7 +135,7 @@ router.post("/place", async (req, res, next) => {
         if (bData && (bData.averageprice || bData.price)) {
           entryPrice = Number(bData.averageprice || bData.price);
         }
-      } catch (e) { log.warn("Price capture failed in /place:", e.message); }
+      } catch (e: any) { log.warn("Price capture failed in /place:", e.message); }
     }
 
     if (entryPrice === 0) entryPrice = broadcastLtp;
@@ -226,7 +226,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           broadcastLtp = Number(ltpResp.data.lastPrice || 0);
         }
       }
-    } catch (e) { log.warn("LTP fetch for broadcast failed:", e.message); }
+    } catch (e: any) { log.warn("LTP fetch for broadcast failed:", e.message); }
 
     const results = await Promise.all(users.map(async (user: any) => {
       let clientcode = user.client_key;
@@ -471,7 +471,7 @@ router.post("/place-user", auth, async (req, res) => {
         paperEntryPrice = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
         if (paperEntryPrice === 0 && ltpResp?.data) paperEntryPrice = Number(ltpResp.data.lastPrice || 0);
       }
-    } catch (e) { log.error("LTP fetch for paper trade failed", e.message); }
+    } catch (e: any) { log.error("LTP fetch for paper trade failed", e.message); }
 
     if (user.licence === "Demo") {
       const paperOrderId = `PAPER-${uuidv4()}`;
