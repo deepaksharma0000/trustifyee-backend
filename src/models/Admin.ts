@@ -33,7 +33,7 @@ const AdminSchema: Schema = new Schema({
     mobile: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true, select: false },
-    panel_client_key: { type: String, unique: true, sparse: true },
+    panel_client_key: { type: String, sparse: true },
     client_key: { type: String, sparse: true },
     all_permission: { type: Boolean, default: false },
     add_client: { type: Boolean, default: false },

@@ -10,6 +10,7 @@ import { auth, adminOnly } from "../middleware/auth.middleware";
 import User from "../models/User";
 import { Position } from "../models/Position.model";
 import InstrumentModel from "../models/Instrument";
+import { Group } from "../models/GroupServices";
 import { getOptionChain } from "../services/NiftyOptionService";
 import { v4 as uuidv4 } from "uuid";
 import { decrypt, encrypt } from "../utils/encryption";
@@ -203,12 +204,40 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       }
     }
 
+    // 2. Identify eligible groups (Groups that contain a service for this symbol)
+    // We derive the base symbol (e.g., NIFTY from NIFTY25JAN19000CE)
+    let baseSymbol = "";
+    if (orderPayload.tradingsymbol.includes("BANKNIFTY")) baseSymbol = "BANKNIFTY";
+    else if (orderPayload.tradingsymbol.includes("FINNIFTY")) baseSymbol = "FINNIFTY";
+    else if (orderPayload.tradingsymbol.includes("SENSEX")) baseSymbol = "SENSEX";
+    else if (orderPayload.tradingsymbol.includes("NIFTY")) baseSymbol = "NIFTY";
+    else baseSymbol = orderPayload.tradingsymbol;
+
+    const eligibleGroups = await Group.find({
+      $or: [
+        { "services.name": { $regex: new RegExp(baseSymbol, "i") } },
+        { "services.segment": { $regex: new RegExp(baseSymbol, "i") } }
+      ]
+    }).select('name services').lean();
+
+    const eligibleGroupNames = eligibleGroups.map(g => g.name);
+    const targetStrategy = req.body.strategy || "Manual";
+
+    // 3. Find all eligible users
+    // Criteria: Active, Trading Enabled, Has specified Strategy, and belongs to an eligible Group
     const users = await User.find({
       status: "active",
       trading_status: "enabled",
       is_online: true,
-      broker_connected: true
+      broker_connected: true,
+      strategies: targetStrategy, // MongoDB matches if the string is in the array
+      group_service: { $in: eligibleGroupNames }
     }).lean();
+
+    if (users.length === 0) {
+      log.warn(`[PLACE_ALL] Aborted: No matching users for Strategy: ${targetStrategy}, Symbol: ${baseSymbol}`);
+      return res.json({ ok: true, totalUsers: 0, message: "No matching users found for this strategy and group." });
+    }
 
     const symboltoken = instrument?.symboltoken as string | undefined;
 
@@ -229,10 +258,21 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     } catch (e: any) { log.warn("LTP fetch for broadcast failed:", e.message); }
 
     const results = await Promise.all(users.map(async (user: any) => {
+      // 4. Determine User-Specific Quantity from Group Config
+      const userGroupName = user.group_service;
+      const groupConfig = eligibleGroups.find(g => g.name === userGroupName);
+      const serviceConfig = groupConfig?.services.find(s =>
+        (s.name && s.name.toUpperCase().includes(baseSymbol.toUpperCase())) ||
+        (s.segment && s.segment.toUpperCase().includes(baseSymbol.toUpperCase()))
+      );
+
+      const userMultiplier = serviceConfig?.group_qty || 1;
+      const userQuantity = orderPayload.quantity * userMultiplier;
+
       let clientcode = user.client_key;
       if (!clientcode) return { userId: user._id, status: "skipped", reason: "missing client_key" };
 
-      // Decrypt if it looks like an encrypted field (or always decrypt if consistently encrypted)
+      // Decrypt clientcode for token lookup
       try {
         clientcode = decrypt(clientcode);
       } catch (e) {
@@ -248,10 +288,10 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           tradingsymbol: orderPayload.tradingsymbol,
           exchange: orderPayload.exchange,
           side: orderPayload.side,
-          quantity: orderPayload.quantity,
+          quantity: userQuantity,
           entryPrice: broadcastLtp,
           symboltoken,
-          strategy: req.body.strategy || "Manual",
+          strategy: targetStrategy,
           status: "OPEN",
           mode: "paper",
           stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
@@ -264,7 +304,8 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       }
 
       try {
-        const resp = await placeOrderForClient(user._id, clientcode, orderPayload);
+        const userOrderPayload = { ...orderPayload, quantity: userQuantity };
+        const resp = await placeOrderForClient(user._id, clientcode, userOrderPayload);
 
         // 🔥 Verify if the broker actually accepted the order
         if (resp && (resp.status === false || resp.status === "error" || resp.errorcode)) {
@@ -350,10 +391,10 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           tradingsymbol: orderPayload.tradingsymbol,
           exchange: orderPayload.exchange,
           side: orderPayload.side,
-          quantity: orderPayload.quantity,
+          quantity: userQuantity,
           entryPrice: entryPrice,
           symboltoken,
-          strategy: req.body.strategy || "Manual",
+          strategy: targetStrategy,
           status: actualStatus === "REJECTED" ? "REJECTED" : "OPEN",
           mode: "live",
           stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
@@ -848,7 +889,23 @@ router.get("/trade-history/:clientcode", auth, async (req, res) => {
 
 router.get("/broker-responses", auth, async (req: any, res) => {
   try {
-    const userId = req.id;
+    let userId = req.id;
+
+    // Allow admin/sub-admin to view specific user's responses via userId or clientcode
+    if (req.userType === 'admin') {
+      if (req.query.userId) {
+        userId = req.query.userId as string;
+      } else if (req.query.clientcode) {
+        const encryptedCode = encrypt(req.query.clientcode as string);
+        const targetUser = await User.findOne({ client_key: encryptedCode });
+        if (targetUser) {
+          userId = targetUser._id.toString();
+        } else {
+          return res.status(404).json({ ok: false, message: "User with this clientcode not found" });
+        }
+      }
+    }
+
     // Get last 50 responses for this user
     const responses = await BrokerResponse.find({ userId })
       .sort({ createdAt: -1 })

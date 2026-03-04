@@ -6,6 +6,23 @@ import Admin from '../models/Admin';
 
 dotenv.config();
 
+// Auto-reset login flags when a token is found to be expired
+async function resetLoginState(type: 'admin' | 'user', token: string, secret: string, model: any): Promise<void> {
+    try {
+        // Decode without verification to get user_id from expired token
+        const decoded = jwt.decode(token) as JwtPayload | null;
+        if (decoded?.user_id) {
+            if (type === 'user') {
+                await model.findByIdAndUpdate(decoded.user_id, { is_login: false, is_online: false });
+            } else {
+                await model.findByIdAndUpdate(decoded.user_id, { is_login: false });
+            }
+        }
+    } catch (_e) {
+        // Silent — best effort only
+    }
+}
+
 const USER_ACCESS_SECRET = process.env.USER_ACCESS_SECRET || 'user_access_secret_123';
 const ADMIN_ACCESS_SECRET = process.env.ADMIN_ACCESS_SECRET || 'admin_access_secret_123';
 
@@ -66,7 +83,14 @@ const commonAuth = async (req: AuthRequest, res: Response, next: NextFunction, s
         console.error(`${type.toUpperCase()} Auth Error:`, error);
 
         if (error.name === "TokenExpiredError") {
-            return res.status(401).json({ error: "Access token has expired!" });
+            // 🔥 Auto-reset login state in DB so Admin dashboard shows correct status
+            const authHeader = req.header("authorization");
+            const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
+            const expiredToken = bearerToken || req.header("x-access-token") || (req.query.token as string);
+            if (expiredToken) {
+                await resetLoginState(type, expiredToken, secret, model);
+            }
+            return res.status(401).json({ error: "Access token has expired! Please login again.", code: "TOKEN_EXPIRED" });
         } else if (error.name === "JsonWebTokenError") {
             return res.status(403).json({ error: "Invalid access token" });
         } else {

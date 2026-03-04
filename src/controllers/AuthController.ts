@@ -14,7 +14,7 @@ const adminRegisterSchema = Joi.object({
     mobile: Joi.string().pattern(/^[0-9]{10,15}$/).required(),
     email: Joi.string().email().required(),
     password: Joi.string().min(6).optional(),
-    panel_client_key: Joi.string().min(3).required(),
+    panel_client_key: Joi.string().min(3).optional(),
     role: Joi.string().valid("admin", "sub-admin").default("sub-admin"),
     status: Joi.string().valid("active", "inactive").default("active"),
     // Permissions
@@ -104,18 +104,25 @@ export const registerAdmin = async (req: Request, res: Response) => {
 export const loginAdmin = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
+        const loginIdentifier = email; // Frontend sends identifier as 'email'
 
-        if (!email || !validateEmail(email)) return res.status(400).json({ error: "Email is not valid", status: false });
+        if (!loginIdentifier) return res.status(400).json({ error: "Email or Mobile Number is required", status: false });
         if (!password) return res.status(400).json({ error: "Password is required", status: false });
 
-        const admin = await Admin.findOne({ email }).select('+password');
-        if (!admin) return res.status(404).json({ error: "Admin does not exist.", status: false });
+        // Search by email OR mobile
+        const admin = await Admin.findOne({
+            $or: [
+                { email: loginIdentifier },
+                { mobile: loginIdentifier }
+            ]
+        }).select('+password');
+
+        if (!admin) return res.status(404).json({ error: "Admin/Sub-Admin account does not exist.", status: false });
 
         const isMatch = await bcrypt.compare(password, admin.password);
         if (!isMatch) return res.status(400).json({ error: "Invalid password", status: false });
 
         admin.is_login = true;
-        // admin does not have is_online field, keep it as is_login for now or add to model
         await admin.save();
 
         const accessToken = generateAccessToken(admin._id, admin.role || 'admin');
@@ -140,21 +147,35 @@ export const loginAdmin = async (req: Request, res: Response) => {
     }
 }
 
-export const registerUser = async (req: Request, res: Response) => {
+export const registerUser = async (req: any, res: Response) => {
     try {
         const { error } = userRegisterSchema.validate(req.body);
         if (error) return res.status(400).json({ error: error.message, status: false });
 
-        // Inside registerUser function
+        const actor = req.user; // Admin or Sub-Admin
+        if (!actor) return res.status(401).json({ error: "Unauthorized: Actor not identified.", status: false });
 
-        let { email, phone_number, user_name, licence, client_key, api_key } = req.body;
+        let { email, phone_number, user_name, licence, client_key, api_key, strategies, group_service } = req.body;
+
+        // [PRODUCTION READY] Granular Permission Enforcement for Sub-Admins during Registration
+        if (actor.role === 'sub-admin' || actor.role === 'subadmin') {
+            if (!actor.all_permission) {
+                if (licence && licence !== 'Demo' && !actor.licence_permission) {
+                    return res.status(403).json({ error: "Access Denied: You do not have permission to assign 'Live' Licence", status: false });
+                }
+                if (strategies && strategies.length > 0 && !actor.strategy_permission) {
+                    return res.status(403).json({ error: "Access Denied: You do not have permission to assign Strategies", status: false });
+                }
+                if (group_service && !actor.group_service_permission) {
+                    return res.status(403).json({ error: "Access Denied: You do not have permission to assign Group Services", status: false });
+                }
+            }
+        }
 
         const existingUser = await User.findOne({ $or: [{ email }, { phone_number }] });
         if (existingUser) return res.status(400).json({ error: "Email or phone exists.", status: false });
 
-        const plainPassword =
-            user_name.substring(0, 4).toLowerCase() + '@123';
-
+        const plainPassword = user_name.substring(0, 4).toLowerCase() + '@123';
         const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
         // Encrypt sensitive fields
@@ -173,7 +194,6 @@ export const registerUser = async (req: Request, res: Response) => {
             if (!end_date) {
                 const twoDaysLater = new Date(today);
                 twoDaysLater.setDate(today.getDate() + 2);
-                // Set to Market Closing Time: 15:30 (3:30 PM)
                 twoDaysLater.setHours(15, 30, 0, 0);
                 end_date = twoDaysLater;
             }
@@ -206,7 +226,7 @@ export const registerUser = async (req: Request, res: Response) => {
         console.error(err);
         res.status(500).json({ error: err.message, status: false });
     }
-}
+};
 
 export const loginUser = async (req: Request, res: Response) => {
     try {

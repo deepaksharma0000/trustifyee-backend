@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
-import { Signal } from '../models/Signal';
 import User from '../models/User';
+import { Group } from '../models/GroupServices';
 import { Position } from '../models/Position.model';
 import { placeOrderForClient } from '../services/OrderService';
 import { log } from '../utils/logger';
@@ -143,29 +143,61 @@ export const broadcastSignal = async (req: Request, res: Response) => {
 
         log.info(`[SIGNAL_EXECUTION] Broadcast started for Signal: ${signalId} (${signal.tradingsymbol})`);
 
-        // 2. Find all eligible users
+        // 2. Identify eligible groups (Groups that contain a service for this signal's symbol)
+        const eligibleGroups = await Group.find({
+            $or: [
+                { "services.name": { $regex: new RegExp(signal.symbol, "i") } },
+                { "services.segment": { $regex: new RegExp(signal.symbol, "i") } }
+            ]
+        }).select('name services').lean();
+
+        const eligibleGroupNames = eligibleGroups.map(g => g.name);
+
+        if (eligibleGroupNames.length === 0) {
+            signal.status = "FAILED";
+            await signal.save();
+            log.warn(`[SIGNAL_EXECUTION] Broadcast aborted: No Group Services found for Symbol: ${signal.symbol}`);
+            return res.status(200).json({ status: true, message: "No groups configured for this symbol.", finalStatus: "FAILED" });
+        }
+
+        // 3. Find all eligible users
+        // Criteria: Active, Trading Enabled, Has Signal's Strategy, and belongs to an eligible Group
         const users = await User.find({
             status: "active",
             trading_status: "enabled",
+            strategies: signal.strategy, // MongoDB matches if the string is in the array
+            group_service: { $in: eligibleGroupNames }
         }).lean();
 
         if (users.length === 0) {
             signal.status = "FAILED";
             await signal.save();
-            log.warn(`[SIGNAL_EXECUTION] Broadcast aborted: No active users for Signal: ${signalId}`);
-            return res.status(200).json({ status: true, message: "No active users to broadcast to.", finalStatus: "FAILED" });
+            log.warn(`[SIGNAL_EXECUTION] Broadcast aborted: No matching users (Strategy: ${signal.strategy}, Symbol: ${signal.symbol})`);
+            return res.status(200).json({ status: true, message: "No matching users for this strategy/group.", finalStatus: "FAILED" });
         }
 
         const totalUsers = users.length;
         const concurrency = Number(process.env.BROADCAST_CONCURRENCY) || 10;
         const limit = pLimit(concurrency);
 
-        // 3. Controlled Parallel Execution
+        // 4. Controlled Parallel Execution
         const results = await Promise.all(users.map(user =>
             limit(async () => {
                 const userId = user._id;
                 try {
-                    // 4. Duplicate Check
+                    // 5. Determine User-Specific Quantity from Group Config
+                    const userGroupName = user.group_service;
+                    const groupConfig = eligibleGroups.find(g => g.name === userGroupName);
+                    const serviceConfig = groupConfig?.services.find(s =>
+                        (s.name && s.name.toUpperCase().includes(signal.symbol.toUpperCase())) ||
+                        (s.segment && s.segment.toUpperCase().includes(signal.symbol.toUpperCase()))
+                    );
+
+                    // Priority: Group Quantity -> 1
+                    const userMultiplier = serviceConfig?.group_qty || 1;
+                    const finalQuantity = signal.quantity * userMultiplier;
+
+                    // 6. Duplicate Check
                     const existingResult = await SignalExecutionResult.findOne({ signalId, userId });
                     if (existingResult) {
                         return { userId, status: "skipped", reason: "already_executed" };
@@ -217,7 +249,7 @@ export const broadcastSignal = async (req: Request, res: Response) => {
                             tradingsymbol: signal.tradingsymbol,
                             exchange: signal.exchange,
                             side: signal.side,
-                            quantity: signal.quantity,
+                            quantity: finalQuantity,
                             entryPrice: paperEntryPrice,
                             status: "OPEN",
                             strategy: signal.strategy,
@@ -248,7 +280,7 @@ export const broadcastSignal = async (req: Request, res: Response) => {
                             tradingsymbol: signal.tradingsymbol,
                             side: signal.side,
                             transactiontype: signal.side,
-                            quantity: signal.quantity,
+                            quantity: finalQuantity,
                             ordertype: "MARKET",
                         });
 
@@ -261,7 +293,7 @@ export const broadcastSignal = async (req: Request, res: Response) => {
                             tradingsymbol: signal.tradingsymbol,
                             exchange: signal.exchange,
                             side: signal.side,
-                            quantity: signal.quantity,
+                            quantity: finalQuantity,
                             entryPrice: entryPrice,
                             status: "OPEN",
                             strategy: signal.strategy,

@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import { encrypt, maskKey, decrypt } from '../utils/encryption';
 import { AngelOneAdapter } from '../adapters/AngelOneAdapter';
 import AngelTokensModel from '../models/AngelTokens';
+import UpstoxTokensModel from '../models/UpstoxTokens';
 
 const updateUserSchema = Joi.object({
     full_name: Joi.string().optional(),
@@ -25,13 +26,18 @@ const updateUserSchema = Joi.object({
     is_star: Joi.boolean().optional(),
 }).unknown(true);
 
-export const updateUser = async (req: Request, res: Response) => {
+export const updateUser = async (req: any, res: Response) => {
     try {
         const { id } = req.params;
         const { error, value } = updateUserSchema.validate(req.body);
         if (error) return res.status(400).json({ error: error.message, status: false });
 
+        const userToUpdate = await User.findById(id);
+        if (!userToUpdate) return res.status(404).json({ error: "User not found", status: false });
+
         const updateData: any = { ...value };
+        const actor = (req as any).user; // The Admin or Sub-Admin making the request
+        if (!actor) return res.status(401).json({ error: "Unauthorized: Actor not identified.", status: false });
 
         // [CRITICAL] Backend Guard: NEVER allow these fields via general profile update
         delete updateData.password;
@@ -40,6 +46,27 @@ export const updateUser = async (req: Request, res: Response) => {
         delete updateData.client_key;
         delete updateData.api_key;
         delete updateData.broker_verified;
+
+        // [PRODUCTION READY] Granular Permission Enforcement for Sub-Admins
+        if (actor.role === 'sub-admin' || actor.role === 'subadmin') {
+            if (!actor.all_permission) {
+                console.log(`[ACL] Checking permissions for ${actor.full_name} on user ${id}`);
+
+                // Check Licence change
+                if (updateData.licence !== undefined && updateData.licence !== userToUpdate.licence && !actor.licence_permission) {
+                    return res.status(403).json({ error: "Access Denied: You do not have permission to change Licence (Live/Demo)", status: false });
+                }
+                // Check Strategies change
+                const stratChanged = updateData.strategies !== undefined && JSON.stringify(updateData.strategies) !== JSON.stringify(userToUpdate.strategies);
+                if (stratChanged && !actor.strategy_permission) {
+                    return res.status(403).json({ error: "Access Denied: You do not have permission to change Strategies", status: false });
+                }
+                // Check Group Service change
+                if (updateData.group_service !== undefined && updateData.group_service !== userToUpdate.group_service && !actor.group_service_permission) {
+                    return res.status(403).json({ error: "Access Denied: You do not have permission to change Group Services", status: false });
+                }
+            }
+        }
 
         const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
         if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
@@ -172,22 +199,56 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
             query.end_date = { $lte: customDate };
         }
 
+        // [PRODUCTION READY] Sub-Admin Client Isolation
+        const actor = (req as any).user;
+        if (actor && (actor.role === 'sub-admin' || actor.role === 'subadmin')) {
+            if (!actor.all_permission) {
+                // Only show clients assigned to this particular Sub-Admin
+                query.sub_admin = actor.full_name;
+            }
+        }
+
         console.log(`[getUsersByEndDate] Final Query:`, JSON.stringify(query));
 
         const users = await User.find(query).select("-password");
 
-        console.log(`[getUsersByEndDate] Found ${users.length} users`);
+        console.log(`[getUsersByEndDate] Found ${users.length} users for actor: ${actor?.full_name}`);
 
-        const maskedUsers = users.map((u) => ({
-            ...u.toObject(),
-            client_key: maskKey(u.client_key || ""),
-            api_key: maskKey(u.api_key || ""),
-        }));
+        // 🔥 [NEW] Enrich each user with live broker session status
+        const enrichedUsers = await Promise.all(
+            users.map(async (u) => {
+                const base = {
+                    ...u.toObject(),
+                    client_key: maskKey(u.client_key || ""),
+                    api_key: maskKey(u.api_key || ""),
+                    broker_session_active: false,
+                };
+                if (u.licence === 'Live' && u.client_key) {
+                    try {
+                        const clientcode = decrypt(u.client_key);
+                        const now = new Date();
+                        const angelToken = await AngelTokensModel.findOne({
+                            userId: u._id,
+                            clientcode,
+                            expiresAt: { $gt: now }
+                        }).lean();
+                        const upstoxToken = angelToken?.jwtToken ? null : await UpstoxTokensModel.findOne({
+                            userId: u._id,
+                            expiresAt: { $gt: now }
+                        }).lean() as any;
+                        base.broker_session_active = !!(angelToken?.jwtToken || upstoxToken?.accessToken);
+                    } catch (_e) {
+                        base.broker_session_active = false;
+                    }
+                }
+                return base;
+            })
+        );
 
         res.status(200).json({
             message: "Users fetched successfully!",
             count: users.length,
-            data: maskedUsers,
+            data: enrichedUsers,
             status: true,
         });
 
@@ -215,6 +276,14 @@ export const getUserSearch = async (req: Request, res: Response) => {
 
         if (phoneTerm) {
             query.phone_number = { $regex: phoneTerm, $options: 'i' };
+        }
+
+        // [PRODUCTION READY] Sub-Admin Client Isolation for Search
+        const actor = (req as any).user;
+        if (actor && (actor.role === 'sub-admin' || actor.role === 'subadmin')) {
+            if (!actor.all_permission) {
+                query.sub_admin = actor.full_name;
+            }
         }
 
         const users = await User.find(query).select("-password");
@@ -254,11 +323,16 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
 
         // [STEP 2] Check for an active session (Access Token)
         const client_code = decrypt(user.client_key);
-        const tokenData = await AngelTokensModel.findOne({ userId: user._id, clientcode: client_code });
+        const now = new Date();
+        const tokenData = await AngelTokensModel.findOne({
+            userId: user._id,
+            clientcode: client_code,
+            expiresAt: { $gt: now }
+        });
 
         if (!tokenData || !tokenData.jwtToken) {
             return res.status(400).json({
-                error: "Access token missing. User MUST login to Angel One dashboard first to generate a session.",
+                error: "Access token missing or expired. User MUST login to Angel One dashboard again.",
                 status: false
             });
         }
@@ -309,3 +383,77 @@ export const toggleStarClient = async (req: Request, res: Response) => {
         res.status(500).json({ error: err.message, status: false });
     }
 }
+
+// [NEW] GET /api/user/broker-session-status/:id
+// Admin checks if a specific user has an active broker session
+export const getBrokerSessionStatus = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const user = await User.findById(id).select('-password');
+        if (!user) return res.status(404).json({ error: 'User not found', status: false });
+
+        if (user.licence !== 'Live') {
+            return res.status(200).json({
+                status: true,
+                broker_session_active: false,
+                reason: 'DEMO_USER',
+                message: 'Demo users do not have broker sessions.'
+            });
+        }
+
+        if (!user.client_key) {
+            return res.status(200).json({
+                status: true,
+                broker_session_active: false,
+                reason: 'NO_CLIENT_CODE',
+                message: 'No broker client code configured for this user.'
+            });
+        }
+
+        const clientcode = decrypt(user.client_key);
+        const now = new Date();
+
+        // Check AngelOne
+        const angelToken = await AngelTokensModel.findOne({
+            userId: user._id,
+            clientcode,
+            expiresAt: { $gt: now }
+        }).lean();
+        if (angelToken?.jwtToken) {
+            return res.status(200).json({
+                status: true,
+                broker_session_active: true,
+                broker: 'AngelOne',
+                reason: 'SESSION_FOUND',
+                message: 'Active AngelOne session found.',
+                session_created_at: (angelToken as any).updatedAt || (angelToken as any).createdAt
+            });
+        }
+
+        // Check Upstox
+        const upstoxToken = await UpstoxTokensModel.findOne({
+            userId: user._id,
+            expiresAt: { $gt: now }
+        }).lean() as any;
+        if (upstoxToken?.accessToken) {
+            return res.status(200).json({
+                status: true,
+                broker_session_active: true,
+                broker: 'Upstox',
+                reason: 'SESSION_FOUND',
+                message: 'Active Upstox session found.',
+                session_created_at: upstoxToken.updatedAt || upstoxToken.createdAt
+            });
+        }
+
+        return res.status(200).json({
+            status: true,
+            broker_session_active: false,
+            reason: 'NO_SESSION',
+            message: 'No active broker session. User must login to their broker account.'
+        });
+
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};

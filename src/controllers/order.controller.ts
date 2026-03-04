@@ -247,8 +247,14 @@ export const getTradeHistory = async (req: Request, res: Response) => {
 
 export const getGlobalTradeHistory = async (req: Request, res: Response) => {
   try {
-    const { fromDate, toDate, indexSymbol, strategy, status, lots } = req.query;
+    const { fromDate, toDate, indexSymbol, strategy, status, lots, clientcode, userId } = req.query;
     let query: any = {};
+
+    if (userId) {
+      query.userId = userId;
+    } else if (clientcode) {
+      query.clientcode = clientcode;
+    }
 
     if (fromDate && toDate) {
       const start = new Date(fromDate as string);
@@ -320,8 +326,14 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
 
 export const exportGlobalTradeHistory = async (req: Request, res: Response) => {
   try {
-    const { fromDate, toDate, indexSymbol, strategy, status, lots } = req.query;
+    const { fromDate, toDate, indexSymbol, strategy, status, lots, clientcode, userId } = req.query;
     let query: any = {};
+
+    if (userId) {
+      query.userId = userId;
+    } else if (clientcode) {
+      query.clientcode = clientcode;
+    }
 
     if (fromDate && toDate) {
       const start = new Date(fromDate as string);
