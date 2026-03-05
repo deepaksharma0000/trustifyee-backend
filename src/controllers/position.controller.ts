@@ -23,7 +23,16 @@ export const getOpenPositions = async (req: Request, res: Response) => {
       ]
     };
 
-    if (clientcode !== 'ADMIN_DEMO' && !isAdminRequested) {
+    if (clientcode === 'ADMIN_DEMO') {
+      // If client (non-admin) is requesting ADMIN_DEMO, force filter by their own userId
+      if ((req as any).userType === 'user') {
+        query.userId = userId;
+      }
+      // If admin is requesting ADMIN_DEMO, we show all demo (paper mode) trades
+      if ((req as any).userType === 'admin') {
+        query.mode = 'paper';
+      }
+    } else if (!isAdminRequested) {
       if (userId) {
         query.userId = userId;
       } else {
@@ -52,11 +61,11 @@ export const getOpenPositions = async (req: Request, res: Response) => {
       // We cannot use clientcode='ADMIN_ALL' as a key — no token exists for it.
       // Instead, pick the most-recently-updated live token from the DB.
       const [angelTokens, upstoxTokens] = await Promise.all([
-        isAdminRequested
-          ? AngelTokensModel.findOne({}).sort({ updatedAt: -1 }).lean()
+        (isAdminRequested || clientcode === 'ADMIN_DEMO')
+          ? AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean()
           : AngelTokensModel.findOne(userId ? { userId } : { clientcode }).lean(),
-        isAdminRequested
-          ? UpstoxTokensModel.findOne({}).sort({ updatedAt: -1 }).lean()
+        (isAdminRequested || clientcode === 'ADMIN_DEMO')
+          ? UpstoxTokensModel.findOne({ accessToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean()
           : UpstoxTokensModel.findOne(userId ? { userId } : {}).sort({ updatedAt: -1 }).lean()
       ]);
 
@@ -192,19 +201,30 @@ export const closePosition = async (req: Request, res: Response) => {
       symboltoken: position.symboltoken
     };
 
-    // 1. Place Exit Order with Broker - Use the clientcode from the position (req.body.clientcode might be 'ADMIN_ALL')
-    const resp = await placeOrderForClient(position.userId, position.clientcode, orderInput);
+    // 1. Place Exit Order with Broker (Only for Live Mode)
+    let orderid_resp = "PAPER-EXIT";
 
-    if (resp && resp.status === false) {
-      return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
+    if (position.mode !== "paper") {
+      const resp = await placeOrderForClient(position.userId, position.clientcode, orderInput);
+
+      if (resp && resp.status === false) {
+        return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
+      }
+
+      orderid_resp = resp?.data?.orderid || resp?.data?.data?.orderid || "MANUAL";
+    } else {
+      orderid_resp = `PAPER-EXIT-${Date.now()}`;
     }
-
-    const orderid_resp = resp?.data?.orderid || resp?.data?.data?.orderid || "MANUAL";
 
     // 2. Capture Exit Price (LTP)
     let exitPrice = 0;
     try {
-      const tokens = await AngelTokensModel.findOne({ clientcode: position.clientcode });
+      let tokens = await AngelTokensModel.findOne({ clientcode: position.clientcode });
+      if (!tokens?.jwtToken) {
+        // Fallback for Demo trades
+        tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+      }
+
       if (tokens?.jwtToken && position.symboltoken) {
         const adapter = new AngelOneAdapter();
         const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);

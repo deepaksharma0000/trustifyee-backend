@@ -207,6 +207,23 @@ async function placeTradesForRun(run: any) {
                     mode: "paper",
                     status: "ok",
                 });
+
+                // Simulated Broker Response for Demo users to see in dashboard
+                try {
+                    const BrokerResponse = require("../models/BrokerResponse").default;
+                    await BrokerResponse.create({
+                        userId: user._id,
+                        clientcode,
+                        tradingsymbol: leg.tradingsymbol,
+                        action: "ALGO_ORDER",
+                        status: "SUCCESS",
+                        message: "Algo order executed (Demo Mode)",
+                        brokerError: { message: "SIMULATED_SUCCESS", mode: "PAPER" }
+                    });
+                } catch (e) {
+                    log.error("Failed to create simulated BrokerResponse in AlgoEngineV2", e);
+                }
+
                 continue;
             }
 

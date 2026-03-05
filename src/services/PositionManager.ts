@@ -111,7 +111,7 @@ async function executeExit(position: any, jwtToken: string, reason: string) {
         if (apiRes && (apiRes.status === true || apiRes.status === "success")) {
             // Update DB
             position.status = "CLOSED";
-            position.exitPrice = 0; 
+            position.exitPrice = 0;
             position.exitAt = new Date();
             position.exitOrderId = apiRes.data?.orderid;
             await position.save();

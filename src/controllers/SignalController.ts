@@ -34,28 +34,35 @@ export const executeSignal = async (req: Request, res: Response) => {
         }
 
         const user = await User.findById(userId);
-        if (!user || user.licence !== "Live") {
-            return res.status(403).json({ error: "User not eligible for live execution", status: false });
+        if (!user) {
+            return res.status(404).json({ error: "User not found", status: false });
         }
 
-        if (!user.broker_verified) {
+        const isDemo = user.licence === "Demo";
+
+        if (!isDemo && !user.broker_verified) {
             return res.status(403).json({ error: "Broker not verified by admin", status: false });
         }
 
-        const client_key = decrypt(user.client_key || "");
-        if (!client_key) return res.status(400).json({ error: "Broker connection details missing", status: false });
+        let client_key = "";
+        if (!isDemo) {
+            client_key = decrypt(user.client_key || "");
+            if (!client_key) return res.status(400).json({ error: "Broker connection details missing", status: false });
+        } else {
+            client_key = decrypt(user.client_key || "") || "DEMO-USER";
+        }
 
         // Calculate quantity (assuming lot size = 1 if not provided, else multiply)
         const quantity = (lots || 1) * signal.quantity;
 
-        log.info(`Executing signal ${signalId} for user ${user.user_name} with ${lots} lots`);
+        log.info(`Executing signal ${signalId} for user ${user.user_name} (Licence: ${user.licence}) with ${lots} lots`);
 
         try {
-            // Fetch live LTP if signal price is 0 or basic check
+            // Fetch live LTP
             let entryPrice = signal.price;
+            let symboltoken = "";
             try {
                 // Find symboltoken/instrument_key
-                let symboltoken = "";
                 const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
                 if (inst) symboltoken = inst.symboltoken;
                 else {
@@ -71,16 +78,23 @@ export const executeSignal = async (req: Request, res: Response) => {
                 log.warn("Could not fetch live LTP for signal execution, using signal price");
             }
 
-            const resp = await placeOrderForClient(userId, client_key, {
-                exchange: signal.exchange,
-                tradingsymbol: signal.tradingsymbol,
-                side: signal.side,
-                transactiontype: signal.side,
-                quantity: quantity,
-                ordertype: "MARKET",
-            });
+            let orderid = "";
+            let mode = "live";
 
-            const orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `SIG-${Date.now()}`;
+            if (isDemo) {
+                orderid = `SIG-PAPER-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+                mode = "paper";
+            } else {
+                const resp = await placeOrderForClient(userId, client_key, {
+                    exchange: signal.exchange,
+                    tradingsymbol: signal.tradingsymbol,
+                    side: signal.side,
+                    transactiontype: signal.side,
+                    quantity: quantity,
+                    ordertype: "MARKET",
+                });
+                orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `SIG-${Date.now()}`;
+            }
 
             const position = await Position.create({
                 userId: userId,
@@ -93,14 +107,14 @@ export const executeSignal = async (req: Request, res: Response) => {
                 entryPrice: entryPrice,
                 status: "OPEN",
                 strategy: signal.strategy,
-                mode: "live",
+                mode: mode,
                 signalId: signal._id,
                 signalType: signal.signalType,
-                symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.instrument_key
+                symboltoken: symboltoken || (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken
             });
 
             res.status(200).json({
-                message: "Signal executed successfully!",
+                message: isDemo ? "Signal executed (Paper Trade)" : "Signal executed successfully!",
                 status: true,
                 data: position
             });

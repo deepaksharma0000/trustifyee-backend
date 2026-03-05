@@ -229,7 +229,10 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       status: "active",
       trading_status: "enabled",
       is_online: true,
-      broker_connected: true,
+      $or: [
+        { broker_connected: true },
+        { licence: "Demo" }
+      ],
       strategies: targetStrategy, // MongoDB matches if the string is in the array
       group_service: { $in: eligibleGroupNames }
     }).lean();
@@ -300,6 +303,18 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           signalTime: new Date(),
           productType: req.body.producttype || "INTRADAY",
         });
+
+        // Simulate Broker Response
+        await BrokerResponse.create({
+          userId: user._id,
+          clientcode,
+          tradingsymbol: orderPayload.tradingsymbol,
+          action: "BROADCAST_ORDER",
+          status: "SUCCESS",
+          message: "Broadcast order placed (Demo Mode)",
+          brokerError: { message: "SIMULATED_SUCCESS", mode: "PAPER" }
+        });
+
         return { userId: user._id, status: "paper", orderid: paperOrderId };
       }
 
@@ -531,8 +546,24 @@ router.post("/place-user", auth, async (req, res) => {
         mode: "paper",
         stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
         targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
+        tradeType: req.body.tradeType || "Manual",
+        signalTime: new Date(),
+        productType: req.body.producttype || "INTRADAY",
       });
-      return res.json({ ok: true, message: "Paper trade executed", orderid: paperOrderId });
+
+      // Simulate Broker Response for realism
+      await BrokerResponse.create({
+        userId: user._id,
+        clientcode: clientcode || "DEMO-USER",
+        orderid: paperOrderId,
+        tradingsymbol: orderPayload.tradingsymbol,
+        action: "USER_ORDER",
+        status: "SUCCESS",
+        message: "Order Placed Successfully (Demo Mode)",
+        brokerError: { message: "SIMULATED_SUCCESS", mode: "PAPER" }
+      });
+
+      return res.json({ ok: true, message: "Order placed successfully (Demo)", orderid: paperOrderId });
     }
 
     const resp = await placeOrderForClient(user._id, clientcode, orderPayload);
@@ -840,8 +871,19 @@ router.get("/active-positions/:clientcode", auth, async (req, res) => {
     const positions = await Position.find({ clientcode, status: "OPEN" }).sort({ createdAt: -1 }).lean();
     if (positions.length === 0) return res.json({ ok: true, data: [] });
 
-    const tokens = await AngelTokensModel.findOne({ clientcode });
-    if (!tokens?.jwtToken) return res.status(401).json({ ok: false, message: "No active session" });
+    // Try to get user's session, fallback to any active session for Demo users
+    let tokens = await AngelTokensModel.findOne({ clientcode });
+    if (!tokens?.jwtToken && user.licence === "Demo") {
+      tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+    }
+
+    if (!tokens?.jwtToken) {
+      // For Live users, this is a hard error. For Demo, we might have failed fallback too.
+      if (user.licence === "Live") return res.status(401).json({ ok: false, message: "No active session" });
+
+      // If Demo but no fallback token, return positions without LTP
+      return res.json({ ok: true, data: positions.map(p => ({ ...p, ltp: 0, pnl: 0 })) });
+    }
 
     const adapter = new AngelOneAdapter();
     const positionsWithLtp = await Promise.all(positions.map(async (p) => {

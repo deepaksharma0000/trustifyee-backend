@@ -32,6 +32,7 @@ import helpRoutes from "./routes/help";
 import signalRoutes from "./routes/signal.routes";
 import angeloneAuthRoutes from "./routes/angeloneAuth";
 import productRoutes from "./routes/product.routes";
+import subscriptionRoutes from "./routes/subscription.routes";
 
 
 
@@ -53,7 +54,7 @@ async function start() {
     log.info("🚀 Starting server...");
     await mongoose.connect(config.mongoUri);
     log.info("✅ Connected to MongoDB");
-    
+
     // Validate Lot Sizes (Production Ready Check)
     await forceFixLotSizes();
 
@@ -146,6 +147,7 @@ async function start() {
     app.use("/api/signals", signalRoutes);
     app.use("/api/signal", signalRoutes);
     app.use("/api/product", productRoutes);
+    app.use("/api/subscriptions", subscriptionRoutes);
     app.use("/api/angelone/auth", angeloneAuthRoutes);
     const messageRoutes = require("./routes/message.routes").default;
     app.use("/api/messages", messageRoutes);

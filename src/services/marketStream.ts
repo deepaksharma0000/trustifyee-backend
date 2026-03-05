@@ -72,10 +72,6 @@ export function startMarketStream(server: any) {
     const startTimer = () => {
       stopTimer();
       if (!state.items.length) return;
-      if (config.disableLiveLtp) {
-        ws.send(JSON.stringify({ type: "error", message: "Live market stream disabled for demo" }));
-        return;
-      }
       state.timer = setInterval(async () => {
         try {
           // Fetch both sessions
