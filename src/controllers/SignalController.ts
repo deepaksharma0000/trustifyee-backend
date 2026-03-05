@@ -10,6 +10,7 @@ import { getInstrumentLtp } from '../services/MarketDataService';
 import InstrumentModel from '../models/Instrument';
 import UpstoxInstrumentModel from '../models/UpstoxInstrument';
 import { SignalExecutionResult } from '../models/SignalExecutionResult';
+import { Signal } from '../models/Signal';
 import mongoose from 'mongoose';
 import pLimit from 'p-limit';
 import { SystemSetting } from '../models/SystemSetting';

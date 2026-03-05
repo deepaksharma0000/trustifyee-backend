@@ -3,7 +3,8 @@ import { postInquiry, getInquiries } from '../controllers/InquiryController';
 import { addStrategy, getStrategies, getStrategyById } from '../controllers/StrategyController';
 import { postClientSave, getClientByUserId, getAllClients, deleteClient } from '../controllers/ClientSaveController';
 import { getSegments, addGroup, getAllGroups, getGroupById, deleteGroup } from '../controllers/GroupServicesController';
-import { auth, adminOnly } from '../middleware/auth.middleware';
+import { auth, adminOnly, adminAuth } from '../middleware/auth.middleware';
+import { checkPermission } from '../middleware/permission.middleware';
 import { getGlobalTradingStatus, updateGlobalTradingStatus, getActiveTradingUsers } from '../controllers/SystemSettingController';
 
 const router = express.Router();
@@ -13,9 +14,9 @@ router.post('/inquiry', postInquiry); // Usually public
 router.get('/inquiry/all', auth, getInquiries);
 
 // Strategies
-router.post('/strategies/add', auth, addStrategy);
-router.get('/strategies/all', auth, getStrategies);
-router.get('/strategies/:id', auth, getStrategyById);
+router.post('/strategies/add', adminAuth, checkPermission('strategy_permission'), addStrategy);
+router.get('/strategies/all', adminAuth, getStrategies);
+router.get('/strategies/:id', adminAuth, getStrategyById);
 
 // Client Save
 router.post('/client/save', auth, postClientSave);
@@ -24,15 +25,15 @@ router.get('/client/all', auth, getAllClients);
 router.delete('/client/:user_id', auth, deleteClient);
 
 // Group Services
-router.get('/group/segments', auth, getSegments);
-router.post('/group/add', auth, addGroup);
-router.get('/group/all', auth, getAllGroups);
-router.get('/group/:id', auth, getGroupById);
-router.delete('/group/:id', auth, deleteGroup);
+router.get('/group/segments', adminAuth, getSegments);
+router.post('/group/add', adminAuth, checkPermission('group_service_permission'), addGroup);
+router.get('/group/all', adminAuth, getAllGroups);
+router.get('/group/:id', adminAuth, getGroupById);
+router.delete('/group/:id', adminAuth, checkPermission('group_service_permission'), deleteGroup);
 
 // System Settings (Global Trading Status) - [NEW]
-router.get('/system/trading-status', auth, getGlobalTradingStatus);
-router.post('/system/trading-status', auth, updateGlobalTradingStatus); // Admin only recommended if you have adminOnly middleware
-router.get('/user/active-trading', auth, getActiveTradingUsers);
+router.get('/system/trading-status', adminAuth, getGlobalTradingStatus);
+router.post('/system/trading-status', adminAuth, adminOnly, updateGlobalTradingStatus); // Master Admin Only
+router.get('/user/active-trading', adminAuth, getActiveTradingUsers);
 
 export default router;

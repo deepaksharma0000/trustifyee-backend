@@ -160,6 +160,9 @@ export const registerUser = async (req: any, res: Response) => {
         // [PRODUCTION READY] Granular Permission Enforcement for Sub-Admins during Registration
         if (actor.role === 'sub-admin' || actor.role === 'subadmin') {
             if (!actor.all_permission) {
+                if (!actor.add_client) {
+                    return res.status(403).json({ error: "Access Denied: You do not have permission to Add New Clients", status: false });
+                }
                 if (licence && licence !== 'Demo' && !actor.licence_permission) {
                     return res.status(403).json({ error: "Access Denied: You do not have permission to assign 'Live' Licence", status: false });
                 }

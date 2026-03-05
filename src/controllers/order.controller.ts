@@ -4,6 +4,7 @@ import { placeAngelOrder } from "../services/angel.service";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import InstrumentModel from "../models/Instrument";
+import User from "../models/User";
 
 export const getOrderStatus = async (req: Request, res: Response) => {
   const { orderid, clientcode } = req.params;
@@ -256,6 +257,23 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
       query.clientcode = clientcode;
     }
 
+    // [PRODUCTION READY] Sub-Admin Client Isolation for Global History
+    const actor = (req as any).user;
+    if (actor && (actor.role === 'sub-admin' || actor.role === 'subadmin') && !actor.all_permission) {
+      const myClients = await User.find({ sub_admin: actor.full_name }).select('_id').lean();
+      const myClientIds = myClients.map(c => c._id);
+
+      if (query.userId) {
+        // If sub-admin is trying to see a specific user dashboard, verify ownership
+        if (!myClientIds.some(id => id.toString() === query.userId.toString())) {
+          return res.status(403).json({ ok: false, message: "Go To Dashboard Denied: You are not assigned to this client." });
+        }
+      } else {
+        // Apply broad filter for the whole list
+        query.userId = { $in: myClientIds };
+      }
+    }
+
     if (fromDate && toDate) {
       const start = new Date(fromDate as string);
       start.setHours(0, 0, 0, 0);
@@ -333,6 +351,21 @@ export const exportGlobalTradeHistory = async (req: Request, res: Response) => {
       query.userId = userId;
     } else if (clientcode) {
       query.clientcode = clientcode;
+    }
+
+    // [PRODUCTION READY] Sub-Admin Client Isolation for Export
+    const actor = (req as any).user;
+    if (actor && (actor.role === 'sub-admin' || actor.role === 'subadmin') && !actor.all_permission) {
+      const myClients = await User.find({ sub_admin: actor.full_name }).select('_id').lean();
+      const myClientIds = myClients.map(c => c._id);
+
+      if (query.userId) {
+        if (!myClientIds.some(id => id.toString() === query.userId.toString())) {
+          return res.status(403).json({ ok: false, message: "Access Denied" });
+        }
+      } else {
+        query.userId = { $in: myClientIds };
+      }
     }
 
     if (fromDate && toDate) {
