@@ -24,6 +24,7 @@ export interface IUser extends Document {
     broker_connected: boolean;
     is_online: boolean;
     is_star: boolean;
+    lot_multipliers?: Record<string, number>; // { 'NIFTY': 2, 'BANKNIFTY': 1 }
     created_at: Date;
     updated_at: Date;
 }
@@ -52,6 +53,7 @@ const UserSchema: Schema = new Schema({
     broker_connected: { type: Boolean, default: false },
     is_online: { type: Boolean, default: false },
     is_star: { type: Boolean, default: false },
+    lot_multipliers: { type: Map, of: Number, default: {} },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);

@@ -200,16 +200,27 @@ export const broadcastSignal = async (req: Request, res: Response) => {
             limit(async () => {
                 const userId = user._id;
                 try {
-                    // 5. Determine User-Specific Quantity from Group Config
+                    // 5. Determine User-Specific Quantity
                     const userGroupName = user.group_service;
                     const groupConfig = eligibleGroups.find(g => g.name === userGroupName);
+                    
+                    // ✅ Precise matching to avoid FINNIFTY matching NIFTY
                     const serviceConfig = groupConfig?.services.find(s =>
-                        (s.name && s.name.toUpperCase().includes(signal.symbol.toUpperCase())) ||
-                        (s.segment && s.segment.toUpperCase().includes(signal.symbol.toUpperCase()))
+                        (s.name && s.name.toUpperCase() === signal.symbol.toUpperCase()) ||
+                        (s.segment && s.segment.toUpperCase() === signal.symbol.toUpperCase())
                     );
 
-                    // Priority: Group Quantity -> 1
-                    const userMultiplier = serviceConfig?.group_qty || 1;
+                    // 🔧 Personalized Lot Multiplier Logic
+                    const symbolMap: any = {
+                        'BANKNIFTY': 'BankNifty',
+                        'NIFTY': 'NIFTY',
+                        'FINNIFTY': 'FINNIFTY',
+                        'SENSEX': 'SENSEX'
+                    };
+                    const multiplierKey = symbolMap[signal.symbol.toUpperCase()] || signal.symbol.toUpperCase();
+                    
+                    // Priority: Personal Multiplier -> Group Quantity -> 1
+                    const userMultiplier = (user.lot_multipliers && user.lot_multipliers[multiplierKey]) || serviceConfig?.group_qty || 1;
                     const finalQuantity = signal.quantity * userMultiplier;
 
                     // 6. Duplicate Check

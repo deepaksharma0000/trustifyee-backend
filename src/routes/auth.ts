@@ -53,8 +53,10 @@ router.get("/me", auth, async (req: any, res) => {
     const user = req.user;
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    // Mask keys if it's a regular user
-    const userData = user.toObject ? user.toObject() : user;
+    // ✅ Convert to object and flatten Maps (for lot_multipliers)
+    const userData = user.toObject ? user.toObject({ flattenMaps: true }) : user;
+    
+    // Mask sensitive keys
     if (userData.client_key) userData.client_key = "********";
     if (userData.api_key) userData.api_key = "********";
 

@@ -239,10 +239,21 @@ async function placeTradesForRun(run: any) {
         continue;
       }
 
+      // ✅ Fetch personal lot multiplier for this symbol
+      const symbolMap: any = {
+        'BANKNIFTY': 'BankNifty',
+        'NIFTY': 'NIFTY',
+        'FINNIFTY': 'FINNIFTY',
+        'SENSEX': 'SENSEX'
+      };
+      
+      const multiplierKey = symbolMap[run.symbol] || run.symbol;
+      const userMultiplier = (user.lot_multipliers && user.lot_multipliers[multiplierKey]) || 1;
+
       // 🔧 TASK 4: Auto-Algo Disable for Live
       // Create a signal instead of placing the order
       for (const opt of optionList) {
-        log.info(`Creating SIGNAL for Live User ${user.user_name} - ${opt.tradingsymbol}`);
+        log.info(`Creating SIGNAL for Live User ${user.user_name} - ${opt.tradingsymbol} with Lot Multiplier: ${userMultiplier}`);
 
         await SignalService.createSignal({
           symbol: run.symbol,
@@ -253,7 +264,7 @@ async function placeTradesForRun(run: any) {
           optiontype: opt.optiontype,
           expiry: opt.expiry,
           price: 0, // LTP will be fetched on execute
-          quantity: 1, // Base quantity
+          quantity: userMultiplier, // Applied Lot Multiplier (Admin 1 * User X)
           strategy: run.strategy,
           signalType: "ENTRY"
         });
@@ -261,6 +272,16 @@ async function placeTradesForRun(run: any) {
       continue;
     }
     // -------------------------------------------------------------
+
+    // ✅ Resolve multiplier for Demo/Paper as well
+    const symbolMap: any = {
+      'BANKNIFTY': 'BankNifty',
+      'NIFTY': 'NIFTY',
+      'FINNIFTY': 'FINNIFTY',
+      'SENSEX': 'SENSEX'
+    };
+    const multiplierKey = symbolMap[run.symbol] || run.symbol;
+    const userMultiplier = (user.lot_multipliers && user.lot_multipliers[multiplierKey]) || 1;
 
     for (const opt of optionList) {
       if (user.licence === "Demo") {
@@ -272,7 +293,7 @@ async function placeTradesForRun(run: any) {
           tradingsymbol: opt.tradingsymbol,
           exchange: "NFO",
           side: "BUY",
-          quantity: 1,
+          quantity: userMultiplier,
           entryPrice: 0,
           symboltoken: opt.symboltoken,
           status: "OPEN",
@@ -291,7 +312,7 @@ async function placeTradesForRun(run: any) {
           optiontype: opt.optiontype,
           strike: opt.strike,
           side: "BUY",
-          quantity: 1,
+          quantity: userMultiplier,
           mode: "paper",
           status: "ok",
         });
@@ -304,7 +325,7 @@ async function placeTradesForRun(run: any) {
           tradingsymbol: opt.tradingsymbol,
           side: "BUY",
           transactiontype: "BUY",
-          quantity: 1,
+          quantity: userMultiplier,
           ordertype: "MARKET",
         });
 

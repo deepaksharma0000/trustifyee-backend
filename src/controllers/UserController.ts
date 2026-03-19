@@ -457,3 +457,20 @@ export const getBrokerSessionStatus = async (req: Request, res: Response) => {
         res.status(500).json({ error: err.message, status: false });
     }
 };
+export const updateLotMultipliers = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { lot_multipliers } = req.body;
+
+        const updatedUser = await User.findByIdAndUpdate(id, { lot_multipliers }, { new: true });
+        if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
+
+        res.status(200).json({
+            message: "Lot Multipliers updated successfully!",
+            data: updatedUser.lot_multipliers,
+            status: true
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};

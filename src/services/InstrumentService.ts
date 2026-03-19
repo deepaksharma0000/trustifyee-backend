@@ -25,8 +25,13 @@ export async function syncAllOptionInstruments() {
       const rawStrike = Number(r.strike);
       const normalizedStrike = rawStrike / 100;
       
-      // CRITICAL: Pure dynamic lot size from Broker API
-      const lotSize = Number(r.lotsize);
+      // CRITICAL: Pure dynamic lot size from Broker API with Custom Overrides
+      let lotSize = Number(r.lotsize);
+      
+      // 🛠️ Apply Production Overrides as per User Request
+      if (r.name === "NIFTY") lotSize = 65;
+      if (r.name === "BANKNIFTY") lotSize = 30;
+      if (r.name === "FINNIFTY") lotSize = 60;
 
       return {
         updateOne: {
@@ -51,7 +56,7 @@ export async function syncAllOptionInstruments() {
 
   if (bulk.length) {
     await InstrumentModel.bulkWrite(bulk);
-    log.info(`[Sync] Dynamic sync complete. Processed ${bulk.length} instruments with live broker lot sizes.`);
+    log.info(`[Sync] Dynamic sync complete. Processed ${bulk.length} instruments with overridden lot sizes (Nifty:65, BN:30, FN:60).`);
   }
 }
 
@@ -69,7 +74,13 @@ export async function syncFinNiftyOptionsOnly() { await syncAllOptionInstruments
 export async function forceFixLotSizes() {
     log.info("Verifying Instrument Lot Sizes via Broker API...");
     await syncAllOptionInstruments();
-    log.info("✅ Lot sizes verified and synchronized with Broker Master.");
+    
+    // Manually ensure any existing ones are also updated if they were missed by the filter
+    await InstrumentModel.updateMany({ name: "NIFTY" }, { $set: { lotSize: 65 } });
+    await InstrumentModel.updateMany({ name: "BANKNIFTY" }, { $set: { lotSize: 30 } });
+    await InstrumentModel.updateMany({ name: "FINNIFTY" }, { $set: { lotSize: 60 } });
+
+    log.info("✅ Lot sizes verified and synchronized with Custom Overrides.");
 }
 
 
