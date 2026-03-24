@@ -237,6 +237,24 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       group_service: { $in: eligibleGroupNames }
     }).lean();
 
+    // 🔥 ADD ADMIN TO USERS LIST ALWAYS so their order is placed regardless of active users
+    const adminReqUser = (req as any).user;
+    const userType = (req as any).userType;
+    if (adminReqUser && adminReqUser._id && userType === 'admin') {
+       const AdminModel = require('../models/Admin').default;
+       const adminData = await AdminModel.findById(adminReqUser._id).lean();
+       if (adminData) {
+           adminData.licence = adminData.broker_connected ? "Live" : "Demo";
+           if (!adminData.client_key && adminData.panel_client_key) {
+               adminData.client_key = adminData.panel_client_key;
+           }
+           const alreadyInList = users.find((u: any) => u._id.toString() === adminData._id.toString());
+           if (!alreadyInList) {
+               users.push(adminData as any);
+           }
+       }
+    }
+
     if (users.length === 0) {
       log.warn(`[PLACE_ALL] Aborted: No matching users for Strategy: ${targetStrategy}, Symbol: ${baseSymbol}`);
       return res.json({ ok: true, totalUsers: 0, message: "No matching users found for this strategy and group." });
@@ -273,11 +291,15 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       const userQuantity = orderPayload.quantity * userMultiplier;
 
       let clientcode = user.client_key;
-      if (!clientcode) return { userId: user._id, status: "skipped", reason: "missing client_key" };
+      if (!clientcode && user.licence !== "Demo") {
+          return { userId: user._id, status: "skipped", reason: "missing client_key" };
+      }
 
       // Decrypt clientcode for token lookup
       try {
-        clientcode = decrypt(clientcode);
+        if (clientcode) {
+            clientcode = decrypt(clientcode);
+        }
       } catch (e) {
         log.warn("Failed to decrypt clientcode for user:", user._id);
       }
@@ -286,7 +308,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         const paperOrderId = `PAPER-${uuidv4()}`;
         await Position.create({
           userId: user._id,
-          clientcode,
+          clientcode: clientcode || "DEMO-USER",
           orderid: paperOrderId,
           tradingsymbol: orderPayload.tradingsymbol,
           exchange: orderPayload.exchange,
@@ -307,7 +329,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         // Simulate Broker Response
         await BrokerResponse.create({
           userId: user._id,
-          clientcode,
+          clientcode: clientcode || "DEMO-USER",
           tradingsymbol: orderPayload.tradingsymbol,
           action: "BROADCAST_ORDER",
           status: "SUCCESS",
