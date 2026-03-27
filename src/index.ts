@@ -52,6 +52,7 @@ import { initAutoExitWorker } from "./jobs/AutoExitWorker";
 async function start() {
   try {
     log.info("🚀 Starting server...");
+    log.info(`Connecting to MongoDB at: ${config.mongoUri}`);
     await mongoose.connect(config.mongoUri);
     log.info("✅ Connected to MongoDB");
 

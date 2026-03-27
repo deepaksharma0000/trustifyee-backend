@@ -30,6 +30,10 @@ export interface IPosition extends Document {
   tradeType?: string;
   productType?: string;
   exitQty?: number;
+  isSystemGenerated?: boolean;
+  userLicenceAtTrade?: string;
+  userOnlineAtTrade?: boolean;
+  brokerConnectedAtTrade?: boolean;
 }
 
 const PositionSchema = new Schema<IPosition>(
@@ -62,6 +66,10 @@ const PositionSchema = new Schema<IPosition>(
     tradeType: { type: String },
     productType: { type: String },
     exitQty: { type: Number },
+    isSystemGenerated: { type: Boolean, default: false },
+    userLicenceAtTrade: { type: String },
+    userOnlineAtTrade: { type: Boolean },
+    brokerConnectedAtTrade: { type: Boolean },
   },
   { timestamps: true }
 );

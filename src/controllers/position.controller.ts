@@ -16,20 +16,27 @@ export const getOpenPositions = async (req: Request, res: Response) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    const userType = (req as any).userType;
+
     const query: any = {
       $or: [
-        { status: { $in: ["OPEN", "COMPLETE"] } },
+        { status: { $in: ["OPEN", "COMPLETE", "REJECTED"] } },
         { status: "CLOSED", updatedAt: { $gte: today } }
       ]
     };
 
+    // 🔥 Requirement: Regular users (XYZ) should ONLY see current day positions
+    if (userType === 'user') {
+      query.createdAt = { $gte: today };
+    }
+
     if (clientcode === 'ADMIN_DEMO') {
       // If client (non-admin) is requesting ADMIN_DEMO, force filter by their own userId
-      if ((req as any).userType === 'user') {
+      if (userType === 'user') {
         query.userId = userId;
       }
       // If admin is requesting ADMIN_DEMO, we show all demo (paper mode) trades
-      if ((req as any).userType === 'admin') {
+      if (userType === 'admin') {
         query.mode = 'paper';
       }
     } else if (!isAdminRequested) {

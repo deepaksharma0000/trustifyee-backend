@@ -73,13 +73,6 @@ router.post("/place", async (req, res, next) => {
       return res.status(400).json({ error: "Instrument not found" });
     }
 
-    // Resolve instrument lot size for expansion
-    if (instrument && instrument.instrumenttype === "OPTIDX" && instrument.lotSize) {
-      if (orderPayload.quantity < 500) { // Threshold for lot-to-unit expansion
-        orderPayload.quantity = orderPayload.quantity * instrument.lotSize;
-      }
-    }
-
     const symboltoken = instrument.symboltoken as string;
 
     // For admin placing for client, we need the client's userId.
@@ -197,280 +190,189 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       exchange: orderPayload.exchange
     }).lean() as any;
 
-    // Expansion for broadcast as well
-    if (instrument && instrument.instrumenttype === "OPTIDX" && instrument.lotSize) {
-      if (orderPayload.quantity < 500) {
-        orderPayload.quantity = orderPayload.quantity * instrument.lotSize;
-      }
-    }
-
-    // 2. Identify eligible groups (Groups that contain a service for this symbol)
-    // We derive the base symbol (e.g., NIFTY from NIFTY25JAN19000CE)
-    let baseSymbol = "";
-    if (orderPayload.tradingsymbol.includes("BANKNIFTY")) baseSymbol = "BANKNIFTY";
-    else if (orderPayload.tradingsymbol.includes("FINNIFTY")) baseSymbol = "FINNIFTY";
-    else if (orderPayload.tradingsymbol.includes("SENSEX")) baseSymbol = "SENSEX";
-    else if (orderPayload.tradingsymbol.includes("NIFTY")) baseSymbol = "NIFTY";
-    else baseSymbol = orderPayload.tradingsymbol;
-
-    const eligibleGroups = await Group.find({
-      $or: [
-        { "services.name": { $regex: new RegExp(baseSymbol, "i") } },
-        { "services.segment": { $regex: new RegExp(baseSymbol, "i") } }
-      ]
-    }).select('name services').lean();
-
-    const eligibleGroupNames = eligibleGroups.map(g => g.name);
+    const isOptionChainTrade = req.body.tradeType === "Option-Chain";
     const targetStrategy = req.body.strategy || "Manual";
 
-    // 3. Find all eligible users
-    // Criteria: Active, Trading Enabled, Has specified Strategy, and belongs to an eligible Group
-    const users = await User.find({
+    const baseSymbol = req.body.tradingsymbol?.replace(/[0-9].*$/, "").trim().toUpperCase() || "";
+
+    // 1. Fetch all groups once for lookup
+    const allGroups = await Group.find({}).lean();
+
+    // 2. Find eligible users
+    // If strategy is Manual, we also include users with NO strategies defined (legacy support)
+    const strategyQuery = targetStrategy === "Manual" 
+      ? { $or: [{ strategies: "Manual" }, { strategies: { $size: 0 } }, { strategies: { $exists: false } }] }
+      : { strategies: targetStrategy };
+
+    const userQuery: any = {
       status: "active",
       trading_status: "enabled",
-      is_online: true,
-      $or: [
-        { broker_connected: true },
-        { licence: "Demo" }
-      ],
-      strategies: targetStrategy, // MongoDB matches if the string is in the array
-      group_service: { $in: eligibleGroupNames }
-    }).lean();
+      licence: { $in: ["Live", "Demo"] },
+      ...strategyQuery
+    };
 
-    // 🔥 ADD ADMIN TO USERS LIST ALWAYS so their order is placed regardless of active users
+    let users = await User.find(userQuery).lean();
+
+    // 3. Add admin themselves to the processing list
     const adminReqUser = (req as any).user;
     const userType = (req as any).userType;
     if (adminReqUser && adminReqUser._id && userType === 'admin') {
        const AdminModel = require('../models/Admin').default;
        const adminData = await AdminModel.findById(adminReqUser._id).lean();
-       if (adminData) {
+       if (adminData && !users.find((u: any) => u._id.toString() === adminData._id.toString())) {
            adminData.licence = adminData.broker_connected ? "Live" : "Demo";
-           if (!adminData.client_key && adminData.panel_client_key) {
-               adminData.client_key = adminData.panel_client_key;
-           }
-           const alreadyInList = users.find((u: any) => u._id.toString() === adminData._id.toString());
-           if (!alreadyInList) {
-               users.push(adminData as any);
-           }
+           if (!adminData.client_key && adminData.panel_client_key) adminData.client_key = adminData.panel_client_key;
+           users.push(adminData as any);
        }
     }
 
     if (users.length === 0) {
-      log.warn(`[PLACE_ALL] Aborted: No matching users for Strategy: ${targetStrategy}, Symbol: ${baseSymbol}`);
-      return res.json({ ok: true, totalUsers: 0, message: "No matching users found for this strategy and group." });
+      log.warn(`[PLACE_ALL] Aborted: No active users matched Strategy: ${targetStrategy}`);
+      return res.json({ ok: true, totalUsers: 0, message: "No active users found for this strategy." });
     }
 
     const symboltoken = instrument?.symboltoken as string | undefined;
 
-    // Capture LTP ONCE for all users in broadcast
+    // Capture LTP ONCE for all users
     let broadcastLtp = 0;
     try {
       const adapter = new AngelOneAdapter();
-      // Use any active admin token
       const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
       if (tokens?.jwtToken && symboltoken) {
         const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
         broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
-        if (broadcastLtp === 0 && ltpResp?.data) {
-          // Secondary check for different response format
-          broadcastLtp = Number(ltpResp.data.lastPrice || 0);
-        }
+        if (broadcastLtp === 0 && ltpResp?.data) broadcastLtp = Number(ltpResp.data.lastPrice || 0);
       }
     } catch (e: any) { log.warn("LTP fetch for broadcast failed:", e.message); }
 
-    const results = await Promise.all(users.map(async (user: any) => {
-      // 4. Determine User-Specific Quantity from Group Config
-      const userGroupName = user.group_service;
-      const groupConfig = eligibleGroups.find(g => g.name === userGroupName);
-      const serviceConfig = groupConfig?.services.find(s =>
-        (s.name && s.name.toUpperCase().includes(baseSymbol.toUpperCase())) ||
-        (s.segment && s.segment.toUpperCase().includes(baseSymbol.toUpperCase()))
-      );
+    const enrichedResults = await Promise.all(users.map(async (user: any) => {
+      // 4. Resolve Group Service Multiplier
+      const groupConfig = allGroups.find(g => g.name === user.group_service);
+      
+      // Smart search for service (handle spaces in symbols)
+      const serviceConfig = groupConfig?.services.find(s => {
+          const sName = (s.name || "").toUpperCase().replace(/\s+/g, "");
+          const bSym = baseSymbol.replace(/\s+/g, "");
+          return sName.includes(bSym) || bSym.includes(sName);
+      });
+
+      // If user is in a group but we can't find this specific service, we might skip to avoid wrong trades
+      // UNLESS it's the admin themselves or the user has no group.
+      if (user.group_service && !serviceConfig && userType !== 'admin') {
+          return { userId: user._id, userName: user.user_name, status: "skipped", reason: `Symbol ${baseSymbol} not enabled in Group ${user.group_service}` };
+      }
 
       const userMultiplier = serviceConfig?.group_qty || 1;
-      const userQuantity = orderPayload.quantity * userMultiplier;
+      const lotMultiplier = instrument?.lotSize || 1;
+      const totalUserUnits = Math.max(1, (orderPayload.quantity * userMultiplier) * lotMultiplier);
 
       let clientcode = user.client_key;
+      const userName = user.user_name || user.name || "N/A";
+
       if (!clientcode && user.licence !== "Demo") {
-          return { userId: user._id, status: "skipped", reason: "missing client_key" };
-      }
-
-      // Decrypt clientcode for token lookup
-      try {
-        if (clientcode) {
-            clientcode = decrypt(clientcode);
-        }
-      } catch (e) {
-        log.warn("Failed to decrypt clientcode for user:", user._id);
-      }
-
-      if (user.licence === "Demo") {
-        const paperOrderId = `PAPER-${uuidv4()}`;
-        await Position.create({
-          userId: user._id,
-          clientcode: clientcode || "DEMO-USER",
-          orderid: paperOrderId,
-          tradingsymbol: orderPayload.tradingsymbol,
-          exchange: orderPayload.exchange,
-          side: orderPayload.side,
-          quantity: userQuantity,
-          entryPrice: broadcastLtp,
-          symboltoken,
-          strategy: targetStrategy,
-          status: "OPEN",
-          mode: "paper",
-          stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-          targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
-          tradeType: req.body.tradeType || "Manual",
-          signalTime: new Date(),
-          productType: req.body.producttype || "INTRADAY",
-        });
-
-        // Simulate Broker Response
-        await BrokerResponse.create({
-          userId: user._id,
-          clientcode: clientcode || "DEMO-USER",
-          tradingsymbol: orderPayload.tradingsymbol,
-          action: "BROADCAST_ORDER",
-          status: "SUCCESS",
-          message: "Broadcast order placed (Demo Mode)",
-          brokerError: { message: "SIMULATED_SUCCESS", mode: "PAPER" }
-        });
-
-        return { userId: user._id, status: "paper", orderid: paperOrderId };
+          return { userId: user._id, userName, licence: user.licence, status: "skipped", reason: "Missing client_key", brokerConnected: !!user.broker_connected };
       }
 
       try {
-        const userOrderPayload = { ...orderPayload, quantity: userQuantity };
-        const resp = await placeOrderForClient(user._id, clientcode, userOrderPayload);
+        if (clientcode) clientcode = decrypt(clientcode);
+      } catch (e) { log.warn("Decrypt failed for:", user._id); }
 
-        // 🔥 Verify if the broker actually accepted the order
-        if (resp && (resp.status === false || resp.status === "error" || resp.errorcode)) {
-          const errMsg = resp.message || resp.error || "Broker rejected the order";
+      // Order Slicing
+      const orderSlices: number[] = [];
+      let freezeLimit = baseSymbol === "BANKNIFTY" ? 900 : (baseSymbol === "MIDCPNIFTY" ? 4200 : 1800);
+      let rem = totalUserUnits;
+      while (rem > 0) {
+        const s = Math.min(rem, freezeLimit);
+        orderSlices.push(s);
+        rem -= s;
+      }
 
-          await BrokerResponse.create({
-            userId: user._id,
-            clientcode,
-            tradingsymbol: orderPayload.tradingsymbol,
-            action: "BROADCAST_ORDER",
-            status: "REJECTED",
-            message: errMsg,
-            brokerError: resp
+      const userSlices: any[] = [];
+
+      for (const sliceQty of orderSlices) {
+        if (user.licence === "Demo") {
+          const paperOrderId = `PAPER-${uuidv4()}`;
+          await Position.create({
+            userId: user._id, clientcode: clientcode || "DEMO-USER", orderid: paperOrderId,
+            tradingsymbol: orderPayload.tradingsymbol, exchange: orderPayload.exchange,
+            side: orderPayload.side, quantity: sliceQty, entryPrice: broadcastLtp,
+            symboltoken, strategy: targetStrategy, status: "OPEN", mode: "paper",
+            tradeType: req.body.tradeType || "Manual", productType: req.body.producttype || "INTRADAY",
+            isSystemGenerated: true,
           });
-
-          return { userId: user._id, status: "error", error: errMsg };
-        }
-
-        const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || (resp as any)?.orderid || `BROKER-${uuidv4()}`;
-
-        if (orderid.startsWith("BROKER-")) {
-          log.warn(`Broker confirmation missing for user ${user.clientcode}. Using UUID: ${orderid}. Full Resp:`, JSON.stringify(resp));
-        }
-
-        // 🕒 WAIT for Broker RMS to process (1.5 - 2 seconds)
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // 🔍 Fetch REAL Status from Broker
-        let actualStatus = "SUCCESS";
-        let actualMessage = "Order placed successfully";
-        let finalBrokerData = resp;
-
-        try {
-          const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
-          let brokerData = statusResp?.data || statusResp;
-
-          if (Array.isArray(brokerData)) {
-            brokerData = brokerData[0];
-          }
-
-          if (brokerData && typeof brokerData === 'object') {
-            finalBrokerData = brokerData;
-            // Use String() to safely handle potential boolean status
-            const bStatus = String(brokerData.orderstatus || brokerData.status || "").toUpperCase();
-
-            if (bStatus === "REJECTED") {
-              actualStatus = "REJECTED";
-              actualMessage = brokerData.text || brokerData.message || "Rejected by Broker RMS";
-            } else if (bStatus === "CANCELLED") {
-              actualStatus = "REJECTED";
-              actualMessage = "Order Cancelled by Broker";
-            } else if (bStatus === "COMPLETE") {
-              actualStatus = "SUCCESS";
-              actualMessage = "Order executed successfully";
-            } else if (bStatus === "OPEN" || bStatus === "PENDING") {
-              actualStatus = "SUCCESS";
-              actualMessage = "Order is open/pending in broker terminal";
-            }
-          } else {
-            actualStatus = "ERROR";
-            actualMessage = "Broker returned empty status response";
-          }
-        } catch (statusErr: any) {
-          log.warn(`Status check failed for ${orderid}:`, statusErr.message);
-          actualStatus = "ERROR";
-          actualMessage = "Sync failed: " + statusErr.message;
-        }
-
-        // Capture Price
-        let entryPrice = 0;
-        if (actualStatus === "SUCCESS") {
+          userSlices.push({ status: "paper", orderid: paperOrderId });
+        } else if (!user.broker_connected) {
+          const skippedOrderId = `REJ-${uuidv4()}`;
+          await Position.create({
+            userId: user._id, clientcode: clientcode || "MISSING-CC", orderid: skippedOrderId,
+            tradingsymbol: orderPayload.tradingsymbol, exchange: orderPayload.exchange,
+            side: orderPayload.side, quantity: sliceQty, entryPrice: broadcastLtp,
+            symboltoken, strategy: targetStrategy, status: "REJECTED", mode: "live",
+            tradeType: req.body.tradeType || "Manual", productType: req.body.producttype || "INTRADAY",
+            isSystemGenerated: true, userLicenceAtTrade: user.licence,
+          });
+          userSlices.push({ status: "skipped", reason: "Broker Disconnected" });
+        } else {
           try {
-            const bData = finalBrokerData;
-            entryPrice = Number(bData?.averageprice || bData?.price || 0);
-          } catch (e) { }
+            const resp = await placeOrderForClient(user._id, clientcode, { ...orderPayload, quantity: sliceQty });
+            const orderid = resp?.data?.orderid || resp?.orderid || `BR-${uuidv4()}`;
+            
+            // 🔥 CRITICAL: Wait 1.5s for broker RMS processing to get the REAL status
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            
+            let brokerMsg = resp?.message || "Order Placed Successfully";
+            let actualStatus = "OPEN";
+            
+            try {
+                const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
+                if (statusResp && statusResp.status && statusResp.data) {
+                    const bData = statusResp.data;
+                    const bStatus = String(bData.orderstatus || bData.status || "").toUpperCase();
+                    
+                    brokerMsg = bData.text || bData.message || brokerMsg;
+
+                    if (["REJECTED", "CANCELLED", "ERROR", "FAILED"].includes(bStatus)) {
+                        actualStatus = "REJECTED";
+                    } else if (bStatus === "COMPLETE") {
+                        actualStatus = "COMPLETE";
+                    }
+                }
+            } catch (e: any) { log.warn("Broadcast status verification failed:", e.message); }
+
+            await Position.create({
+              userId: user._id, clientcode, orderid,
+              tradingsymbol: orderPayload.tradingsymbol, exchange: orderPayload.exchange,
+              side: orderPayload.side, quantity: sliceQty, entryPrice: broadcastLtp,
+              symboltoken, strategy: targetStrategy, status: actualStatus === "COMPLETE" ? "OPEN" : actualStatus, mode: "live",
+              tradeType: req.body.tradeType || "Manual", productType: req.body.producttype || "INTRADAY",
+              isSystemGenerated: true,
+            });
+
+            await BrokerResponse.create({
+               userId: user._id, clientcode, orderid, tradingsymbol: orderPayload.tradingsymbol,
+               action: "BROADCAST_ORDER", 
+               status: actualStatus === "REJECTED" ? "REJECTED" : "SUCCESS", 
+               message: brokerMsg, 
+               brokerError: resp
+            });
+
+            userSlices.push({ status: actualStatus === "REJECTED" ? "error" : "ok", orderid, reason: brokerMsg });
+          } catch (err: any) {
+            userSlices.push({ status: "error", error: err.message });
+          }
         }
-        if (entryPrice === 0 && actualStatus === "SUCCESS") entryPrice = broadcastLtp;
-
-        await Position.create({
-          userId: user._id,
-          clientcode,
-          orderid,
-          tradingsymbol: orderPayload.tradingsymbol,
-          exchange: orderPayload.exchange,
-          side: orderPayload.side,
-          quantity: userQuantity,
-          entryPrice: entryPrice,
-          symboltoken,
-          strategy: targetStrategy,
-          status: actualStatus === "REJECTED" ? "REJECTED" : "OPEN",
-          mode: "live",
-          stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-          targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
-          tradeType: req.body.tradeType || "Manual",
-          signalTime: new Date(),
-          productType: req.body.producttype || "INTRADAY",
-        });
-
-        // Log ACTUAL Response
-        await BrokerResponse.create({
-          userId: user._id,
-          clientcode,
-          orderid,
-          tradingsymbol: orderPayload.tradingsymbol,
-          action: "BROADCAST_ORDER",
-          status: (actualStatus === "ERROR" ? "REJECTED" : actualStatus) as any, // Map error to rejected for user clarity
-          message: actualMessage,
-          brokerError: finalBrokerData
-        });
-
-        return { userId: user._id, status: actualStatus === "REJECTED" ? "error" : "ok", orderid, message: actualMessage };
-      } catch (err: any) {
-        const errMsg = err.message || String(err);
-
-        await BrokerResponse.create({
-          userId: user._id,
-          clientcode,
-          tradingsymbol: orderPayload.tradingsymbol,
-          action: "BROADCAST_ORDER",
-          status: "ERROR",
-          message: errMsg
-        });
-
-        return { userId: user._id, status: "error", error: errMsg };
       }
+
+      const firstSlice = userSlices[0] || {};
+      return { 
+        userId: user._id, userName, licence: user.licence, 
+        totalUnits: totalUserUnits, status: userSlices.some(s => s.status === 'ok' || s.status === 'paper') ? (user.licence === "Demo" ? "paper" : "ok") : "error",
+        isOnline: !!user.is_online, brokerConnected: !!user.broker_connected,
+        orderid: firstSlice.orderid, reason: firstSlice.reason, error: firstSlice.error
+      };
     }));
 
-    return res.json({ ok: true, totalUsers: users.length, results });
+    return res.json({ ok: true, totalUsers: users.length, results: enrichedResults });
   } catch (err: any) {
     log.error("place-all error", err.message || err);
     return res.status(500).json({ error: err.message || err });
@@ -517,14 +419,6 @@ router.post("/place-user", auth, async (req, res) => {
     }).lean() as any;
 
     let finalQuantity = Number(quantity) || 1;
-    if (instrument && instrument.instrumenttype === "OPTIDX" && instrument.lotSize) {
-      // If quantity is small (e.g. 1, 2, 5), assume it's lots and expand to units
-      // If it's already a multiple of lotSize and > lotSize, it might be units already.
-      // But usually, Admin/User inputs lots in these specific UI fields.
-      if (finalQuantity < 500) { // Safety threshold: if qty < 500, likely lots
-        finalQuantity = finalQuantity * instrument.lotSize;
-      }
-    }
 
     const orderPayload: PlaceOrderInput = {
       exchange: "NFO",

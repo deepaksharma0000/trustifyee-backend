@@ -55,14 +55,6 @@ export async function placeOrderForClient(
     }
 
     let finalQuantity = orderInput.quantity;
-    if (
-      symbol.instrumenttype === "OPTIDX" &&
-      (symbol.name === "NIFTY" || symbol.name === "BANKNIFTY" || symbol.name === "FINNIFTY")
-    ) {
-      if (symbol.lotSize && finalQuantity < 500) {
-        finalQuantity = finalQuantity * symbol.lotSize;
-      }
-    }
 
     const payload = {
       variety: "NORMAL",
@@ -98,9 +90,6 @@ export async function placeOrderForClient(
     }
 
     let finalQuantity = orderInput.quantity;
-    if (symbol.lot_size && finalQuantity < 500) {
-      finalQuantity = orderInput.quantity * symbol.lot_size;
-    }
 
     const payload = {
       instrument_token: symbol.instrument_key,
