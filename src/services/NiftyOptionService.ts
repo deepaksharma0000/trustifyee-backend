@@ -1,11 +1,13 @@
+import moment from "moment-timezone";
 import InstrumentModel from "../models/Instrument";
 import { config } from "../config";
 import { getATMStrike } from "../utils/optionUtils";
 import { getLiveIndexLtp, getLastIndexLtp } from "./MarketDataService";
 
 function formatIstDate(date: Date) {
-  return date.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  return moment(date).tz("Asia/Kolkata").format("YYYY-MM-DD");
 }
+
 
 function getIstDayRange(dateStr: string) {
   const start = new Date(`${dateStr}T00:00:00+05:30`);
@@ -49,18 +51,29 @@ export async function getOptionChain(
   }
 
   // 2. Fetch all available expiries for this symbol regardless of LTP
+  const nowIst = moment().tz("Asia/Kolkata");
+  const todayStart = nowIst.clone().startOf('day').toDate();
+
   const baseQuery = {
     name: symbol,
     instrumenttype: "OPTIDX",
-    expiry: { $gte: new Date() }
+    expiry: { $gte: todayStart }
   };
 
   const expiriesData: Date[] = await InstrumentModel.distinct("expiry", baseQuery);
+  
+  const todayStr = nowIst.format("YYYY-MM-DD");
+  const isPastMarketClose = nowIst.hours() > 15 || (nowIst.hours() === 15 && nowIst.minutes() >= 30);
+
   const expiryList = Array.from(
     new Set(
       expiriesData
-        .map((d) => formatIstDate(new Date(d)))
-        .filter((d) => d >= formatIstDate(new Date()))
+        .map((d) => moment(d).tz("Asia/Kolkata").format("YYYY-MM-DD"))
+        .filter((d) => {
+          if (d < todayStr) return false;
+          if (d === todayStr && isPastMarketClose) return false;
+          return true;
+        })
     )
   ).sort();
 

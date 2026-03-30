@@ -40,6 +40,8 @@ const docs = await UpstoxInstrumentModel.find({
   return docs;
 }
 
+import moment from "moment-timezone";
+
 /**
  * Group chain by expiry
  */
@@ -48,7 +50,8 @@ export function groupByExpiry(
 ): Record<string, IUpstoxInstrument[]> {
   const map: Record<string, IUpstoxInstrument[]> = {};
   for (const ins of chain) {
-    const key = ins.expiry ? ins.expiry.toISOString().slice(0, 10) : "NO_EXPIRY";
+    // Standardize to YYYY-MM-DD in IST
+    const key = ins.expiry ? moment(ins.expiry).tz("Asia/Kolkata").format("YYYY-MM-DD") : "NO_EXPIRY";
     if (!map[key]) map[key] = [];
     map[key].push(ins);
   }
@@ -63,27 +66,33 @@ export function pickExpiry(
   mode: "NEAREST" | "NEXT" = "NEAREST"
 ): { expiry: string; instruments: IUpstoxInstrument[] } | null {
   const byExpiry = groupByExpiry(chain);
-  const today = new Date();
+  const nowIst = moment().tz("Asia/Kolkata");
+  const todayStr = nowIst.format("YYYY-MM-DD");
+  const isPastMarketClose = nowIst.hours() > 15 || (nowIst.hours() === 15 && nowIst.minutes() >= 30);
 
   const expiries = Object.keys(byExpiry)
     .filter((k) => k !== "NO_EXPIRY")
-    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+    .sort();
 
   if (expiries.length === 0) return null;
 
-  const futureExpiries = expiries.filter(
-    (d) => new Date(d).getTime() >= today.getTime()
-  );
-  if (futureExpiries.length === 0) return null;
+  const validExpiries = expiries.filter((d) => {
+    if (d < todayStr) return false;
+    if (d === todayStr && isPastMarketClose) return false;
+    return true;
+  });
+
+  if (validExpiries.length === 0) return null;
 
   if (mode === "NEAREST") {
-    const exp = futureExpiries[0];
+    const exp = validExpiries[0];
     return { expiry: exp, instruments: byExpiry[exp] };
   } else {
-    const exp = futureExpiries[Math.min(1, futureExpiries.length - 1)];
+    const exp = validExpiries[Math.min(1, validExpiries.length - 1)];
     return { expiry: exp, instruments: byExpiry[exp] };
   }
 }
+
 
 /**
  * Find ATM strike for given LTP

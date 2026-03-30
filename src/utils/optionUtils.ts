@@ -3,12 +3,30 @@ export function getATMStrike(niftyPrice: number) {
   return Math.round(niftyPrice / 50) * 50;
 }
 
+import moment from "moment-timezone";
+
 export function getNearestExpiry(dates: Date[]) {
-  const now = new Date();
-  return dates
-    .filter(d => d > now)
-    .sort((a, b) => a.getTime() - b.getTime())[0];
+  const now = moment().tz("Asia/Kolkata");
+  const todayStr = now.format("YYYY-MM-DD");
+  const isPastMarketClose = now.hours() > 15 || (now.hours() === 15 && now.minutes() >= 30);
+
+  const sortedExpiries = dates
+    .map(d => moment(d).tz("Asia/Kolkata").format("YYYY-MM-DD"))
+    .filter((value, index, self) => self.indexOf(value) === index) // unique
+    .sort();
+
+  for (const expiryStr of sortedExpiries) {
+    if (expiryStr > todayStr) {
+      return moment.tz(expiryStr, "Asia/Kolkata").toDate();
+    }
+    if (expiryStr === todayStr && !isPastMarketClose) {
+      return moment.tz(expiryStr, "Asia/Kolkata").toDate();
+    }
+  }
+
+  return dates.length > 0 ? dates[0] : undefined;
 }
+
 export function getNearestStrike(
   availableStrikes: number[],
   atm: number
