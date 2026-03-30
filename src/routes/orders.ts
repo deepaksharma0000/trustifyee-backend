@@ -315,29 +315,44 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         } else {
           try {
             const resp = await placeOrderForClient(user._id, clientcode, { ...orderPayload, quantity: sliceQty });
-            const orderid = resp?.data?.orderid || resp?.orderid || `BR-${uuidv4()}`;
             
-            // 🔥 CRITICAL: Wait 1.5s for broker RMS processing to get the REAL status
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            let brokerMsg = resp?.message || "Order Placed Successfully";
             let actualStatus = "OPEN";
-            
-            try {
-                const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
-                if (statusResp && statusResp.status && statusResp.data) {
-                    const bData = statusResp.data;
-                    const bStatus = String(bData.orderstatus || bData.status || "").toUpperCase();
-                    
-                    brokerMsg = bData.text || bData.message || brokerMsg;
+            let brokerMsg = resp?.message || "Order Submitted";
+            let orderid = resp?.data?.orderid || resp?.orderid;
 
-                    if (["REJECTED", "CANCELLED", "ERROR", "FAILED"].includes(bStatus)) {
-                        actualStatus = "REJECTED";
-                    } else if (bStatus === "COMPLETE") {
-                        actualStatus = "COMPLETE";
+            if (resp && resp.status === false) {
+                actualStatus = "REJECTED";
+                brokerMsg = resp.message || "Rejected by Broker";
+                orderid = orderid || `REJ-${uuidv4()}`;
+            } else {
+                orderid = orderid || `BR-${uuidv4()}`;
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                try {
+                    const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
+                    if (statusResp && statusResp.status && statusResp.data) {
+                        const bData = Array.isArray(statusResp.data) ? statusResp.data[0] : statusResp.data;
+                        const bStatus = String(bData.orderstatus || bData.status || "").toUpperCase();
+                        
+                        // 🎯 IMPROVED: If broker text is empty, generate professional message based on status
+                        const bStatusText = bData.text || bData.message || bData.cancelreason || "";
+                        if (!bStatusText || bStatusText.toUpperCase() === "SUCCESS") {
+                            if (bStatus === "COMPLETE") brokerMsg = "Order Executed Successfully";
+                            else if (["OPEN", "PENDING", "TRIGGER PENDING"].includes(bStatus)) brokerMsg = "Order is pending in broker terminal";
+                            else if (bStatus === "REJECTED") brokerMsg = "Rejected by Broker RMS";
+                            else brokerMsg = bStatus || brokerMsg;
+                        } else {
+                            brokerMsg = bStatusText;
+                        }
+
+                        if (["REJECTED", "CANCELLED", "ERROR", "FAILED"].includes(bStatus)) {
+                            actualStatus = "REJECTED";
+                        } else if (bStatus === "COMPLETE") {
+                            actualStatus = "COMPLETE";
+                        }
                     }
-                }
-            } catch (e: any) { log.warn("Broadcast status verification failed:", e.message); }
+                } catch (e: any) { log.warn("Broadcast status verification failed:", e.message); }
+            }
 
             await Position.create({
               userId: user._id, clientcode, orderid,
@@ -358,6 +373,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
 
             userSlices.push({ status: actualStatus === "REJECTED" ? "error" : "ok", orderid, reason: brokerMsg });
           } catch (err: any) {
+            log.error("Broadcast slice error:", err.message);
             userSlices.push({ status: "error", error: err.message });
           }
         }
@@ -483,49 +499,55 @@ router.post("/place-user", auth, async (req, res) => {
     }
 
     const resp = await placeOrderForClient(user._id, clientcode, orderPayload);
-
-    if (resp && resp.status === false) {
-      return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
-    }
-
     const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || (resp as any)?.orderid || `BROKER-${uuidv4()}`;
-
-    if (orderid.startsWith("BROKER-")) {
-      log.warn(`Broker confirmation missing in /place-user for ${clientcode}. Resp:`, JSON.stringify(resp));
-    }
-
-    // 🕒 WAIT for Broker RMS
-    await new Promise(resolve => setTimeout(resolve, 2000));
 
     let entryPrice = 0;
     let actualStatus = "SUCCESS";
     let actualMessage = "Order Placed Successfully";
     let finalBrokerData = null;
 
-    try {
-      const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
-      let brokerData = statusResp?.data || statusResp;
+    if (resp && resp.status === false) {
+      actualStatus = "REJECTED";
+      actualMessage = resp.message || "Broker error";
+    } else {
+      // 🕒 WAIT for Broker RMS on success submission
+      await new Promise(resolve => setTimeout(resolve, 2000));
 
-      if (Array.isArray(brokerData)) {
-        brokerData = brokerData[0];
-      }
+      try {
+        const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
+        let brokerData = statusResp?.data || statusResp;
 
-      if (brokerData && typeof brokerData === 'object') {
-        finalBrokerData = brokerData;
-        const bStatus = String(brokerData.orderstatus || brokerData.status || "").toUpperCase();
-
-        if (bStatus === "REJECTED") {
-          actualStatus = "REJECTED";
-          actualMessage = brokerData.text || brokerData.message || "Rejected by Broker RMS";
+        if (Array.isArray(brokerData)) {
+          brokerData = brokerData[0];
         }
 
-        // Capture REAL entry price
-        entryPrice = Number(brokerData.averageprice || brokerData.price || 0);
+        if (brokerData && typeof brokerData === 'object') {
+          finalBrokerData = brokerData;
+          const bStatus = String(brokerData.orderstatus || brokerData.status || "").toUpperCase();
+
+          // 🎯 IMPROVED: Professional message translation
+          const bStatusText = brokerData.text || brokerData.message || brokerData.cancelreason || "";
+          if (!bStatusText || bStatusText.toUpperCase() === "SUCCESS") {
+              if (bStatus === "COMPLETE") actualMessage = "Order Executed Successfully";
+              else if (["OPEN", "PENDING", "TRIGGER PENDING"].includes(bStatus)) actualMessage = "Order is pending in broker terminal";
+              else if (bStatus === "REJECTED") actualMessage = "Rejected by Broker RMS";
+              else actualMessage = bStatus || actualMessage;
+          } else {
+              actualMessage = bStatusText;
+          }
+
+          if (["REJECTED", "CANCELLED", "ERROR", "FAILED"].includes(bStatus)) {
+            actualStatus = "REJECTED";
+          } else if (bStatus === "COMPLETE") {
+            actualStatus = "SUCCESS";
+          }
+
+          // Capture REAL entry price
+          entryPrice = Number(brokerData.averageprice || brokerData.price || 0);
+        }
+      } catch (statusErr: any) {
+        log.warn("Direct user status check failed:", statusErr.message);
       }
-    } catch (statusErr: any) {
-      log.warn("Direct user status check failed:", statusErr.message);
-      actualStatus = "ERROR";
-      actualMessage = "Verification failed: " + statusErr.message;
     }
 
     // Fallback to paperEntryPrice (LTP) if order is complete but averageprice is 0
@@ -560,9 +582,9 @@ router.post("/place-user", auth, async (req, res) => {
       orderid,
       tradingsymbol: orderPayload.tradingsymbol,
       action: "USER_ORDER",
-      status: (actualStatus === "ERROR" ? "REJECTED" : actualStatus) as any,
+      status: (actualStatus === "REJECTED" ? "REJECTED" : "SUCCESS") as any,
       message: actualMessage,
-      brokerError: finalBrokerData
+      brokerError: finalBrokerData || resp
     });
 
     if (actualStatus === "REJECTED") {
