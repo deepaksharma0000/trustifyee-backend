@@ -58,18 +58,33 @@ router.get("/auth/callback", async (req, res) => {
       {
         clientcode,
         sessionId: encrypt(data.userSession),
-        // optional: agar model extend kara ho
-        // aliceUserId: userId,
-        // aliceClientId: data.clientId,
         expiresAt: undefined
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     ).lean();
 
-    log.debug("Saved Alice session for client:", clientcode, saved);
+    // 🚀 [USER MODEL SYNC]
+    // Update the User document so the system knows they are using AliceBlue
+    const User = require("../models/User").default;
+    const { encrypt: dbEncrypt } = require("../utils/encryption");
+    
+    // We search for the user with this encrypted client_key
+    const encryptedCC = dbEncrypt(clientcode);
+    await User.findOneAndUpdate(
+      { client_key: encryptedCC },
+      { 
+        broker: "AliceBlue",
+        broker_connected: true,
+        broker_verified: true,
+        is_online: true
+      }
+    );
 
-    // Simple response: dev phase me ye theek hai
-    return res.send("Alice Blue account connected successfully. You can close this tab.");
+    log.debug("Saved Alice session and updated User profile for:", clientcode);
+
+    // Redirect back to frontend dashboard
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
+    return res.redirect(`${frontendUrl}/dashboard?broker_login=success&broker=AliceBlue`);
   } catch (err: any) {
     log.error("Alice /auth/callback error", err.message || err);
     return res.status(500).send(err.message || "Internal error");

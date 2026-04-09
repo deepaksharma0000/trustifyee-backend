@@ -242,9 +242,21 @@ async function placeTradesForRun(run: any) {
                     resp?.data?.data?.orderid ||
                     `BROKER-${Date.now()}-${Math.random()}`;
 
-                const session = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean() as any;
-                const entryPrice = session?.jwtToken && leg.symboltoken
-                    ? await getEntryPrice(session.jwtToken, "NFO", leg.tradingsymbol, leg.symboltoken)
+                // 🚀 [BROKER AWARE SESSION]
+                let session: any = null;
+                let tokenToUse: string = "";
+
+                if (user.broker === "AliceBlue") {
+                  const AliceTokensModel = require("../models/AliceTokens").default;
+                  session = await AliceTokensModel.findOne({ userId: user._id, clientcode }).lean();
+                  tokenToUse = session?.sessionId || ""; // Alice uses sessionId
+                } else {
+                  session = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean() as any;
+                  tokenToUse = session?.jwtToken || ""; // Angel uses jwtToken
+                }
+
+                const entryPrice = tokenToUse && leg.symboltoken
+                    ? await getEntryPrice(tokenToUse, "NFO", leg.tradingsymbol, leg.symboltoken)
                     : 0;
 
                 await Position.create({

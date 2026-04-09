@@ -90,6 +90,43 @@ export async function placeOrderForClient(
       return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
   }
 
+  // 🚀 [BROKER ROUTING]
+  // If user is AliceBlue, delegate to AliceOrderService
+  if (user.broker === "AliceBlue") {
+    try {
+      const { placeAliceOrderForClient } = await import("./AliceOrderService");
+      const aliceResp = await placeAliceOrderForClient(clientcode, {
+        exchange: orderInput.exchange,
+        tradingsymbol: orderInput.tradingsymbol,
+        side: orderInput.side,
+        transactiontype: orderInput.transactiontype,
+        quantity: orderInput.quantity,
+        ordertype: orderInput.ordertype,
+        price: orderInput.price,
+        symboltoken: orderInput.symboltoken,
+        triggerPrice: orderInput.triggerPrice,
+      });
+
+      if (aliceResp && (aliceResp.status === "Ok" || aliceResp.stat === "Ok")) {
+        user.consecutive_failures = 0;
+        await user.save();
+        log.info(`PLACE_ORDER_ALICE_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
+        return { status: true, data: aliceResp };
+      } else {
+        throw new Error(aliceResp?.message || aliceResp?.emsg || "Alice Blue rejected order");
+      }
+    } catch (err: any) {
+      log.error(`ALICE_ORDER_FAILURE: ${clientcode} - ${err.message}`);
+      user.consecutive_failures = (user.consecutive_failures || 0) + 1;
+      if (user.consecutive_failures >= 3) {
+        user.trading_paused = true;
+      }
+      await user.save();
+      return { status: false, message: err.message };
+    }
+  }
+
+  // 😇 [DEFAULT / ANGELONE FLOW] - Unmodified production logic
   try {
       // 1. Run Validations
       const validation = await runPreTradeValidation(user._id.toString(), clientcode, orderInput);
@@ -137,8 +174,8 @@ export async function placeOrderForClient(
   } catch (err: any) {
       log.error(`ORDER_FAILURE [Attempt ${retryCount + 1}]: ${clientcode} - ${err.message}`);
 
-      // Retry Logic
-      if (retryCount < 1) { // Retry max 2 times total
+      // Retry Logic (Only for Angel One)
+      if (retryCount < 1) { 
           return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
       }
 

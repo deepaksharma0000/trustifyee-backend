@@ -73,12 +73,42 @@ async function checkAndManagePositions() {
                 if (limitHit) {
                     log.info(`🚀 Auto-Exit Triggered: ${p.tradingsymbol} | reason: ${exitReason} | LTP: ${ltp} | SL: ${pos.stopLossPrice} | TGT: ${pos.targetPrice}`);
 
-                    // We need a session token for execution
-                    const tokens = await AngelTokensModel.findOne(p.userId ? { userId: p.userId, clientcode: p.clientcode } : { clientcode: p.clientcode }).lean() as any;
-                    if (tokens?.jwtToken) {
-                        await executeExit(p, tokens.jwtToken, exitReason);
+                    // 🚀 [BROKER AWARE EXIT]
+                    const user = await User.findById(p.userId).lean() as any;
+                    const broker = user?.broker || "AngelOne";
+
+                    if (broker === "AliceBlue") {
+                      const { placeOrderForClient } = await import("./OrderService");
+                      const exitSide = pos.side === "BUY" ? "SELL" : "BUY";
+                      const aliceRes = await placeOrderForClient(p.userId, p.clientcode, {
+                        exchange: p.exchange,
+                        tradingsymbol: p.tradingsymbol,
+                        side: exitSide,
+                        transactiontype: exitSide,
+                        quantity: p.quantity,
+                        ordertype: "MARKET",
+                        symboltoken: p.symboltoken,
+                        producttype: p.productType || "INTRADAY"
+                      });
+
+                      if (aliceRes && aliceRes.status === true) {
+                        p.status = "CLOSED";
+                        p.exitPrice = ltp;
+                        p.exitAt = new Date();
+                        p.exitOrderId = aliceRes.data?.orderid || "ALICE-EXIT";
+                        await p.save();
+                        log.info(`✅ Auto-Exit Success (Alice): ${p.tradingsymbol}`);
+                      } else {
+                        log.error(`❌ Auto-Exit Failed (Alice): ${aliceRes?.message}`);
+                      }
                     } else {
-                        log.error(`Cannot auto-exit ${p.tradingsymbol}: No token for ${p.clientcode}`);
+                      // 😇 [DEFAULT / ANGELONE FLOW]
+                      const tokens = await AngelTokensModel.findOne(p.userId ? { userId: p.userId, clientcode: p.clientcode } : { clientcode: p.clientcode }).lean() as any;
+                      if (tokens?.jwtToken) {
+                          await executeExit(p, tokens.jwtToken, exitReason);
+                      } else {
+                          log.error(`Cannot auto-exit ${p.tradingsymbol}: No token for ${p.clientcode}`);
+                      }
                     }
                 }
             }
@@ -97,7 +127,7 @@ async function executeExit(position: any, jwtToken: string, reason: string) {
     try {
         const exitSide = position.side === "BUY" ? "SELL" : "BUY";
 
-        // Place Market Exit
+        // Place Market Exit (Angel One Specific)
         const apiRes = await adapter.placeOrder(jwtToken, {
             exchange: position.exchange,
             tradingsymbol: position.tradingsymbol,
@@ -105,7 +135,7 @@ async function executeExit(position: any, jwtToken: string, reason: string) {
             quantity: position.quantity,
             ordertype: "MARKET",
             symboltoken: position.symboltoken,
-            producttype: "INTRADAY"
+            producttype: position.productType || "INTRADAY"
         });
 
         if (apiRes && (apiRes.status === true || apiRes.status === "success")) {
