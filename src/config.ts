@@ -80,4 +80,5 @@ export const config = {
     process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
 
   encryptionKey: process.env.ENCRYPTION_SECRET || "",
+  publicIp: "106.193.147.98", // [NEW] Tracked and updated dynamically
 };

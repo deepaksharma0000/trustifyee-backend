@@ -1,10 +1,11 @@
 import express from 'express';
+import { config } from '../config';
 import { AngelOneAdapter } from '../adapters/AngelOneAdapter';
 import { log } from '../utils/logger';
 import AngelTokensModel from '../models/AngelTokens';
 import User from '../models/User';
 import Admin from '../models/Admin';
-import { encrypt } from '../utils/encryption';
+import { encrypt, decrypt } from '../utils/encryption';
 import { auth } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -12,22 +13,47 @@ const router = express.Router();
 // 🚀 Manual Session Generation (SmartAPI loginByPassword Model)
 // POST /api/angelone/auth/generate-session
 router.post('/generate-session', auth, async (req: any, res) => {
-    const { client_code, password, totp } = req.body;
+    let { client_code, password, totp, totp_secret } = req.body;
     const userId = req.id;
     const userType = req.userType;
 
-    if (!client_code || !password || !totp) {
-        return res.status(400).json({ status: false, error: 'Client Code, Password, and TOTP are required' });
+    // 🚀 Fetch profile first to get saved api_key and totp_secret
+    const profile = userType === 'admin' ? await Admin.findById(userId) : await User.findById(userId);
+    
+    // 3. Get API Key (Order: Request Body > User Profile > Global Config)
+    let decryptedApiKey = config.angelApiKey;
+    let keySource = "Global Default";
+
+    if (req.body.api_key) {
+        decryptedApiKey = req.body.api_key;
+        keySource = "Request Body";
+    } else if (profile?.api_key) {
+        decryptedApiKey = decrypt(profile.api_key);
+        keySource = "User Profile";
+    }
+
+    log.info(`Generating AngelOne session for ${userType}: ${userId} (${client_code}) using ${keySource} API Key`);
+
+    // [NEW] Smart Login: Fetch saved secret if not provided in the request
+    if (!totp && !totp_secret && profile?.broker_totp_secret) {
+        totp_secret = profile.broker_totp_secret;
+        log.info(`Smart Login: Using saved TOTP secret for ${client_code}`);
+    }
+
+    if (!client_code || !password || (!totp && !totp_secret)) {
+        return res.status(400).json({ status: false, error: 'Client Code, Password, and either TOTP or TOTP Secret are required' });
     }
 
     try {
         log.info(`Generating AngelOne session for ${userType}: ${userId} (${client_code})`);
 
-        const adapter = new AngelOneAdapter();
+        // Initialize adapter with user-specific API key
+        const adapter = new AngelOneAdapter(decryptedApiKey);
         const loginResp = await adapter.generateSession({
             clientcode: client_code,
             password: password,
-            totp: totp
+            totp: totp,
+            totp_secret: totp_secret
         });
 
         if (loginResp.status && loginResp.data) {
@@ -48,12 +74,17 @@ router.post('/generate-session', auth, async (req: any, res) => {
             );
 
             // 2. Update Model broker status
-            const updatePayload = {
+            const updatePayload: any = {
                 broker_connected: true,
                 broker_verified: true,
                 client_key: encrypt(client_code),
                 broker: 'AngelOne'
             };
+
+            // [NEW] Save TOTP Secret if provided for automated logins in the future
+            if (totp_secret) {
+                updatePayload.broker_totp_secret = totp_secret;
+            }
 
             if (userType === 'admin') {
                 await Admin.findByIdAndUpdate(userId, updatePayload);

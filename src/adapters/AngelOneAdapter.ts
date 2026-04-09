@@ -3,6 +3,7 @@ import axios, { AxiosInstance } from "axios";
 import { config } from "../config";
 import { log } from "../utils/logger";
 import { decrypt } from "../utils/encryption";
+import speakeasy from 'speakeasy';
 
 export type AngelSessionResp = {
   status?: boolean | string;
@@ -20,11 +21,11 @@ export class AngelOneAdapter {
   private tokenPath = "/rest/auth/angelbroking/jwt/v1/generateTokens";
   private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
 
-  constructor() {
-    this.apiKey = config.angelApiKey;
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey || config.angelApiKey;
     this.client = axios.create({
       baseURL: config.angelBaseUrl,
-      timeout: 15000
+      timeout: 60000
     });
     this.tokenPath = config.genPath || this.tokenPath;
     this.refreshTokenPath = config.refreshPath || this.refreshTokenPath;
@@ -36,7 +37,7 @@ export class AngelOneAdapter {
       "Content-type": "application/json",
       Accept: "application/json",
       "X-ClientLocalIP": "127.0.0.1",
-      "X-ClientPublicIP": "106.193.147.98",
+      "X-ClientPublicIP": config.publicIp,
       "X-MACAddress": "fe:ed:fa:ce:12:34",
       "X-PrivateKey": this.apiKey,
       "X-UserType": "USER",
@@ -52,15 +53,32 @@ export class AngelOneAdapter {
 
   // ------------ LOGIN (Trading APIs - Password Based) ------------
 
+
   async generateSession(params: {
     clientcode: string;
     password: string;
     totp?: string;
+    totp_secret?: string; // [NEW] Added for automated generation
   }): Promise<AngelSessionResp> {
+    let finalTotp = params.totp || "";
+
+    // [NEW] Automated TOTP generation if secret is provided
+    if (!finalTotp && params.totp_secret) {
+      try {
+        finalTotp = speakeasy.totp({
+          secret: params.totp_secret,
+          encoding: 'base32'
+        });
+        log.info(`Auto-generated TOTP for ${params.clientcode}`);
+      } catch (e: any) {
+        log.error(`TOTP Generation error for ${params.clientcode}: ${e.message}`);
+      }
+    }
+
     const body = {
       clientcode: params.clientcode,
       password: params.password,
-      totp: params.totp || ""
+      totp: finalTotp
     };
 
     try {
@@ -252,6 +270,20 @@ export class AngelOneAdapter {
       // Return error structure rather than throwing for easier validation check
       const data = err?.response?.data ?? err.message;
       return { status: false, message: "Profile fetch failed", data };
+    }
+  }
+
+  // ------------ RMS / FUNDS ------------
+  async getRMS(jwtToken: string) {
+    const path = "/rest/secure/angelbroking/user/v1/getRMS";
+    try {
+      const resp = await this.client.get(path, {
+        headers: this.baseHeaders(jwtToken)
+      });
+      return resp.data;
+    } catch (err: any) {
+      const data = err?.response?.data ?? err.message;
+      return { status: false, message: "RMS fetch failed", data };
     }
   }
 }

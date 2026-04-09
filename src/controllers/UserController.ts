@@ -21,6 +21,8 @@ const updateUserSchema = Joi.object({
     service_to_month: Joi.string().allow('', null).optional(),
     group_service: Joi.string().allow('', null).optional(),
     strategies: Joi.array().items(Joi.string()).optional(),
+    api_key: Joi.string().allow('', null).optional(),
+    client_key: Joi.string().allow('', null).optional(),
     is_online: Joi.boolean().optional(),
     is_login: Joi.boolean().optional(),
     is_star: Joi.boolean().optional(),
@@ -36,32 +38,26 @@ export const updateUser = async (req: any, res: Response) => {
         if (!userToUpdate) return res.status(404).json({ error: "User not found", status: false });
 
         const updateData: any = { ...value };
-        const actor = (req as any).user; // The Admin or Sub-Admin making the request
+        const actor = (req as any).user;
         if (!actor) return res.status(401).json({ error: "Unauthorized: Actor not identified.", status: false });
 
-        // [CRITICAL] Backend Guard: NEVER allow these fields via general profile update
         delete updateData.password;
         delete updateData.email;
         delete updateData.user_name;
-        delete updateData.client_key;
-        delete updateData.api_key;
         delete updateData.broker_verified;
 
-        // [PRODUCTION READY] Granular Permission Enforcement for Sub-Admins
+        if (req.body.client_key) updateData.client_key = encrypt(req.body.client_key);
+        if (req.body.api_key) updateData.api_key = encrypt(req.body.api_key);
+
         if (actor.role === 'sub-admin' || actor.role === 'subadmin') {
             if (!actor.all_permission) {
-                console.log(`[ACL] Checking permissions for ${actor.full_name} on user ${id}`);
-
-                // Check Licence change
                 if (updateData.licence !== undefined && updateData.licence !== userToUpdate.licence && !actor.licence_permission) {
                     return res.status(403).json({ error: "Access Denied: You do not have permission to change Licence (Live/Demo)", status: false });
                 }
-                // Check Strategies change
                 const stratChanged = updateData.strategies !== undefined && JSON.stringify(updateData.strategies) !== JSON.stringify(userToUpdate.strategies);
                 if (stratChanged && !actor.strategy_permission) {
                     return res.status(403).json({ error: "Access Denied: You do not have permission to change Strategies", status: false });
                 }
-                // Check Group Service change
                 if (updateData.group_service !== undefined && updateData.group_service !== userToUpdate.group_service && !actor.group_service_permission) {
                     return res.status(403).json({ error: "Access Denied: You do not have permission to change Group Services", status: false });
                 }
@@ -100,7 +96,6 @@ export const updateUserBroker = async (req: Request, res: Response) => {
         if (client_key) updateData.client_key = encrypt(client_key);
         if (api_key) updateData.api_key = encrypt(api_key);
 
-        // Reset verification status whenever broker details change
         updateData.broker_verified = false;
         updateData.broker_connected = false;
 
@@ -193,28 +188,20 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
         } else if (filter === "active") {
             query.end_date = { $gte: today };
         } else if (filter === "custom" && date) {
-            // Include up to the end of the specified date
             const customDate = new Date(date as string);
             customDate.setHours(23, 59, 59, 999);
             query.end_date = { $lte: customDate };
         }
 
-        // [PRODUCTION READY] Sub-Admin Client Isolation
         const actor = (req as any).user;
         if (actor && (actor.role === 'sub-admin' || actor.role === 'subadmin')) {
             if (!actor.all_permission) {
-                // Only show clients assigned to this particular Sub-Admin
                 query.sub_admin = actor.full_name;
             }
         }
 
-        console.log(`[getUsersByEndDate] Final Query:`, JSON.stringify(query));
-
         const users = await User.find(query).select("-password");
 
-        console.log(`[getUsersByEndDate] Found ${users.length} users for actor: ${actor?.full_name}`);
-
-        // 🔥 [NEW] Enrich each user with live broker session status
         const enrichedUsers = await Promise.all(
             users.map(async (u) => {
                 const base = {
@@ -253,7 +240,6 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
         });
 
     } catch (err: any) {
-        console.error(`[getUsersByEndDate] Error:`, err);
         res.status(500).json({ error: err.message, status: false });
     }
 }
@@ -278,7 +264,6 @@ export const getUserSearch = async (req: Request, res: Response) => {
             query.phone_number = { $regex: phoneTerm, $options: 'i' };
         }
 
-        // [PRODUCTION READY] Sub-Admin Client Isolation for Search
         const actor = (req as any).user;
         if (actor && (actor.role === 'sub-admin' || actor.role === 'subadmin')) {
             if (!actor.all_permission) {
@@ -316,12 +301,10 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
         const user = await User.findById(id);
         if (!user) return res.status(404).json({ error: "User not found", status: false });
 
-        // [STEP 1] Check if keys exist
         if (!user.client_key || !user.api_key) {
             return res.status(400).json({ error: "Broker API Key or Client Code missing.", status: false });
         }
 
-        // [STEP 2] Check for an active session (Access Token)
         const client_code = decrypt(user.client_key);
         const now = new Date();
         const tokenData = await AngelTokensModel.findOne({
@@ -337,13 +320,12 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
             });
         }
 
-        // [STEP 3] Call Test API (Get Profile)
         const adapter = new AngelOneAdapter();
         const profile = await adapter.getProfile(tokenData.jwtToken);
 
         if (profile && profile.status === true) {
             user.broker_verified = true;
-            user.broker_connected = true; // Unlock
+            user.broker_connected = true;
             await user.save();
 
             return res.status(200).json({
@@ -352,7 +334,6 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
                 data: { broker_verified: true, broker_connected: true }
             });
         } else {
-            // Success toggle failed because API rejected it
             user.broker_connected = false;
             await user.save();
             return res.status(401).json({
@@ -382,10 +363,8 @@ export const toggleStarClient = async (req: Request, res: Response) => {
     } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });
     }
-}
+};
 
-// [NEW] GET /api/user/broker-session-status/:id
-// Admin checks if a specific user has an active broker session
 export const getBrokerSessionStatus = async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -413,12 +392,12 @@ export const getBrokerSessionStatus = async (req: Request, res: Response) => {
         const clientcode = decrypt(user.client_key);
         const now = new Date();
 
-        // Check AngelOne
         const angelToken = await AngelTokensModel.findOne({
             userId: user._id,
             clientcode,
             expiresAt: { $gt: now }
-        }).lean();
+        }).lean() as any;
+
         if (angelToken?.jwtToken) {
             return res.status(200).json({
                 status: true,
@@ -426,15 +405,15 @@ export const getBrokerSessionStatus = async (req: Request, res: Response) => {
                 broker: 'AngelOne',
                 reason: 'SESSION_FOUND',
                 message: 'Active AngelOne session found.',
-                session_created_at: (angelToken as any).updatedAt || (angelToken as any).createdAt
+                session_created_at: angelToken.updatedAt || angelToken.createdAt
             });
         }
 
-        // Check Upstox
         const upstoxToken = await UpstoxTokensModel.findOne({
             userId: user._id,
             expiresAt: { $gt: now }
         }).lean() as any;
+
         if (upstoxToken?.accessToken) {
             return res.status(200).json({
                 status: true,
@@ -457,6 +436,7 @@ export const getBrokerSessionStatus = async (req: Request, res: Response) => {
         res.status(500).json({ error: err.message, status: false });
     }
 };
+
 export const updateLotMultipliers = async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -469,6 +449,46 @@ export const updateLotMultipliers = async (req: Request, res: Response) => {
             message: "Lot Multipliers updated successfully!",
             data: updatedUser.lot_multipliers,
             status: true
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+
+export const getRiskStatus = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { refresh } = req.query;
+        const user = await User.findById(id);
+        if (!user) return res.status(404).json({ error: 'User not found', status: false });
+
+        const clientcode = decrypt(user.client_key || "");
+
+        const { ProfileValidationService } = require('../services/ProfileValidationService');
+        const { RiskManagementService } = require('../services/RiskManagementService');
+
+        if (refresh === 'true') {
+            ProfileValidationService.clearCache(user._id.toString(), clientcode);
+        }
+
+        const profile = await ProfileValidationService.validateUserSession(user._id.toString(), clientcode);
+        const margin = await RiskManagementService.getAvailableMargin(user._id.toString(), clientcode);
+
+        res.status(200).json({
+            status: true,
+            data: {
+                user_name: user.user_name,
+                full_name: user.full_name,
+                licence: user.licence,
+                trading_paused: user.trading_paused || false,
+                consecutive_failures: user.consecutive_failures || 0,
+                profile_valid: profile.status,
+                profile_message: profile.message,
+                margin_valid: margin.status,
+                margin_data: margin.data,
+                margin_message: margin.message,
+                risk_limit: 0.7
+            }
         });
     } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });

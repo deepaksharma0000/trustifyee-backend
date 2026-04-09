@@ -5,6 +5,9 @@ import UpstoxInstrumentModel from "../models/UpstoxInstrument";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { log } from "../utils/logger";
+import { ProfileValidationService } from "./ProfileValidationService";
+import { RiskManagementService } from "./RiskManagementService";
+import User from "../models/User";
 
 const adapter = new AngelOneAdapter();
 const upstoxAdapter = new UpstoxAdapter();
@@ -21,96 +24,134 @@ export type PlaceOrderInput = {
   duration?: "DAY" | "IOC";
   symboltoken?: string;
   triggerPrice?: number;
+  // For dynamic sizing
+  isDynamicQty?: boolean;
+  riskPercent?: number;
 };
 
+/**
+ * Robust Pre-Trade Validation Wrapper
+ */
+async function runPreTradeValidation(userId: string, clientcode: string, orderInput: PlaceOrderInput) {
+  // 1. Profile Validation (Includes NFO permission check)
+  const profileRes = await ProfileValidationService.validateUserSession(userId, clientcode);
+  if (!profileRes.status) return profileRes;
+
+  // 2. Risk Management (Margin Check)
+  const marginRes = await RiskManagementService.getAvailableMargin(userId, clientcode);
+  if (!marginRes.status || !marginRes.data) return marginRes;
+
+  // 3. Dynamic Quantity Calculation if requested
+  if (orderInput.isDynamicQty && orderInput.riskPercent) {
+      // We need LTP for calculation
+      try {
+          const tokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+          const ltpRes = await adapter.getLtp(tokens.jwtToken, orderInput.exchange || "NFO", orderInput.tradingsymbol, orderInput.symboltoken || "");
+          const ltp = Number(ltpRes?.data?.ltp || 0);
+          
+          const instrument = await InstrumentModel.findOne({ tradingsymbol: orderInput.tradingsymbol, exchange: orderInput.exchange || "NFO" }).lean() as any;
+          const lotSize = instrument?.lotSize || 1;
+
+          if (ltp > 0) {
+              const newQty = RiskManagementService.calculateDynamicQuantity(marginRes.data.availablecash, orderInput.riskPercent, ltp, lotSize);
+              log.info(`DYNAMIC_SIZE: Recalculated Qty ${orderInput.quantity} -> ${newQty} for ${clientcode}`);
+              orderInput.quantity = newQty;
+          }
+      } catch (e) {
+          log.warn("Dynamic sizing failed, using original qty:", (e as any).message);
+      }
+  }
+
+  if (orderInput.quantity <= 0) {
+      return { status: false, message: "Calculated quantity is zero. Trade blocked." };
+  }
+
+  // 4. Margin Sufficiency Check
+  const requiredAmount = (orderInput.price || 0) * orderInput.quantity; // Simplistic
+  if (requiredAmount > 0 && !RiskManagementService.checkMarginSufficient(marginRes.data.totalusablemargin, requiredAmount)) {
+      log.error(`TRADE_BLOCKED: Insufficient usable margin for ${clientcode}. Required: ${requiredAmount}`);
+      return { status: false, message: "MARGIN_INSUFFICIENT" };
+  }
+
+  return { status: true };
+}
+
 export async function placeOrderForClient(
-  userId: string | unknown,
+  userId: any,
   clientcode: string,
-  orderInput: PlaceOrderInput
-) {
-  // 1. Check AngelOne tokens
-  const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+  orderInput: PlaceOrderInput,
+  retryCount = 0
+): Promise<any> {
+  const user = await User.findById(userId);
+  if (!user) throw new Error("User not found");
 
-  // 2. Check Upstox tokens if Angel fails or if clientcode looks like Upstox
-  const upstoxTokens = !angelTokens?.jwtToken ? await UpstoxTokensModel.findOne({ userId }).lean() as any : null;
-
-  if (!angelTokens?.jwtToken && !upstoxTokens?.accessToken) {
-    throw new Error("No active broker session found for this user (Angel or Upstox)");
+  if (user.trading_paused) {
+      log.warn(`TRADE_BLOCKED: Trading is paused for ${user.user_name} due to consecutive failures.`);
+      return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
   }
 
-  const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
-  if (txType !== "BUY" && txType !== "SELL") {
-    throw new Error("Valid side (BUY/SELL) required");
+  try {
+      // 1. Run Validations
+      const validation = await runPreTradeValidation(user._id.toString(), clientcode, orderInput);
+      if (!validation.status) {
+          throw new Error(validation.message || "Validation failed");
+      }
+
+      // 2. Fetch tokens
+      const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+      if (!angelTokens?.jwtToken) throw new Error("No Angel session");
+
+      // 3. Place Order
+      const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
+      const payload = {
+        variety: "NORMAL",
+        tradingsymbol: orderInput.tradingsymbol,
+        symboltoken: orderInput.symboltoken,
+        transactiontype: txType,
+        exchange: orderInput.exchange || "NFO",
+        ordertype: orderInput.ordertype || "MARKET",
+        producttype: orderInput.producttype || "INTRADAY",
+        duration: "DAY",
+        price: orderInput.ordertype === "LIMIT" ? String(orderInput.price || 0) : "0",
+        quantity: String(orderInput.quantity),
+        squareoff: "0",
+        stoploss: "0"
+      };
+
+      const resp = await adapter.authPost(
+        angelTokens.jwtToken,
+        "/rest/secure/angelbroking/order/v1/placeOrder",
+        payload
+      );
+
+      // Reset failures on success
+      if (resp && resp.status === true) {
+          user.consecutive_failures = 0;
+          await user.save();
+          log.info(`PLACE_ORDER_BROKER_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
+          return resp;
+      } else {
+          throw new Error(resp?.message || "Broker rejected order");
+      }
+
+  } catch (err: any) {
+      log.error(`ORDER_FAILURE [Attempt ${retryCount + 1}]: ${clientcode} - ${err.message}`);
+
+      // Retry Logic
+      if (retryCount < 1) { // Retry max 2 times total
+          return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
+      }
+
+      // Circuit Breaker logic
+      user.consecutive_failures = (user.consecutive_failures || 0) + 1;
+      if (user.consecutive_failures >= 3) {
+          user.trading_paused = true;
+          log.error(`CIRCUIT_BREAKER_TRIGGERED: Pausing trading for ${user.user_name}`);
+      }
+      await user.save();
+
+      return { status: false, message: err.message };
   }
-
-  // Case A: AngelOne
-  if (angelTokens?.jwtToken) {
-    const symbol = await InstrumentModel.findOne({
-      tradingsymbol: orderInput.tradingsymbol,
-      exchange: "NFO"
-    });
-
-    if (!symbol) {
-      throw new Error("Option contract not found in DB (Angel)");
-    }
-
-    let finalQuantity = orderInput.quantity;
-
-    const payload = {
-      variety: "NORMAL",
-      tradingsymbol: symbol.tradingsymbol,
-      symboltoken: symbol.symboltoken,
-      transactiontype: txType,
-      exchange: "NFO",
-      ordertype: orderInput.ordertype || "MARKET",
-      producttype: "INTRADAY",
-      duration: "DAY",
-      price: orderInput.ordertype === "LIMIT" ? String(orderInput.price || 0) : "0",
-      quantity: String(finalQuantity),
-      squareoff: "0",
-      stoploss: "0"
-    };
-
-    log.debug("Angel placeOrder payload:", payload);
-    return await adapter.authPost(
-      angelTokens.jwtToken,
-      "/rest/secure/angelbroking/order/v1/placeOrder",
-      payload
-    );
-  }
-
-  // Case B: Upstox
-  if (upstoxTokens?.accessToken) {
-    const symbol = await UpstoxInstrumentModel.findOne({
-      tradingsymbol: orderInput.tradingsymbol
-    });
-
-    if (!symbol) {
-      throw new Error("Option contract not found in DB (Upstox)");
-    }
-
-    let finalQuantity = orderInput.quantity;
-
-    const payload = {
-      instrument_token: symbol.instrument_key,
-      quantity: finalQuantity,
-      order_type: orderInput.ordertype || "MARKET",
-      transaction_type: txType,
-      product: "I", // Intraday
-      validity: "DAY",
-      price: orderInput.ordertype === "LIMIT" ? (orderInput.price || 0) : 0,
-      trigger_price: 0,
-      disclosed_quantity: 0,
-      is_amo: false,
-      remark: "signal-order"
-    };
-
-    log.debug("Upstox placeOrder payload:", payload);
-    const resp = await upstoxAdapter.placeOrder(upstoxTokens.accessToken, payload);
-    return { status: true, data: resp.data }; // Match AngelOne response structure loosely
-  }
-
-  throw new Error("Execution failed: No valid broker flow matched");
 }
 
 export async function getOrderStatusForClient(

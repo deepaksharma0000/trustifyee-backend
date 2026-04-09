@@ -46,12 +46,27 @@ import cors from "cors";
 import { startMarketStream } from "./services/marketStream";
 
 
+import axios from "axios";
 import { startPositionWatchdog } from "./services/PositionManager";
 import { initAutoExitWorker } from "./jobs/AutoExitWorker";
+
+async function updatePublicIp() {
+  try {
+    const res = await axios.get("https://ipv4.icanhazip.com");
+    const ip = res.data.trim();
+    (config as any).publicIp = ip;
+    log.info(`🌍 Current Public IP updated: ${ip}`);
+  } catch (err: any) {
+    log.warn(`⚠️ Failed to fetch public IP: ${err.message}`);
+  }
+}
 
 async function start() {
   try {
     log.info("🚀 Starting server...");
+    await updatePublicIp();
+    setInterval(updatePublicIp, 5 * 60 * 1000); // Update every 5 mins
+
     log.info(`Connecting to MongoDB at: ${config.mongoUri}`);
     await mongoose.connect(config.mongoUri);
     log.info("✅ Connected to MongoDB");

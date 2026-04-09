@@ -24,6 +24,8 @@ export interface IAdmin extends Document {
     broker_verified: boolean;
     broker?: string;
     client_key?: string; // For consistency with User model if needed, or use panel_client_key
+    broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
+    api_key?: string; // [NEW] Added for admin's own broker connection
     created_at: Date;
     updated_at: Date;
 }
@@ -52,6 +54,8 @@ const AdminSchema: Schema = new Schema({
     broker_connected: { type: Boolean, default: false },
     broker_verified: { type: Boolean, default: false },
     broker: { type: String },
+    broker_totp_secret: { type: String }, // [NEW] Added for automated TOTP generation
+    api_key: { type: String }, // [NEW] Added for admin's own broker connection
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IAdmin>('Admin', AdminSchema);

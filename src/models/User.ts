@@ -25,6 +25,9 @@ export interface IUser extends Document {
     is_online: boolean;
     is_star: boolean;
     lot_multipliers?: Record<string, number>; // { 'NIFTY': 2, 'BANKNIFTY': 1 }
+    trading_paused: boolean;
+    consecutive_failures: number;
+    broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
     created_at: Date;
     updated_at: Date;
 }
@@ -54,6 +57,9 @@ const UserSchema: Schema = new Schema({
     is_online: { type: Boolean, default: false },
     is_star: { type: Boolean, default: false },
     lot_multipliers: { type: Map, of: Number, default: {} },
+    trading_paused: { type: Boolean, default: false },
+    consecutive_failures: { type: Number, default: 0 },
+    broker_totp_secret: { type: String }, // [NEW] Added for automated TOTP generation
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);

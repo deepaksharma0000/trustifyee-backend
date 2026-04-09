@@ -2,9 +2,9 @@ import express from 'express';
 import {
     updateUser, updateUserBroker, deleteUser, getLoggedInUsers, getStarUsers,
     getUserTotalCount, getUsersByEndDate, getUserSearch, verifyUserBroker,
-    toggleStarClient, getBrokerSessionStatus, updateLotMultipliers
+    toggleStarClient, getBrokerSessionStatus, updateLotMultipliers, getRiskStatus
 } from '../controllers/UserController';
-import { adminAuth, userAuth } from '../middleware/auth.middleware';
+import { adminAuth, userAuth, commonAuth } from '../middleware/auth.middleware';
 import { checkPermission } from '../middleware/permission.middleware';
 
 const router = express.Router();
@@ -20,7 +20,7 @@ router.get('/user/by-enddate', adminAuth, getUsersByEndDate);
 router.get('/user/user-search', adminAuth, getUserSearch);
 router.post('/user/verify-broker/:id', adminAuth, checkPermission('edit_client'), verifyUserBroker);
 router.post('/user/toggle-star-client/:id', adminAuth, checkPermission('edit_client'), toggleStarClient);
-// [NEW] Check if a specific user has an active broker session
-router.get('/user/broker-session-status/:id', adminAuth, getBrokerSessionStatus);
+// [NEW] Get pre-trade risk status
+router.get('/user/risk-status/:id', commonAuth, getRiskStatus);
 
 export default router;
