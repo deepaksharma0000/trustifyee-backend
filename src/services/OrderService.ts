@@ -20,7 +20,7 @@ export type PlaceOrderInput = {
   ordertype?: "MARKET" | "LIMIT";
   transactiontype: "BUY" | "SELL";
   price?: number;
-  producttype?: "INTRADAY" | "DELIVERY";
+  producttype?: "INTRADAY" | "DELIVERY" | "CARRYFORWARD" | "MARGIN" | "LONGTERM" | "MTF" | "CNC" | "NRML";
   duration?: "DAY" | "IOC";
   symboltoken?: string;
   triggerPrice?: number;

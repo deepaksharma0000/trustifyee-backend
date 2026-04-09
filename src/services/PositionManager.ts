@@ -4,6 +4,7 @@ import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { log } from "../utils/logger";
 import InstrumentModel from "../models/Instrument";
 import AngelTokensModel from "../models/AngelTokens";
+import User from "../models/User";
 
 const adapter = new AngelOneAdapter();
 
@@ -88,7 +89,7 @@ async function checkAndManagePositions() {
                         quantity: p.quantity,
                         ordertype: "MARKET",
                         symboltoken: p.symboltoken,
-                        producttype: p.productType || "INTRADAY"
+                        producttype: (p.productType || "INTRADAY") as any
                       });
 
                       if (aliceRes && aliceRes.status === true) {
@@ -135,7 +136,7 @@ async function executeExit(position: any, jwtToken: string, reason: string) {
             quantity: position.quantity,
             ordertype: "MARKET",
             symboltoken: position.symboltoken,
-            producttype: position.productType || "INTRADAY"
+            producttype: (position.productType || "INTRADAY") as any
         });
 
         if (apiRes && (apiRes.status === true || apiRes.status === "success")) {
