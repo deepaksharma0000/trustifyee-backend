@@ -56,9 +56,11 @@ router.get("/me", auth, async (req: any, res) => {
     // ✅ Convert to object and flatten Maps (for lot_multipliers)
     const userData = user.toObject ? user.toObject({ flattenMaps: true }) : user;
     
-    // Mask sensitive keys
-    if (userData.client_key) userData.client_key = "********";
+    // Mask sensitive keys but provide a hint that they exist
+    if (userData.client_key) userData.client_code = "********"; // For UI pre-fill
+    if (userData.broker_password) userData.broker_password = "********";
     if (userData.api_key) userData.api_key = "********";
+    if (userData.broker_totp_secret) userData.broker_totp_secret = "********";
 
     return res.json({ ok: true, user: userData });
   } catch (err: any) {
