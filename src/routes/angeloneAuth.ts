@@ -17,9 +17,19 @@ router.post('/generate-session', auth, async (req: any, res) => {
     const userId = req.id;
     const userType = req.userType;
 
-    // 🚀 Fetch profile first to get saved api_key and totp_secret
-    const profile = userType === 'admin' ? await Admin.findById(userId) : await User.findById(userId);
+    // 🚀 Fetch profile first to get saved api_key, password and totp_secret
+    const profile: any = userType === 'admin' ? await Admin.findById(userId) : await User.findById(userId);
     
+    // 1. Get Client Code (Order: Request Body > User Profile)
+    if (!client_code && profile?.client_key) {
+        client_code = decrypt(profile.client_key);
+    }
+
+    // 2. Get Password (Order: Request Body > User Profile)
+    if (!password && profile?.broker_password) {
+        password = decrypt(profile.broker_password);
+    }
+
     // 3. Get API Key (Order: Request Body > User Profile > Global Config)
     let decryptedApiKey = config.angelApiKey;
     let keySource = "Global Default";
@@ -81,7 +91,13 @@ router.post('/generate-session', auth, async (req: any, res) => {
                 broker: 'AngelOne'
             };
 
-            // [NEW] Save TOTP Secret if provided for automated logins in the future
+            // [NEW] Save Credentials if provided for automated logins in the future
+            if (req.body.password) {
+                updatePayload.broker_password = encrypt(req.body.password);
+            }
+            if (req.body.api_key) {
+                updatePayload.api_key = encrypt(req.body.api_key);
+            }
             if (totp_secret) {
                 updatePayload.broker_totp_secret = totp_secret;
             }

@@ -28,6 +28,7 @@ export interface IUser extends Document {
     trading_paused: boolean;
     consecutive_failures: number;
     broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
+    broker_password?: string; // [NEW] Added for automated session re-sync
     created_at: Date;
     updated_at: Date;
 }
@@ -60,6 +61,7 @@ const UserSchema: Schema = new Schema({
     trading_paused: { type: Boolean, default: false },
     consecutive_failures: { type: Number, default: 0 },
     broker_totp_secret: { type: String }, // [NEW] Added for automated TOTP generation
+    broker_password: { type: String }, // [NEW] Added for automated session re-sync
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);
