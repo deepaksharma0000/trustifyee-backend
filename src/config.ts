@@ -81,4 +81,5 @@ export const config = {
 
   encryptionKey: process.env.ENCRYPTION_SECRET || "",
   publicIp: "106.193.147.98", // [NEW] Tracked and updated dynamically
+  frontendUrl: process.env.FRONTEND_URL || "http://localhost:8080",
 };

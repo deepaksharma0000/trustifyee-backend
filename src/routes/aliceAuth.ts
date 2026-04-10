@@ -4,6 +4,7 @@ import AliceTokensModel from "../models/AliceTokens";
 import { log } from "../utils/logger";
 import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
 import { encrypt } from "../utils/encryption";
+import { config } from "../config";
 
 const router = express.Router();
 const aliceAdapter = new AliceBlueAdapter();
@@ -28,11 +29,8 @@ router.get("/auth/login-url", async (req, res) => {
 });
 
 /**
- * Redirect URL configured on Alice:
- * http://localhost:3000/api/alice/auth/callback
- *
- * Alice will redirect with:
- *  ?authCode=xxxx&userId=123456&state=CLIENTCODE
+ * ⚠️ IMPORTANT: The Redirect URL MUST be configured on the Alice Blue Developer Portal.
+ * On production, it should be: https://trustifye.cloud/api/alice/auth/callback
  */
 router.get("/auth/callback", async (req, res) => {
   const authCode = String(req.query.authCode || "");
@@ -83,8 +81,7 @@ router.get("/auth/callback", async (req, res) => {
     log.debug("Saved Alice session and updated User profile for:", clientcode);
 
     // Redirect back to frontend dashboard
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
-    return res.redirect(`${frontendUrl}/dashboard?broker_login=success&broker=AliceBlue`);
+    return res.redirect(`${config.frontendUrl}/dashboard?broker_login=success&broker=AliceBlue`);
   } catch (err: any) {
     log.error("Alice /auth/callback error", err.message || err);
     return res.status(500).send(err.message || "Internal error");
