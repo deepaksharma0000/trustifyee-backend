@@ -5,6 +5,7 @@ import { log } from "../utils/logger";
 import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
 import { encrypt } from "../utils/encryption";
 import { config } from "../config";
+import { auth } from "../middleware/auth.middleware";
 
 const router = express.Router();
 const aliceAdapter = new AliceBlueAdapter();
@@ -13,14 +14,16 @@ const aliceAdapter = new AliceBlueAdapter();
  * GET /api/alice/auth/login-url?clientcode=LALIT_ALICE
  * -> returns { url: "https://ant.aliceblueonline.com/?appcode=..." }
  */
-router.get("/auth/login-url", async (req, res) => {
+router.get("/auth/login-url", auth, async (req: any, res) => {
   try {
     const clientcode = String(req.query.clientcode || "").trim();
     if (!clientcode) {
       return res.status(400).json({ error: "clientcode is required" });
     }
 
-    const url = aliceAdapter.getLoginUrl(clientcode);
+    // Pass User ID in state so we can find them reliably in callback
+    const state = `${req.id}:${clientcode}`;
+    const url = aliceAdapter.getLoginUrl(state);
     return res.json({ url });
   } catch (err: any) {
     log.error("Alice /auth/login-url error", err.message || err);
@@ -34,11 +37,19 @@ router.get("/auth/login-url", async (req, res) => {
  */
 router.get("/auth/callback", async (req, res) => {
   const authCode = String(req.query.authCode || "");
-  const userId = String(req.query.userId || "");
-  const clientcode = String(req.query.state || "DEFAULT_CLIENT");
+  const rawState = String(req.query.state || ""); // "userId:clientcode"
 
-  if (!authCode || !userId) {
-    return res.status(400).send("Missing authCode or userId");
+  let userId = "";
+  let clientcode = "";
+
+  if (rawState.includes(":")) {
+    [userId, clientcode] = rawState.split(":");
+  } else {
+    clientcode = rawState || "DEFAULT_CLIENT";
+  }
+
+  if (!authCode) {
+    return res.status(400).send("Missing authCode");
   }
 
   try {
@@ -61,22 +72,33 @@ router.get("/auth/callback", async (req, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     ).lean();
 
-    // 🚀 [USER MODEL SYNC]
-    // Update the User document so the system knows they are using AliceBlue
+    // 🚀 [USER MODEL SYNC] - Reliable update using User ID
     const User = require("../models/User").default;
-    const { encrypt: dbEncrypt } = require("../utils/encryption");
     
-    // We search for the user with this encrypted client_key
-    const encryptedCC = dbEncrypt(clientcode);
-    await User.findOneAndUpdate(
-      { client_key: encryptedCC },
-      { 
-        broker: "AliceBlue",
-        broker_connected: true,
-        broker_verified: true,
-        is_online: true
-      }
-    );
+    if (userId) {
+      await User.findByIdAndUpdate(
+        userId,
+        { 
+          broker: "AliceBlue",
+          broker_connected: true,
+          broker_verified: true,
+          is_online: true
+        }
+      );
+    } else {
+      // Fallback (Legacy/Incomplete State)
+      const { encrypt: dbEncrypt } = require("../utils/encryption");
+      const encryptedCC = dbEncrypt(clientcode);
+      await User.findOneAndUpdate(
+        { client_key: encryptedCC },
+        { 
+          broker: "AliceBlue",
+          broker_connected: true,
+          broker_verified: true,
+          is_online: true
+        }
+      );
+    }
 
     log.debug("Saved Alice session and updated User profile for:", clientcode);
 
