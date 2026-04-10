@@ -192,41 +192,6 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
         return fallback || 0;
     }
 
-
-        // 3. Fallback to Upstox if Angel failed or no session
-        const upstoxDoc = await UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean();
-        if (upstoxDoc?.accessToken) {
-            const upstoxMap: Record<string, string> = {
-                NIFTY: "NSE_INDEX|Nifty 50",
-                BANKNIFTY: "NSE_INDEX|Nifty Bank",
-                FINNIFTY: "NSE_INDEX|Nifty Fin Service",
-            };
-            const upstoxKey = upstoxMap[indexName];
-            if (upstoxKey) {
-                const apiResp = await upstoxAdapter.getLtp(upstoxDoc.accessToken, upstoxKey);
-                const data = apiResp?.data || {};
-                let entry = data[upstoxKey as keyof typeof data];
-                if (!entry) {
-                    const altKey = upstoxKey.replace("|", ":");
-                    entry = data[altKey as keyof typeof data];
-                }
-                const ltp = entry?.last_price;
-                if (ltp && !Number.isNaN(ltp)) {
-                    ltpCache.set(cacheKey, { ltp, ts: now });
-                    return ltp;
-                }
-            }
-        }
-
-    } catch (err: any) {
-        if (isRateLimitError(err)) {
-            cooldownUntil = now + 60000;
-            log.warn(`Index LTP Rate limit hit (${indexName}). Cooling down 60s.`);
-        } else {
-            log.error(`Index LTP fetch error (${indexName}):`, err.message || err);
-        }
-    }
-
     return cached?.ltp || 0;
 }
 
