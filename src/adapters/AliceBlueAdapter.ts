@@ -47,12 +47,8 @@ export class AliceBlueAdapter {
       Accept: "application/json"
     };
 
-    // agar tum abhi bhi apiKey use karna chahte ho to yaha rakho
-    if (this.apiKey) {
-      headers["apikey"] = this.apiKey;
-    }
-
     if (sessionId) {
+      // sessionId here is "UserId SessionId" (decrypted)
       headers["Authorization"] = `Bearer ${decrypt(sessionId)}`;
     }
 
@@ -140,12 +136,15 @@ export class AliceBlueAdapter {
         }
       });
 
-      return resp.data as {
-        stat: "Ok" | "Not_ok";
-        clientId?: string;
-        userSession?: string;
-        emsg?: string;
-        userId?: string;
+      const data = resp.data;
+      return {
+        stat: data.stat,
+        clientId: data.clientId,
+        // 🔹 Alice Blue Open API requires BOTH UserId and SessionId in the header
+        // Storing them together as "UserId SessionId"
+        sessionId: encrypt(`${data.userId} ${data.userSession}`),
+        expiresAt: undefined,
+        userId: data.userId
       };
     } catch (err: any) {
       const status = err?.response?.status;
@@ -181,24 +180,25 @@ export class AliceBlueAdapter {
       triggerPrice?: number;
     }
   ) {
+    // 🔹 Map Product Types to Alice Blue format (MIS, CNC, NRML)
+    let product = (order.producttype || "INTRADAY").toUpperCase();
+    if (product === "INTRADAY") product = "MIS";
+    if (product === "DELIVERY" || product === "LONGTERM" || product === "CNC") product = "CNC";
+    if (product === "CARRYFORWARD" || product === "NRML") product = "NRML";
+
+    // 🔹 Alice Blue V1 Open API Payload
     const payload = {
-        exchange: order.exchange,
-        instrumentId: order.symboltoken,
-        transactionType: order.transactiontype,
-        quantity: order.quantity,
-        product: order.producttype ?? "INTRADAY",
-        orderComplexity: "REGULAR",
-        orderType: order.ordertype ?? "MARKET",
-        validity: order.duration ?? "DAY",
-        price:
-          order.ordertype === "MARKET"
-            ? ""
-            : String(order.price ?? ""),
-        slTriggerPrice: order.triggerPrice
-          ? String(order.triggerPrice)
-          : "",
-        deviceId: "123",
-        apiOrderSource: "API"
+        complexity: "regular",
+        exchange: order.exchange.toUpperCase(),
+        tradingsymbol: order.tradingsymbol,
+        symboltoken: order.symboltoken,
+        transactiontype: order.transactiontype.toUpperCase(),
+        quantity: String(order.quantity),
+        ordertype: order.ordertype || "MARKET",
+        producttype: product,
+        price: order.ordertype === "MARKET" ? "0" : String(order.price || "0"),
+        duration: order.duration || "DAY",
+        triggerPrice: String(order.triggerPrice || "0")
     };
 
     return await this.authPost(sessionId, this.placeOrderPath, payload);
