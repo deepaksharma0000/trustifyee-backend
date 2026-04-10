@@ -4,6 +4,7 @@ import UpstoxTokensModel from "../models/UpstoxTokens";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { config } from "../config";
 import { log } from "../utils/logger";
+import { decrypt } from "../utils/encryption";
 
 const adapter = new AngelOneAdapter();
 const upstoxAdapter = new UpstoxAdapter();
@@ -72,7 +73,9 @@ async function refreshAngelSession(session: any) {
     if (!session?.refreshToken) {
         throw new Error("Angel refreshToken missing. Please login again.");
     }
-    const resp = await adapter.generateTokensUsingRefresh(session.refreshToken);
+    const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey;
+    const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
+    const resp = await dynamicAdapter.generateTokensUsingRefresh(session.refreshToken);
     if (!resp || resp.status === false || !resp.data) {
         log.error("Angel refresh failed:", resp);
         throw new Error(resp?.message || "Angel refresh failed");
@@ -89,12 +92,13 @@ async function refreshAngelSession(session: any) {
         { jwtToken, refreshToken, feedToken, expiresAt: undefined },
         { new: true }
     ).lean();
-    return { jwtToken };
+    return { jwtToken, apiKey: sessionApiKey };
 }
 
-async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string) {
+async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string, apiKey?: string) {
     const key = `${exchange}:${symbol}:${token}`;
-    return await throttledFetch(key, () => adapter.getLtp(jwtToken, exchange, symbol, token));
+    const dynamicAdapter = apiKey ? new AngelOneAdapter(apiKey) : adapter;
+    return await throttledFetch(key, () => dynamicAdapter.getLtp(jwtToken, exchange, symbol, token));
 }
 
 export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY"): Promise<number> {
@@ -120,12 +124,13 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                 };
                 const index = indexConfig[indexName];
 
-                let resp = await getLtpInternal(session.jwtToken, "NSE", index.symbol, index.token);
+                const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey;
+                let resp = await getLtpInternal(session.jwtToken, "NSE", index.symbol, index.token, sessionApiKey);
 
                 if (isInvalidTokenResponse(resp)) {
                     try {
                         const refreshed = await refreshAngelSession(session);
-                        resp = await getLtpInternal(refreshed.jwtToken, "NSE", index.symbol, index.token);
+                        resp = await getLtpInternal(refreshed.jwtToken, "NSE", index.symbol, index.token, refreshed.apiKey);
                     } catch (reErr) {
                         log.warn(`Angel refresh failed for ${indexName} LTP index:`, reErr);
                     }
@@ -225,11 +230,12 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
             if (now >= cooldownUntil) {
                 const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
                 if (session?.jwtToken) {
-                    let resp = await getLtpInternal(session.jwtToken, exchange, tradingsymbol, symboltoken);
+                    const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey;
+                    let resp = await getLtpInternal(session.jwtToken, exchange, tradingsymbol, symboltoken, sessionApiKey);
                     if (isInvalidTokenResponse(resp)) {
                         try {
                             const refreshed = await refreshAngelSession(session);
-                            resp = await getLtpInternal(refreshed.jwtToken, exchange, tradingsymbol, symboltoken);
+                            resp = await getLtpInternal(refreshed.jwtToken, exchange, tradingsymbol, symboltoken, refreshed.apiKey);
                         } catch (reErr) {
                             log.warn(`Angel refresh failed for ${tradingsymbol} LTP:`, reErr);
                         }

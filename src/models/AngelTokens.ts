@@ -7,6 +7,7 @@ export interface IAngelTokens extends Document {
   jwtToken?: string;
   refreshToken?: string;
   feedToken?: string;
+  apiKey?: string;
   expiresAt?: Date;
 }
 
@@ -16,6 +17,7 @@ const AngelTokensSchema = new Schema<IAngelTokens>({
   jwtToken: String,
   refreshToken: String,
   feedToken: String,
+  apiKey: String,
   expiresAt: Date
 }, { timestamps: true });
 

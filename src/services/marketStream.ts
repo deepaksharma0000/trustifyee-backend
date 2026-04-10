@@ -5,6 +5,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { config } from "../config";
 import { log } from "../utils/logger";
+import { encrypt, decrypt } from "../utils/encryption";
 
 type QuoteRequestItem = {
   exchange: string;
@@ -20,7 +21,7 @@ type ClientState = {
 
 const MIN_FETCH_MS = 1500;
 const DEFAULT_INTERVAL_MS = 3000;
-const MAX_ITEMS = 20;
+const MAX_ITEMS = 50;
 const quoteCache = new Map<
   string,
   { ltp: number; oi: number | null; ts: number }
@@ -36,7 +37,8 @@ async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
   if (!session?.refreshToken) {
     throw new Error("Angel refreshToken missing. Please login again.");
   }
-  const resp = await adapter.generateTokensUsingRefresh(session.refreshToken);
+  const decRefreshToken = decrypt(session.refreshToken);
+  const resp = await adapter.generateTokensUsingRefresh(decRefreshToken);
   if (!resp || resp.status === false || !resp.data) {
     log.error("Angel refresh failed:", resp);
     throw new Error(resp?.message || "Angel refresh failed");
@@ -50,7 +52,12 @@ async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
   }
   await AngelTokensModel.findOneAndUpdate(
     { clientcode: session.clientcode },
-    { jwtToken, refreshToken, feedToken, expiresAt: undefined },
+    { 
+      jwtToken: encrypt(jwtToken), 
+      refreshToken: encrypt(refreshToken), 
+      feedToken: encrypt(feedToken), 
+      expiresAt: undefined 
+    },
     { new: true }
   ).lean();
   return { jwtToken };
@@ -97,7 +104,8 @@ export function startMarketStream(server: any) {
 
           // Handle AngelOne Batched
           if (angelItems.length > 0 && jwtToken) {
-            const angelAdapter = new AngelOneAdapter();
+            const sessionApiKey = angelSession.apiKey ? decrypt(angelSession.apiKey) : config.angelApiKey;
+            const angelAdapter = new AngelOneAdapter(sessionApiKey);
             try {
               const exchangeTokens: Record<string, string[]> = {};
               angelItems.forEach(item => {
@@ -108,6 +116,7 @@ export function startMarketStream(server: any) {
               let resp = await angelAdapter.getMarketData(jwtToken, "FULL", exchangeTokens);
 
               if (isInvalidTokenResponse(resp)) {
+                log.info(`[MarketStream] Token invalid for ${angelSession.clientcode}, refreshing...`);
                 const refreshed = await refreshAngelSession(angelSession, angelAdapter);
                 jwtToken = refreshed.jwtToken;
                 resp = await angelAdapter.getMarketData(jwtToken, "FULL", exchangeTokens);
@@ -177,8 +186,7 @@ export function startMarketStream(server: any) {
           if (results.length > 0) {
             ws.send(JSON.stringify({ type: "tick", items: results }));
           }
-        } catch (err: any) {
-          // ws.send(JSON.stringify({ type: "error", message: err.message || String(err) }));
+          ws.send(JSON.stringify({ type: "error", message: err.message || String(err) }));
         }
       }, Math.max(state.intervalMs, DEFAULT_INTERVAL_MS));
     };

@@ -78,6 +78,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
                     jwtToken: encrypt(jwtToken),
                     refreshToken: encrypt(refreshToken),
                     feedToken: encrypt(feedToken),
+                    apiKey: encrypt(decryptedApiKey),
                     expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // Valid for 24h
                 },
                 { upsert: true }
