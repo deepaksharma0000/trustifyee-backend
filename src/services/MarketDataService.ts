@@ -8,10 +8,10 @@ import { log } from "../utils/logger";
 const adapter = new AngelOneAdapter();
 const upstoxAdapter = new UpstoxAdapter();
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
-const CACHE_MS = 10000; // Increased to 10s to further reduce API load
+const CACHE_MS = 1500; // 1.5s for real-time feel
 let cooldownUntil = 0;
 let lastRequestTime = 0;
-const MIN_INTERVAL_MS = 800; // 800ms (~1.25 requests/sec)
+const MIN_INTERVAL_MS = 150; // Faster LTP updates (approx 6.6 req/sec)
 
 const pendingRequests = new Map<string, Promise<any>>();
 
@@ -107,55 +107,91 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
         return cached.ltp;
     }
 
-    // 2. Cooling down or disabled? Return last value or fallback
-    if (now < cooldownUntil || config.disableLiveLtp) {
-        if (cached?.ltp) return cached.ltp;
-        if (config.nodeEnv !== "production") {
-            const fallback =
-                indexName === "NIFTY"
-                    ? config.fallbackNiftyLtp
-                    : indexName === "BANKNIFTY"
-                        ? config.fallbackBankNiftyLtp
-                        : config.fallbackFinNiftyLtp;
-            return fallback || 0;
-        }
-        return 0;
-    }
-
+    // 2. Refresh logic
     try {
-        const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
+        if (now >= cooldownUntil && !config.disableLiveLtp) {
+            const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
 
-        if (session && session.jwtToken) {
-            const indexConfig: Record<string, { symbol: string, token: string }> = {
-                "NIFTY": { symbol: config.angelIndexSymbolNifty, token: config.angelIndexTokenNifty },
-                "BANKNIFTY": { symbol: config.angelIndexSymbolBankNifty, token: config.angelIndexTokenBankNifty },
-                "FINNIFTY": { symbol: config.angelIndexSymbolFinNifty, token: config.angelIndexTokenFinNifty }
-            };
-            const index = indexConfig[indexName];
+            if (session && session.jwtToken) {
+                const indexConfig: Record<string, { symbol: string, token: string }> = {
+                    "NIFTY": { symbol: config.angelIndexSymbolNifty, token: config.angelIndexTokenNifty },
+                    "BANKNIFTY": { symbol: config.angelIndexSymbolBankNifty, token: config.angelIndexTokenBankNifty },
+                    "FINNIFTY": { symbol: config.angelIndexSymbolFinNifty, token: config.angelIndexTokenFinNifty }
+                };
+                const index = indexConfig[indexName];
 
-            let resp = await getLtpInternal(session.jwtToken, "NSE", index.symbol, index.token);
+                let resp = await getLtpInternal(session.jwtToken, "NSE", index.symbol, index.token);
 
-            if (isInvalidTokenResponse(resp)) {
-                try {
-                    const refreshed = await refreshAngelSession(session);
-                    resp = await getLtpInternal(refreshed.jwtToken, "NSE", index.symbol, index.token);
-                } catch (reErr) {
-                    log.warn(`Angel refresh failed for ${indexName} LTP index:`, reErr);
+                if (isInvalidTokenResponse(resp)) {
+                    try {
+                        const refreshed = await refreshAngelSession(session);
+                        resp = await getLtpInternal(refreshed.jwtToken, "NSE", index.symbol, index.token);
+                    } catch (reErr) {
+                        log.warn(`Angel refresh failed for ${indexName} LTP index:`, reErr);
+                    }
+                }
+
+                if (resp && resp.status === true && resp.data) {
+                    const ltp = Number(resp.data.ltp);
+                    if (!Number.isNaN(ltp) && ltp > 0) {
+                        ltpCache.set(cacheKey, { ltp, ts: now });
+                        return ltp;
+                    }
+                }
+                if (resp && isRateLimitError(resp)) {
+                    cooldownUntil = now + 60000;
+                    log.warn(`Index LTP Rate limited (${indexName}). Cooling down 60s.`);
                 }
             }
+        }
 
-            if (resp && resp.status === true && resp.data) {
-                const ltp = Number(resp.data.ltp);
-                if (!Number.isNaN(ltp) && ltp > 0) {
+        // 3. Fallback to Upstox if Angel failed, is on cooldown, or no session
+        const upstoxDoc = await UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean();
+        if (upstoxDoc?.accessToken) {
+            const upstoxMap: Record<string, string> = {
+                NIFTY: "NSE_INDEX|Nifty 50",
+                BANKNIFTY: "NSE_INDEX|Nifty Bank",
+                FINNIFTY: "NSE_INDEX|Nifty Fin Service",
+            };
+            const upstoxKey = upstoxMap[indexName];
+            if (upstoxKey) {
+                const apiResp = await upstoxAdapter.getLtp(upstoxDoc.accessToken, upstoxKey);
+                const data = apiResp?.data || {};
+                let entry = data[upstoxKey as keyof typeof data];
+                if (!entry) {
+                    const altKey = upstoxKey.replace("|", ":");
+                    entry = data[altKey as keyof typeof data];
+                }
+                const ltp = entry?.last_price;
+                if (ltp && !Number.isNaN(ltp) && ltp > 0) {
                     ltpCache.set(cacheKey, { ltp, ts: now });
                     return ltp;
                 }
             }
-            if (resp && isRateLimitError(resp)) {
-                cooldownUntil = now + 60000;
-                log.warn(`Index LTP Rate limited (${indexName}). Cooling down 60s.`);
-            }
         }
+
+    } catch (err: any) {
+        if (isRateLimitError(err)) {
+            cooldownUntil = now + 60000;
+            log.warn(`Index LTP Rate limit hit (${indexName}). Cooling down 60s.`);
+        } else {
+            log.error(`Index LTP fetch error (${indexName}):`, err.message || err);
+        }
+    }
+
+    // 4. Ultimate fallback: Return latest cache or 0/config
+    if (cached?.ltp) return cached.ltp;
+    
+    if (config.nodeEnv !== "production") {
+        const fallback =
+            indexName === "NIFTY"
+                ? config.fallbackNiftyLtp
+                : indexName === "BANKNIFTY"
+                    ? config.fallbackBankNiftyLtp
+                    : config.fallbackFinNiftyLtp;
+        return fallback || 0;
+    }
+
 
         // 3. Fallback to Upstox if Angel failed or no session
         const upstoxDoc = await UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean();
@@ -200,8 +236,6 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
     const cached = ltpCache.get(cacheKey);
 
     if (cached && (now - cached.ts < CACHE_MS)) return cached.ltp;
-    if (now < cooldownUntil) return cached?.ltp || 0;
-
     try {
         const isUpstox = symboltoken.includes("|") || exchange === "NSE_FO" || symboltoken.length > 20;
 
@@ -222,30 +256,36 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
                 }
             }
         } else {
-            const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
-            if (session?.jwtToken) {
-                let resp = await getLtpInternal(session.jwtToken, exchange, tradingsymbol, symboltoken);
-                if (isInvalidTokenResponse(resp)) {
-                    try {
-                        const refreshed = await refreshAngelSession(session);
-                        resp = await getLtpInternal(refreshed.jwtToken, exchange, tradingsymbol, symboltoken);
-                    } catch (reErr) {
-                        log.warn(`Angel refresh failed for ${tradingsymbol} LTP:`, reErr);
+            // Only try Angel if not in cooldown
+            if (now >= cooldownUntil) {
+                const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
+                if (session?.jwtToken) {
+                    let resp = await getLtpInternal(session.jwtToken, exchange, tradingsymbol, symboltoken);
+                    if (isInvalidTokenResponse(resp)) {
+                        try {
+                            const refreshed = await refreshAngelSession(session);
+                            resp = await getLtpInternal(refreshed.jwtToken, exchange, tradingsymbol, symboltoken);
+                        } catch (reErr) {
+                            log.warn(`Angel refresh failed for ${tradingsymbol} LTP:`, reErr);
+                        }
                     }
-                }
 
-                if (resp && resp.status === true && resp.data) {
-                    const ltp = Number(resp.data.ltp);
-                    if (!Number.isNaN(ltp) && ltp > 0) {
-                        ltpCache.set(cacheKey, { ltp, ts: now });
-                        return ltp;
+                    if (resp && resp.status === true && resp.data) {
+                        const ltp = Number(resp.data.ltp);
+                        if (!Number.isNaN(ltp) && ltp > 0) {
+                            ltpCache.set(cacheKey, { ltp, ts: now });
+                            return ltp;
+                        }
                     }
-                }
-                if (resp && isRateLimitError(resp)) {
-                    cooldownUntil = now + 60000;
-                    log.warn(`Instrument LTP Rate limited (${tradingsymbol}). Cooling down 60s.`);
+                    if (resp && isRateLimitError(resp)) {
+                        cooldownUntil = now + 60000;
+                        log.warn(`Instrument LTP Rate limited (${tradingsymbol}). Cooling down 60s.`);
+                    }
                 }
             }
+
+            // [IF ANGEL FAILED] Try Upstox as secondary for normal instruments too if possible (assuming symboltoken mapping)
+            // Note: Upstox needs a different instrument key usually. Skipping for now unless it's already an index.
         }
     } catch (err: any) {
         if (isRateLimitError(err)) {

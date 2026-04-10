@@ -16,7 +16,7 @@ function getIstDayRange(dateStr: string) {
   return { start, end };
 }
 
-const OPTION_CHAIN_CACHE_MS = 5000;
+const OPTION_CHAIN_CACHE_MS = 1000;
 const optionChainCache = new Map<
   string,
   { ts: number; data: any }
