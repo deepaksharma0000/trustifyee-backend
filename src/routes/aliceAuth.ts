@@ -37,23 +37,25 @@ router.get("/auth/login-url", auth, async (req: any, res) => {
  */
 router.get("/auth/callback", async (req, res) => {
   const authCode = String(req.query.authCode || "");
-  const rawState = String(req.query.state || ""); // "userId:clientcode"
+  const aliceUserId = String(req.query.userId || ""); // Alice Blue Client ID
+  const rawState = String(req.query.state || ""); // "mongoUserId:clientcode"
 
-  let userId = "";
+  let mongoUserId = "";
   let clientcode = "";
 
   if (rawState.includes(":")) {
-    [userId, clientcode] = rawState.split(":");
+    [mongoUserId, clientcode] = rawState.split(":");
   } else {
     clientcode = rawState || "DEFAULT_CLIENT";
   }
 
-  if (!authCode) {
-    return res.status(400).send("Missing authCode");
+  if (!authCode || !aliceUserId) {
+    return res.status(400).send("Missing authCode or Alice userId");
   }
 
   try {
-    const data = await aliceAdapter.getSessionFromAuthCode(authCode, userId);
+    // Pass aliceUserId directly to generate correct checksum
+    const data = await aliceAdapter.getSessionFromAuthCode(authCode, aliceUserId);
 
     if (data.stat !== "Ok" || !data.userSession) {
       log.error("Alice getUserDetails failed:", data);
@@ -75,9 +77,9 @@ router.get("/auth/callback", async (req, res) => {
     // 🚀 [USER MODEL SYNC] - Reliable update using User ID
     const User = require("../models/User").default;
     
-    if (userId) {
+    if (mongoUserId) {
       await User.findByIdAndUpdate(
-        userId,
+        mongoUserId,
         { 
           broker: "AliceBlue",
           broker_connected: true,
