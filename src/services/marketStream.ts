@@ -186,6 +186,7 @@ export function startMarketStream(server: any) {
           if (results.length > 0) {
             ws.send(JSON.stringify({ type: "tick", items: results }));
           }
+        } catch (err: any) {
           ws.send(JSON.stringify({ type: "error", message: err.message || String(err) }));
         }
       }, Math.max(state.intervalMs, DEFAULT_INTERVAL_MS));
