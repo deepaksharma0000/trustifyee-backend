@@ -12,7 +12,7 @@ const ltpCache = new Map<string, { ltp: number, ts: number }>();
 const CACHE_MS = 1500; // 1.5s for real-time feel
 let cooldownUntil = 0;
 let lastRequestTime = 0;
-const MIN_INTERVAL_MS = 150; // Faster LTP updates (approx 6.6 req/sec)
+const MIN_INTERVAL_MS = 350; // Balanced for approx 2.8 req/sec (staying under 3/sec limit)
 
 const pendingRequests = new Map<string, Promise<any>>();
 

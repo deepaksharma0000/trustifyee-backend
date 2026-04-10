@@ -181,8 +181,7 @@ export class AliceBlueAdapter {
       triggerPrice?: number;
     }
   ) {
-    const payload = [
-      {
+    const payload = {
         exchange: order.exchange,
         instrumentId: order.symboltoken,
         transactionType: order.transactiontype,
@@ -198,22 +197,16 @@ export class AliceBlueAdapter {
         slTriggerPrice: order.triggerPrice
           ? String(order.triggerPrice)
           : "",
-        disclosedQuantity: "",
-        marketProtectionPercent: "",
         deviceId: "123",
-        trailingSlAmount: "",
-        apiOrderSource: "",
-        algoId: "",
-        orderTag: ""
-      }
-    ];
+        apiOrderSource: "API"
+    };
 
     return await this.authPost(sessionId, this.placeOrderPath, payload);
   }
 
-  async getOrderStatus(sessionId: string, orderId: string) {
-    const body = { brokerOrderId: orderId };
-    return await this.authPost(sessionId, this.orderStatusPath, body);
+  async getOrderStatus(sessionId: string, _orderId: string) {
+    // /orders/book is a GET endpoint that returns the entire order book
+    return await this.authGet(sessionId, this.orderStatusPath);
   }
 
 
