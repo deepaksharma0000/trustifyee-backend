@@ -136,15 +136,12 @@ export class AliceBlueAdapter {
         }
       });
 
-      const data = resp.data;
-      return {
-        stat: data.stat,
-        clientId: data.clientId,
-        // 🔹 Alice Blue Open API requires BOTH UserId and SessionId in the header
-        // Storing them together as "UserId SessionId"
-        sessionId: encrypt(`${data.userId} ${data.userSession}`),
-        expiresAt: undefined,
-        userId: data.userId
+      return resp.data as {
+        stat: "Ok" | "Not_ok";
+        clientId?: string;
+        userSession?: string;
+        emsg?: string;
+        userId?: string;
       };
     } catch (err: any) {
       const status = err?.response?.status;

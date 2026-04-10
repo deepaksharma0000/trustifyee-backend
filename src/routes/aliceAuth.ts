@@ -69,7 +69,8 @@ router.get("/auth/callback", async (req, res) => {
       {
         clientcode,
         // 🚀 Alice Blue Open API requires "Bearer <UserId> <UserSession>"
-        sessionId: encrypt(`${data.userId} ${data.userSession}`),
+        // Concatenate them before encrypting for the adapter to use
+        sessionId: encrypt(`${data.userId || aliceUserId} ${data.userSession}`),
         expiresAt: undefined
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
