@@ -13,18 +13,35 @@ let cooldownUntil = 0;
 let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 800; // 800ms (~1.25 requests/sec)
 
-async function throttledFetch<T>(fn: () => Promise<T>): Promise<T> {
-    const now = Date.now();
-    const wait = Math.max(0, lastRequestTime + MIN_INTERVAL_MS - now);
-    lastRequestTime = now + wait;
-    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+const pendingRequests = new Map<string, Promise<any>>();
 
-    // Check cooldown again AFTER wait to catch requests that were queued before a rate limit was hit
-    if (Date.now() < cooldownUntil) {
-        throw new Error("RATE_LIMIT_COOLDOWN");
+async function throttledFetch<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    // 🚀 [REQUEST COLLAPSING]
+    // If a request for this exact key is already in flight, join it instead of queuing a new one
+    if (pendingRequests.has(key)) {
+        return pendingRequests.get(key);
     }
 
-    return await fn();
+    const fetchPromise = (async () => {
+        try {
+            const now = Date.now();
+            const wait = Math.max(0, lastRequestTime + MIN_INTERVAL_MS - now);
+            lastRequestTime = now + wait;
+            if (wait > 0) await new Promise(r => setTimeout(r, wait));
+
+            if (Date.now() < cooldownUntil) {
+                throw new Error("RATE_LIMIT_COOLDOWN");
+            }
+
+            return await fn();
+        } finally {
+            // Remove from pending map once finished (success or fail)
+            pendingRequests.delete(key);
+        }
+    })();
+
+    pendingRequests.set(key, fetchPromise);
+    return fetchPromise;
 }
 
 function isInvalidTokenResponse(resp: any) {
@@ -76,7 +93,8 @@ async function refreshAngelSession(session: any) {
 }
 
 async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string) {
-    return await throttledFetch(() => adapter.getLtp(jwtToken, exchange, symbol, token));
+    const key = `${exchange}:${symbol}:${token}`;
+    return await throttledFetch(key, () => adapter.getLtp(jwtToken, exchange, symbol, token));
 }
 
 export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY"): Promise<number> {
