@@ -44,6 +44,8 @@ export class AngelOneAdapter {
       "X-SourceID": "WEB"
     };
 
+    log.debug(`[AngelAPI] Sending request with PrivateKey (first 4): ${this.apiKey.substring(0, 4)}...`);
+
     if (jwtToken) {
       headers["Authorization"] = `Bearer ${decrypt(jwtToken)}`;
     }

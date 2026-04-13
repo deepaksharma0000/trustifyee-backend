@@ -73,7 +73,7 @@ async function refreshAngelSession(session: any) {
     if (!session?.refreshToken) {
         throw new Error("Angel refreshToken missing. Please login again.");
     }
-    const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey;
+    const sessionApiKey = config.angelApiKey; // [FIX] Always use Master API Key from .env
     const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
     const resp = await dynamicAdapter.generateTokensUsingRefresh(session.refreshToken);
     if (!resp || resp.status === false || !resp.data) {
@@ -124,7 +124,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                 };
                 const index = indexConfig[indexName];
 
-                const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey;
+                const sessionApiKey = config.angelApiKey; // [FIX] Always use Master API Key from .env
                 let resp = await getLtpInternal(session.jwtToken, "NSE", index.symbol, index.token, sessionApiKey);
 
                 if (isInvalidTokenResponse(resp)) {
@@ -230,7 +230,7 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
             if (now >= cooldownUntil) {
                 const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
                 if (session?.jwtToken) {
-                    const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey;
+                    const sessionApiKey = config.angelApiKey; // [FIX] Always use Master API Key from .env
                     let resp = await getLtpInternal(session.jwtToken, exchange, tradingsymbol, symboltoken, sessionApiKey);
                     if (isInvalidTokenResponse(resp)) {
                         try {
