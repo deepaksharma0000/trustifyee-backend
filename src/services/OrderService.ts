@@ -39,7 +39,10 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
 
   // 2. Risk Management (Margin Check)
   const marginRes = await RiskManagementService.getAvailableMargin(userId, clientcode);
-  if (!marginRes.status || !marginRes.data) return marginRes;
+  // [FIX] Don't block the trade if RMS fetch fails, let the broker decide during order placement
+  if (!marginRes.status || !marginRes.data) {
+      log.warn(`RMS_FETCH_WARNING: Skipping margin check for ${clientcode} due to broker error: ${marginRes.message}`);
+  }
 
   // 3. Dynamic Quantity Calculation if requested
   if (orderInput.isDynamicQty && orderInput.riskPercent) {
@@ -52,10 +55,12 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
           const instrument = await InstrumentModel.findOne({ tradingsymbol: orderInput.tradingsymbol, exchange: orderInput.exchange || "NFO" }).lean() as any;
           const lotSize = instrument?.lotSize || 1;
 
-          if (ltp > 0) {
+          if (ltp > 0 && marginRes.data) {
               const newQty = RiskManagementService.calculateDynamicQuantity(marginRes.data.availablecash, orderInput.riskPercent, ltp, lotSize);
               log.info(`DYNAMIC_SIZE: Recalculated Qty ${orderInput.quantity} -> ${newQty} for ${clientcode}`);
               orderInput.quantity = newQty;
+          } else if (ltp > 0) {
+              log.warn(`DYNAMIC_SIZE_SKIP: Skipping dynamic resizing for ${clientcode} because margin info is missing.`);
           }
       } catch (e) {
           log.warn("Dynamic sizing failed, using original qty:", (e as any).message);
@@ -68,9 +73,11 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
 
   // 4. Margin Sufficiency Check
   const requiredAmount = (orderInput.price || 0) * orderInput.quantity; // Simplistic
-  if (requiredAmount > 0 && !RiskManagementService.checkMarginSufficient(marginRes.data.totalusablemargin, requiredAmount)) {
+  if (requiredAmount > 0 && marginRes.data && !RiskManagementService.checkMarginSufficient(marginRes.data.totalusablemargin, requiredAmount)) {
       log.error(`TRADE_BLOCKED: Insufficient usable margin for ${clientcode}. Required: ${requiredAmount}`);
       return { status: false, message: "MARGIN_INSUFFICIENT" };
+  } else if (requiredAmount > 0 && !marginRes.data) {
+      log.warn(`MARGIN_CHECK_SKIP: Placing order for ${clientcode} without margin sufficiency check (broker data missing).`);
   }
 
   return { status: true };
