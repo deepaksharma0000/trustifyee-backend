@@ -52,10 +52,15 @@ import { initAutoExitWorker } from "./jobs/AutoExitWorker";
 
 async function updatePublicIp() {
   try {
-    const res = await axios.get("https://ipv4.icanhazip.com");
-    const ip = res.data.trim();
+    const [ipv4, ipv6] = await Promise.all([
+      axios.get("https://ipv4.icanhazip.com").then(r => r.data.trim()).catch(() => null),
+      axios.get("https://ipv6.icanhazip.com").then(r => r.data.trim()).catch(() => null)
+    ]);
+    
+    // Prioritize IPv6 if available (since many users whitelist IPv6 range)
+    const ip = ipv6 || ipv4;
     (config as any).publicIp = ip;
-    log.info(`🌍 Current Public IP updated: ${ip}`);
+    log.info(`🌍 Current Public IP updated: ${ip} (v6: ${ipv6 || 'none'}, v4: ${ipv4 || 'none'})`);
   } catch (err: any) {
     log.warn(`⚠️ Failed to fetch public IP: ${err.message}`);
   }

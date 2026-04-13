@@ -9,6 +9,7 @@ import { log } from "../utils/logger";
 import { ProfileValidationService } from "./ProfileValidationService";
 import { RiskManagementService } from "./RiskManagementService";
 import User from "../models/User";
+import { decrypt } from "../utils/encryption";
 
 const adapter = new AngelOneAdapter();
 const upstoxAdapter = new UpstoxAdapter();
@@ -156,9 +157,9 @@ export async function placeOrderForClient(
       const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
       if (!angelTokens?.jwtToken) throw new Error("No Angel session");
 
-      // 🚀 [FIX] Use user-specific API Key if available, otherwise fallback to master key
-      const userApiKey = angelTokens.apiKey || config.angelApiKey;
-      const dynamicAdapter = new AngelOneAdapter(userApiKey);
+      // 🚀 [FIX] Decrypt user-specific API Key and use their designated outgoing_ip (IPv6)
+      const userApiKey = angelTokens.apiKey ? decrypt(angelTokens.apiKey) : config.angelApiKey;
+      const dynamicAdapter = new AngelOneAdapter(userApiKey, (user as any)?.outgoing_ip);
 
       // 3. Place Order
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";

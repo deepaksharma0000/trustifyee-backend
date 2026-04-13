@@ -26,6 +26,7 @@ const updateUserSchema = Joi.object({
     is_online: Joi.boolean().optional(),
     is_login: Joi.boolean().optional(),
     is_star: Joi.boolean().optional(),
+    outgoing_ip: Joi.string().allow('', null).optional(),
 }).unknown(true);
 
 export const updateUser = async (req: any, res: Response) => {
@@ -489,6 +490,28 @@ export const getRiskStatus = async (req: Request, res: Response) => {
                 margin_message: margin.message,
                 risk_limit: 0.7
             }
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+export const reactivateTrading = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        
+        // Find user first to ensure it exists
+        const user = await User.findById(id);
+        if (!user) return res.status(404).json({ error: "User not found", status: false });
+
+        // Reset both paused flag and consecutive failures
+        user.trading_paused = false;
+        user.consecutive_failures = 0;
+        await user.save();
+
+        res.status(200).json({
+            message: "Trading reactivated successfully! You can now resume algo trading.",
+            status: true,
+            data: { trading_paused: false, consecutive_failures: 0 }
         });
     } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });

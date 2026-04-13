@@ -2,6 +2,9 @@ import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import { config } from "../config";
 import { log } from "../utils/logger";
+import { decrypt } from "../utils/encryption";
+import User from "../models/User";
+import Admin from "../models/Admin";
 
 export interface MarginInfo {
     availablecash: number;
@@ -24,9 +27,14 @@ export class RiskManagementService {
                 return { status: false, message: "No session for RMS check" };
             }
 
-            // 🚀 [FIX] Use user-specific API Key if available
-            const userApiKey = tokens.apiKey || config.angelApiKey;
-            const dynamicAdapter = new AngelOneAdapter(userApiKey);
+            let user = await User.findById(userId).lean() as any;
+            if (!user) {
+                user = await Admin.findById(userId).lean() as any;
+            }
+
+            // 🚀 [FIX] Decrypt user-specific API Key and pass outgoing_ip for binding
+            const userApiKey = tokens.apiKey ? decrypt(tokens.apiKey) : config.angelApiKey;
+            const dynamicAdapter = new AngelOneAdapter(userApiKey, user?.outgoing_ip);
 
             const rmsRes = await dynamicAdapter.getRMS(tokens.jwtToken);
             if (rmsRes && rmsRes.status === true) {

@@ -1,5 +1,6 @@
 // src/adapters/AngelOneAdapter.ts
 import axios, { AxiosInstance } from "axios";
+import https from "https";
 import { config } from "../config";
 import { log } from "../utils/logger";
 import { decrypt } from "../utils/encryption";
@@ -15,31 +16,45 @@ export type AngelSessionResp = {
 export class AngelOneAdapter {
   private apiKey: string;
   private client: AxiosInstance;
+  private outgoingIp?: string;
+  private loginPath: string = "/rest/auth/angelbroking/user/v1/loginByPassword";
+  private tokenPath: string = "/rest/auth/angelbroking/jwt/v1/generateTokens";
+  private refreshTokenPath: string = "/rest/auth/angelbroking/jwt/v1/refreshToken";
 
-  // official SmartAPI paths
-  private loginPath = "/rest/auth/angelbroking/user/v1/loginByPassword";
-  private tokenPath = "/rest/auth/angelbroking/jwt/v1/generateTokens";
-  private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
+  constructor(apiKey?: string, outgoingIp?: string) {
+    this.apiKey = apiKey || config.angelApiKey;
+    this.outgoingIp = outgoingIp;
 
-  constructor(apiKey?: string) {
-    this.apiKey = apiKey || config.angelApiKey; // [FIXED] Respect passed API Key, fallback to Master Key
+    const agentOptions: any = {
+      keepAlive: true,
+      timeout: 60000
+    };
+
+    if (this.outgoingIp) {
+      agentOptions.localAddress = this.outgoingIp;
+    }
+
     this.client = axios.create({
       baseURL: config.angelBaseUrl,
-      timeout: 60000
+      timeout: 60000,
+      httpsAgent: new https.Agent(agentOptions)
     });
-    this.tokenPath = config.genPath || this.tokenPath;
-    this.refreshTokenPath = config.refreshPath || this.refreshTokenPath;
+
+    // Allow ENV override for token paths
+    if (config.genPath) this.tokenPath = config.genPath;
+    if (config.refreshPath) this.refreshTokenPath = config.refreshPath;
   }
 
   // common headers
   private baseHeaders(jwtToken?: string) {
     const headers: Record<string, string> = {
       "Content-type": "application/json",
-      Accept: "application/json",
+      "Accept": "application/json",
       "X-ClientLocalIP": "127.0.0.1",
-      "X-ClientPublicIP": config.publicIp,
+      "X-ClientPublicIP": this.outgoingIp || config.publicIp, // [FIX] Use assigned IPv6 if present
       "X-MACAddress": "fe:ed:fa:ce:12:34",
       "X-PrivateKey": this.apiKey,
+      "X-Api-Key": this.apiKey, // [FIX] Added standard API Key header
       "X-UserType": "USER",
       "X-SourceID": "WEB"
     };
@@ -130,14 +145,14 @@ export class AngelOneAdapter {
       const status = err?.response?.status;
       const data = err?.response?.data ?? err.message;
 
-      if (status !== 403 && status !== 429) {
+      if (status !== 431) {
         log.error("authPost error status:", status);
         log.error("authPost error body:", JSON.stringify(data, null, 2));
-        log.error("authPost raw error:", err?.toString?.() || err);
+        log.error(`[DEBUG] Attempted with API Key (first 4): ${this.apiKey.substring(0, 4)} and ClientIP: ${config.publicIp}`);
       }
 
       throw new Error(
-        `authPost error [${status}]: ${JSON.stringify(data)}`
+        `authPost error [${status}]: ${JSON.stringify(data)} (IP sent: ${config.publicIp})`
       );
     }
   }

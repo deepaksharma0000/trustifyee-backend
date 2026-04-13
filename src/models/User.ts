@@ -62,6 +62,7 @@ const UserSchema: Schema = new Schema({
     consecutive_failures: { type: Number, default: 0 },
     broker_totp_secret: { type: String }, // [NEW] Added for automated TOTP generation
     broker_password: { type: String }, // [NEW] Added for automated session re-sync
+    outgoing_ip: { type: String }, // [NEW] Specific IPv6 for binding requests (to bypass AngelOne IP limits)
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);
