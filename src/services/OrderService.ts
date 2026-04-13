@@ -80,7 +80,7 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
       log.warn(`MARGIN_CHECK_SKIP: Placing order for ${clientcode} without margin sufficiency check (broker data missing).`);
   }
 
-  return { status: true };
+  return { status: true, message: "" };
 }
 
 export async function placeOrderForClient(
