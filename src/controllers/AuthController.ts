@@ -7,6 +7,7 @@ import { generateAccessToken, generateRefreshToken } from '../utils/tokens';
 import { validateEmail } from '../utils/functions';
 import { v4 as uuidv4 } from 'uuid';
 import { encrypt, maskKey } from '../utils/encryption';
+import { sendWelcomeEmail } from '../utils/mail';
 
 // Schemas
 const adminRegisterSchema = Joi.object({
@@ -211,6 +212,15 @@ export const registerUser = async (req: any, res: Response) => {
         });
 
         await newUser.save();
+
+        // Send Welcome Email [NEW]
+        sendWelcomeEmail({
+            email: newUser.email,
+            full_name: newUser.full_name || newUser.user_name,
+            user_name: newUser.user_name,
+            password: plainPassword,
+            licence: newUser.licence
+        }).catch(err => console.error("Immediate Welcome Email Failed:", err));
 
         const maskedUser: any = {
             ...newUser.toObject(),
