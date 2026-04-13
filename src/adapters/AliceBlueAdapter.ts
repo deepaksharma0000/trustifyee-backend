@@ -37,6 +37,12 @@ export class AliceBlueAdapter {
     this.apiSecret = config.aliceApiSecret;
     this.authBaseUrl = config.aliceAuthBaseUrl;
     this.getUserDetailsPath = config.aliceGetUserDetailsPath;
+
+    // 🚀 Robust path resolution: Use V1 standard if not provided in env
+    // Many issues come from the "/od/" part being incorrect for some versions.
+    if (!this.placeOrderPath) this.placeOrderPath = "/open-api/v1/orders/place";
+    if (!this.orderStatusPath) this.orderStatusPath = "/open-api/v1/orders/book";
+    if (!this.getUserDetailsPath) this.getUserDetailsPath = "/open-api/v1/vendor/getUserDetails";
   }
 
   // ----------------- COMMON HEADERS FOR ORDER/APIs -----------------
@@ -63,13 +69,18 @@ export class AliceBlueAdapter {
       return resp.data;
     } catch (err: any) {
       const status = err?.response?.status;
-      const data = err?.response?.data ?? err.message;
+      let data = err?.response?.data ?? err.message;
+
+      // 🕵️ Detect HTML (indicates 404/Redirect/Wrong URL)
+      if (typeof data === 'string' && (data.includes('<html') || data.includes('<!DOCTYPE'))) {
+        log.error("Alice: Received HTML instead of JSON. Check API Path/URL.");
+        data = `Broker returned an error page (HTML). Status: ${status}. This usually means the API endpoint or headers are incorrect.`;
+      }
 
       log.error("Alice authPost error status:", status);
-      log.error("Alice authPost error body:", JSON.stringify(data, null, 2));
-      log.error("Alice authPost raw error:", err?.toString?.() || err);
+      log.error("Alice authPost error summary:", typeof data === 'string' ? data.slice(0, 200) : JSON.stringify(data));
 
-      throw new Error(`Alice authPost error [${status}]: ${JSON.stringify(data)}`);
+      throw new Error(`Alice API Error [${status}]: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
     }
   }
 

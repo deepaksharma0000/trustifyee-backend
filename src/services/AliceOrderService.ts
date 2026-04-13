@@ -3,6 +3,7 @@ import AliceTokensModel from "../models/AliceTokens";
 import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
 import AliceInstrumentModel, { IAliceInstrument } from "../models/AliceInstrument";
 import { log } from "../utils/logger";
+import InstrumentModel from "../models/Instrument";
 
 const adapter = new AliceBlueAdapter();
 
@@ -24,14 +25,51 @@ async function findAliceSymbol(
   exchange: string,
   tradingSymbol: string
 ): Promise<{ exchange: string; tradingsymbol: string; symboltoken: string }> {
-  const doc = await AliceInstrumentModel.findOne({
-    exchange: exchange.toUpperCase(),
+  const exchangeUpper = exchange.toUpperCase();
+  
+  // 1. Direct Match Attempt
+  let doc = await AliceInstrumentModel.findOne({
+    exchange: exchangeUpper,
     tradingSymbol: tradingSymbol
-  }).lean<IAliceInstrument>();   // 🔹 yaha type fix
+  }).lean<IAliceInstrument>();
+
+  // 2. Cross-Broker Metadata Match (If direct match fails, common for F&O)
+  if (!doc) {
+    log.info(`Alice: Direct match failed for ${tradingSymbol}. Attempting metadata match...`);
+    
+    // Find the original instrument info (likely AngelOne based)
+    const original = await InstrumentModel.findOne({
+      exchange: exchangeUpper,
+      tradingsymbol: tradingSymbol
+    }).lean();
+
+    if (original && original.strike && original.expiry) {
+      log.info(`Alice: Attempting metadata match for ${original.name} ${original.strike} ${original.optiontype} ${original.expiry}`);
+      
+      const expDate = new Date(original.expiry);
+      const startOfDay = new Date(expDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(expDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      // Find Alice equivalent using Strike, Expiry, and OptionType
+      doc = await AliceInstrumentModel.findOne({
+        exchange: exchangeUpper,
+        symbol: original.name || original.tradingsymbol.replace(/[0-9].*$/, ""), 
+        strikePrice: original.strike,
+        optionType: original.optiontype,
+        expiry: { $gte: startOfDay, $lt: endOfDay }
+      }).lean<IAliceInstrument>();
+
+      if (doc) {
+        log.info(`Alice: Metadata match success! Found ${doc.tradingSymbol} for ${tradingSymbol}`);
+      }
+    }
+  }
 
   if (!doc) {
     throw new Error(
-      `Alice: Instrument not found in DB for ${exchange} ${tradingSymbol}`
+      `Alice: Instrument not found in DB for ${exchange} ${tradingSymbol}. Please sync Alice instruments.`
     );
   }
 
@@ -52,18 +90,12 @@ export async function placeAliceOrderForClient(
     throw new Error("No active Alice session for clientcode");
   }
 
-  // Agar client ne symboltoken directly nahi diya to DB se nikaalo
-  let symbol: { exchange: string; tradingsymbol: string; symboltoken: string };
-
-  if (orderInput.symboltoken) {
-    symbol = {
-      exchange: orderInput.exchange.toUpperCase(),
-      tradingsymbol: orderInput.tradingsymbol,
-      symboltoken: orderInput.symboltoken
-    };
-  } else {
-    symbol = await findAliceSymbol(orderInput.exchange, orderInput.tradingsymbol);
-  }
+  // 🚀 [ROBUST SYMBOL RESOLUTION]
+  // In a multi-broker system, the incoming symboltoken is likely from AngelOne.
+  // We MUST resolve the correct Alice Blue token from our own instrument database.
+  const symbol = await findAliceSymbol(orderInput.exchange, orderInput.tradingsymbol);
+  
+  log.debug("Alice Matched Symbol (Alice DB):", symbol);
 
   log.debug("Alice Matched Symbol (Alice DB):", symbol);
 

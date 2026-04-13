@@ -109,6 +109,7 @@ for (const r of rows) {
         tradingSymbol: row.trading_symbol,
         symbol: row.symbol,
         instrumentType: row.instrument_type ?? null,
+        optionType: row.option_type ?? null,
         expiry,
         strikePrice: strike,
         lotSize,

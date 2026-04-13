@@ -8,6 +8,7 @@ export interface IAliceInstrument extends Document {
   instrumentType?: string;     // EQ / FUTIDX / OPTIDX / OPTSTK / FUTSTK ...
   expiry?: Date | null;
   strikePrice?: number | null;
+  optionType?: string | null;  // CE / PE
   lotSize?: number | null;
   segment?: string | null;     // NFO, NSE, etc.
   underlyingSymbol?: string | null;
@@ -23,6 +24,7 @@ const AliceInstrumentSchema = new Schema<IAliceInstrument>(
     instrumentType: { type: String },
     expiry: { type: Date },
     strikePrice: { type: Number },
+    optionType: { type: String },
     lotSize: { type: Number },
     segment: { type: String },
     underlyingSymbol: { type: String },
