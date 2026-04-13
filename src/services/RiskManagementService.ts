@@ -1,5 +1,6 @@
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
+import { config } from "../config";
 import { log } from "../utils/logger";
 
 export interface MarginInfo {

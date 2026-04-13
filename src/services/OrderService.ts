@@ -4,6 +4,7 @@ import InstrumentModel from "../models/Instrument";
 import UpstoxInstrumentModel from "../models/UpstoxInstrument";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
+import { config } from "../config";
 import { log } from "../utils/logger";
 import { ProfileValidationService } from "./ProfileValidationService";
 import { RiskManagementService } from "./RiskManagementService";

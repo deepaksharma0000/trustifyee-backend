@@ -79,37 +79,37 @@ async function checkAndManagePositions() {
                     const broker = user?.broker || "AngelOne";
 
                     if (broker === "AliceBlue") {
-                      const { placeOrderForClient } = await import("./OrderService");
-                      const exitSide = pos.side === "BUY" ? "SELL" : "BUY";
-                      const aliceRes = await placeOrderForClient(p.userId, p.clientcode, {
-                        exchange: p.exchange,
-                        tradingsymbol: p.tradingsymbol,
-                        side: exitSide,
-                        transactiontype: exitSide,
-                        quantity: p.quantity,
-                        ordertype: "MARKET",
-                        symboltoken: p.symboltoken,
-                        producttype: (p.productType || "INTRADAY") as any
-                      });
+                        const { placeOrderForClient } = await import("./OrderService");
+                        const exitSide = pos.side === "BUY" ? "SELL" : "BUY";
+                        const aliceRes = await placeOrderForClient(p.userId, p.clientcode, {
+                            exchange: p.exchange,
+                            tradingsymbol: p.tradingsymbol,
+                            side: exitSide,
+                            transactiontype: exitSide,
+                            quantity: p.quantity,
+                            ordertype: "MARKET",
+                            symboltoken: p.symboltoken,
+                            producttype: (p.productType || "INTRADAY") as any
+                        });
 
-                      if (aliceRes && aliceRes.status === true) {
-                        p.status = "CLOSED";
-                        p.exitPrice = ltp;
-                        p.exitAt = new Date();
-                        p.exitOrderId = aliceRes.data?.orderid || "ALICE-EXIT";
-                        await p.save();
-                        log.info(`✅ Auto-Exit Success (Alice): ${p.tradingsymbol}`);
-                      } else {
-                        log.error(`❌ Auto-Exit Failed (Alice): ${aliceRes?.message}`);
-                      }
+                        if (aliceRes && aliceRes.status === true) {
+                            p.status = "CLOSED";
+                            p.exitPrice = ltp;
+                            p.exitAt = new Date();
+                            p.exitOrderId = aliceRes.data?.orderid || "ALICE-EXIT";
+                            await p.save();
+                            log.info(`✅ Auto-Exit Success (Alice): ${p.tradingsymbol}`);
+                        } else {
+                            log.error(`❌ Auto-Exit Failed (Alice): ${aliceRes?.message}`);
+                        }
                     } else {
-                      // 😇 [DEFAULT / ANGELONE FLOW]
-                      const tokens = await AngelTokensModel.findOne(p.userId ? { userId: p.userId, clientcode: p.clientcode } : { clientcode: p.clientcode }).lean() as any;
-                      if (tokens?.jwtToken) {
-                          await executeExit(p, tokens.jwtToken, exitReason);
-                      } else {
-                          log.error(`Cannot auto-exit ${p.tradingsymbol}: No token for ${p.clientcode}`);
-                      }
+                        // 😇 [DEFAULT / ANGELONE FLOW]
+                        const tokens = await AngelTokensModel.findOne(p.userId ? { userId: p.userId, clientcode: p.clientcode } : { clientcode: p.clientcode }).lean() as any;
+                        if (tokens?.jwtToken) {
+                            await executeExit(p, tokens.jwtToken, exitReason);
+                        } else {
+                            log.error(`Cannot auto-exit ${p.tradingsymbol}: No token for ${p.clientcode}`);
+                        }
                     }
                 }
             }
