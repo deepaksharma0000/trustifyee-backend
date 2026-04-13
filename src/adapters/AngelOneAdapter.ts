@@ -22,7 +22,7 @@ export class AngelOneAdapter {
   private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
 
   constructor(apiKey?: string) {
-    this.apiKey = config.angelApiKey; // [CRITICAL FIX] Always force Master API Key from .env
+    this.apiKey = apiKey || config.angelApiKey; // [FIXED] Respect passed API Key, fallback to Master Key
     this.client = axios.create({
       baseURL: config.angelBaseUrl,
       timeout: 60000
@@ -67,8 +67,9 @@ export class AngelOneAdapter {
     // [NEW] Automated TOTP generation if secret is provided
     if (!finalTotp && params.totp_secret) {
       try {
+        const cleanSecret = params.totp_secret.replace(/\s/g, '');
         finalTotp = speakeasy.totp({
-          secret: params.totp_secret,
+          secret: cleanSecret,
           encoding: 'base32'
         });
         log.info(`Auto-generated TOTP for ${params.clientcode}`);
