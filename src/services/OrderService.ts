@@ -89,8 +89,18 @@ export async function placeOrderForClient(
   orderInput: PlaceOrderInput,
   retryCount = 0
 ): Promise<any> {
-  const user = await User.findById(userId);
-  if (!user) throw new Error("User not found");
+  let user = await User.findById(userId);
+  
+  if (!user) {
+    // If not in User collection, check Admin collection (for admin broadcast)
+    const AdminModel = require('../models/Admin').default;
+    user = await AdminModel.findById(userId);
+  }
+
+  if (!user) {
+     log.error(`[OrderService] User/Admin not found for ID: ${userId}`);
+     throw new Error("User not found");
+  }
 
   if (user.trading_paused) {
       log.warn(`TRADE_BLOCKED: Trading is paused for ${user.user_name} due to consecutive failures.`);
@@ -141,9 +151,13 @@ export async function placeOrderForClient(
           throw new Error(validation.message || "Validation failed");
       }
 
-      // 2. Fetch tokens
+      // 2. Fetch tokens and resolve API Key
       const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
       if (!angelTokens?.jwtToken) throw new Error("No Angel session");
+
+      // 🚀 [FIX] Use user-specific API Key if available, otherwise fallback to master key
+      const userApiKey = angelTokens.apiKey || config.angelApiKey;
+      const dynamicAdapter = new AngelOneAdapter(userApiKey);
 
       // 3. Place Order
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
@@ -162,7 +176,8 @@ export async function placeOrderForClient(
         stoploss: "0"
       };
 
-      const resp = await adapter.authPost(
+      // Use dynamic adapter instance with the correct API key
+      const resp = await dynamicAdapter.authPost(
         angelTokens.jwtToken,
         "/rest/secure/angelbroking/order/v1/placeOrder",
         payload
@@ -206,7 +221,9 @@ export async function getOrderStatusForClient(
 ) {
   const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
   if (angelTokens?.jwtToken) {
-    const orderBookResp = await adapter.getOrderBook(angelTokens.jwtToken);
+    const userApiKey = angelTokens.apiKey || config.angelApiKey;
+    const dynamicAdapter = new AngelOneAdapter(userApiKey);
+    const orderBookResp = await dynamicAdapter.getOrderBook(angelTokens.jwtToken);
     if (orderBookResp && orderBookResp.status && Array.isArray(orderBookResp.data)) {
       // 1. Try exact Match
       let order = orderBookResp.data.find((o: any) => o.orderid === orderId);

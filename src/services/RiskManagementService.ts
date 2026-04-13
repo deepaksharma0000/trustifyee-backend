@@ -23,7 +23,11 @@ export class RiskManagementService {
                 return { status: false, message: "No session for RMS check" };
             }
 
-            const rmsRes = await this.adapter.getRMS(tokens.jwtToken);
+            // 🚀 [FIX] Use user-specific API Key if available
+            const userApiKey = tokens.apiKey || config.angelApiKey;
+            const dynamicAdapter = new AngelOneAdapter(userApiKey);
+
+            const rmsRes = await dynamicAdapter.getRMS(tokens.jwtToken);
             if (rmsRes && rmsRes.status === true) {
                 const data = rmsRes.data || {};
                 

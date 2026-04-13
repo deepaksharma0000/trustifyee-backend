@@ -246,7 +246,7 @@ async function placeTradesForRun(run: any) {
         'FINNIFTY': 'FINNIFTY',
         'SENSEX': 'SENSEX'
       };
-      
+
       const multiplierKey = symbolMap[run.symbol] || run.symbol;
       const userMultiplier = (user.lot_multipliers && user.lot_multipliers[multiplierKey]) || 1;
 

@@ -22,7 +22,7 @@ export class AngelOneAdapter {
   private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || config.angelApiKey;
+    this.apiKey = config.angelApiKey; // [CRITICAL FIX] Always force Master API Key from .env
     this.client = axios.create({
       baseURL: config.angelBaseUrl,
       timeout: 60000

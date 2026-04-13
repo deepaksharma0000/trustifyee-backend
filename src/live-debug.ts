@@ -12,7 +12,7 @@ async function debugLive() {
         const ipRes = await axios.get('https://api.ipify.org');
         console.log('Your LIVE Server Public IP:', ipRes.data);
         console.log('Make sure this IP is Whitelisted in AngelOne Dashboard!');
-    } catch (e: any) {
+    } catch (e) {
         console.log('Could not fetch IP:', e.message);
     }
 
