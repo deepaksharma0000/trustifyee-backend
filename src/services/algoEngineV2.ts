@@ -20,6 +20,7 @@ import { SignalService } from "./SignalService";
 import { getConnectedUserCount } from "./UserSocketService";
 import { Signal } from "../models/Signal";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
+import { placeOrderForClient } from "./OrderService";
 
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
 
