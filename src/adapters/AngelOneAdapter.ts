@@ -168,6 +168,7 @@ export class AngelOneAdapter {
 
   // ------------ GENERIC AUTHP POST / GET ------------
 
+  async authPost(jwtToken: string, path: string, body?: any) {
     log.info("[HTTP_AGENT] AngelOne API call (authPost) forced to family: 4");
     try {
       const resp = await this.client.post(path, body || {}, {
@@ -191,6 +192,7 @@ export class AngelOneAdapter {
     }
   }
 
+  async authGet(jwtToken: string, path: string, params?: any) {
     log.info("[HTTP_AGENT] AngelOne API call (authGet) forced to family: 4");
     try {
       const resp = await this.client.get(path, {
