@@ -43,19 +43,23 @@ export const encrypt = (text: string): string => {
 export const safeDecrypt = (text: string, identifier: string = 'field'): string | null => {
     if (!text) return null;
     
+    const maskedRaw = text.length > 10 ? text.substring(0, 10) + '...' : text;
+
     // If it doesn't have the prefix, treat as plaintext or legacy
     if (!isMigrated(text)) {
+        // [AUDIT] Log that we are using legacy plaintext
+        if (text.length > 5) {
+            console.log(`[DECRYPTION_INFO] [PLAINTEXT_DETECTED] [${identifier}] Field: ${identifier}`);
+        }
         return text;
     }
-
-    const maskedRaw = text.substring(0, 10) + '...';
 
     // Strip prefix
     const rawData = text.substring(ENCRYPTION_PREFIX.length);
     const textParts = rawData.split(':');
     
     if (textParts.length < 2) {
-        console.warn(`[DECRYPTION_FAILURE] [INVALID_FORMAT] [${identifier}] Data: ${maskedRaw}`);
+        console.warn(`[DECRYPTION_FAILURE] [INVALID_FORMAT] [${identifier}] Data: ${maskedRaw} - Expected iv:data`);
         return null;
     }
 
@@ -70,15 +74,19 @@ export const safeDecrypt = (text: string, identifier: string = 'field'): string 
         let decrypted = decipher.update(encryptedText);
         decrypted = Buffer.concat([decrypted, decipher.final()]);
         
-        const result = decrypted.toString();
+        const result = decrypted.toString('utf8');
         if (!result || result.length < 1) {
-             console.error(`[DECRYPTION_FAILURE] [EMPTY_RESULT] [${identifier}]`);
+             console.error(`[DECRYPTION_FAILURE] [EMPTY_RESULT] [${identifier}] Decryption succeeded but resulted in empty string.`);
              return null;
         }
+
+        // [DEBUG] Success log (masked)
+        console.log(`[DECRYPTION_SUCCESS] [${identifier}] Decrypted successfully. Preview: ${result.substring(0, 4)}****`);
+        
         return result;
     } catch (error: any) {
-        // [AUDIT LOG] track records that failed decryption (likely key mismatch)
-        console.error(`[DECRYPTION_FAILURE] [ERROR] [${identifier}] Msg: ${error.message} | Value: ${maskedRaw}`);
+        // [AUDIT LOG] track records that failed decryption (likely key mismatch or corrupted iv)
+        console.error(`[DECRYPTION_FAILURE] [BAD_DECRYPT] [${identifier}] Possible key mismatch. Msg: ${error.message} | Raw: ${maskedRaw}`);
         return null;
     }
 };
@@ -101,19 +109,25 @@ export const ensureEncrypted = async (doc: any, field: string, identifier: strin
         return "";
     }
 
-    if (!isMigrated(value)) {
-        const encrypted = encrypt(value);
-        console.log(`[AUTO_MIGRATION_SUCCESS] [${identifier}] Field: ${field} - Legacy plaintext upgraded.`);
-        
-        doc[field] = encrypted;
-        if (typeof doc.save === 'function') {
-            await doc.save();
+    if (isMigrated(value)) {
+        const testDec = safeDecrypt(value, identifier);
+        if (!testDec) {
+            console.error(`[AUTO_MIGRATION_ERROR] [CORRUPTED_DATA] [${identifier}] Field: ${field} - Decryption failed on already-prefixed data. Likely OLD encryption key.`);
+            return ""; // Refuse to use corrupted data
         }
-        
-        return value; 
+        return testDec;
     }
     
-    return decrypt(value, identifier);
+    // Legacy plaintext -> Encrypt it
+    const encrypted = encrypt(value);
+    console.log(`[AUTO_MIGRATION_SUCCESS] [${identifier}] Field: ${field} - Legacy plaintext upgraded.`);
+    
+    doc[field] = encrypted;
+    if (typeof doc.save === 'function') {
+        await doc.save();
+    }
+    
+    return value; 
 };
 
 export const validateApiKey = (key: string | null | undefined): boolean => {

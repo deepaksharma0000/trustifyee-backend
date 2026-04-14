@@ -50,10 +50,13 @@ export async function createAngelAdapter(userIdOrDoc: string | Types.ObjectId | 
         throw new Error("Missing Broker API Key. Please update your profile.");
     }
 
-    const decKey = decrypt(encKey, "broker_adapter_factory");
+    const userIdent = `user_${toUserId(user._id)}`;
+    const { safeDecrypt } = require("./encryption");
+    const decKey = safeDecrypt(encKey, userIdent);
+    
     if (!decKey || decKey.length < 10) {
-        log.error(`[INVALID_ADAPTER_STATE] Decrypted API Key invalid for user: ${toUserId(user._id)}`);
-        throw new Error("Invalid Decrypted API Key. Please reconnect broker.");
+        log.error(`[INVALID_ADAPTER_STATE] Decrypted API Key invalid/missing for user: ${userIdent}. RawKey: ${encKey.substring(0, 10)}...`);
+        throw new Error("Invalid Decrypted API Key. Please reconnect broker in your profile.");
     }
 
     return new AngelOneAdapter(decKey, user.outgoing_ip);

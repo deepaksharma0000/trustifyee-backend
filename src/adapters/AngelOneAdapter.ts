@@ -56,14 +56,20 @@ export class AngelOneAdapter {
   // common headers
   private baseHeaders(jwtToken?: string) {
     // [ISSUE 2 HARDENING] Strict validation layer
-    const { validateApiKey } = require("../utils/encryption");
-    if (!validateApiKey(this.apiKey)) {
-        log.error(`[INVALID_API_KEY] Connection rejected for key: ${this.apiKey.substring(0, 5)}...`);
-        throw new Error("Invalid decrypted API key. Access Denied.");
+    const { validateApiKey, safeDecrypt, maskKey } = require("../utils/encryption");
+    
+    const rawKey = this.apiKey;
+    const maskedRaw = rawKey.length > 10 ? rawKey.substring(0, 10) + "..." : "EMPTY";
+    
+    // 1. Validate Decrypted Key
+    const decApiKey = safeDecrypt(rawKey, "angel_adapter_headers");
+    
+    if (!decApiKey || decApiKey.length < 10) {
+        log.error(`[INVALID_API_KEY] Access blocked for Client: ${this.outgoingIp || 'Unknown'}. RawKey: ${maskedRaw} Decryption Failed.`);
+        throw new Error("Invalid decrypted API key. Access Denied. Please reconnect broker.");
     }
 
-    const decApiKey = decrypt(this.apiKey, "angel_api_key");
-    const maskedKey = decApiKey ? (decApiKey.substring(0, 4) + "****") : "MISSING";
+    const maskedKeySnippet = decApiKey.substring(0, 4) + "****";
     const keySource = this.apiKey === config.angelApiKey ? "GLOBAL (UNAUTHORIZED)" : "USER";
 
     const headers: Record<string, string> = {
@@ -78,7 +84,7 @@ export class AngelOneAdapter {
       "X-SourceID": "WEB"
     };
 
-    log.debug(`[API_KEY_USED] Source: ${keySource} | Key: ${maskedKey}`);
+    log.debug(`[API_KEY_USED] Source: ${keySource} | Key: ${maskedKeySnippet}`);
 
     if (keySource === "GLOBAL (UNAUTHORIZED)") {
         log.warn("CRITICAL: System attempted to use Global API Key fallback. Access denied by enforcement.");
