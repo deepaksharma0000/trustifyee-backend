@@ -1,9 +1,10 @@
 // src/services/algoEngineV2.ts - Production Ready Algo Engine with Strategy Support
+// FIX #2: Live users receive SIGNALS only (user-device execution model)
+// FIX #8: RUNNERS recovery on server restart
 import User from "../models/User";
 import { AlgoRun } from "../models/AlgoRun";
 import { AlgoTrade } from "../models/AlgoTrade";
 import { Position } from "../models/Position.model";
-import { placeOrderForClient } from "./OrderService";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import {
@@ -15,6 +16,10 @@ import {
 import { log } from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { getInstrumentLtp } from "./MarketDataService";
+import { SignalService } from "./SignalService";
+import { getConnectedUserCount } from "./UserSocketService";
+import { Signal } from "../models/Signal";
+import { SignalExecutionResult } from "../models/SignalExecutionResult";
 
 type AlgoSymbol = "NIFTY" | "BANKNIFTY" | "FINNIFTY";
 
@@ -168,14 +173,40 @@ async function placeTradesForRun(run: any) {
             continue;
         }
 
-        // 🔥 Security: Check if Live user has necessary keys
-        if (user.licence === 'Live' && (!user.broker || !user.api_key)) {
-            log.warn(`⚠️ User ${user.user_name} is Live but missing Broker or API Key. Skipping.`);
-            continue;
+        // ── FIX #2: Live users → SIGNAL ONLY. No server-side order call. ─────
+        if (user.licence === "Live") {
+            // Validate minimum readiness
+            if (!user.broker_verified) {
+                log.warn(`⚠️ Skipping Live user ${user.user_name}: broker not verified`);
+                continue;
+            }
+
+            for (const leg of resolvedLegs) {
+                try {
+                    await SignalService.createSignal({
+                        symbol: run.symbol,
+                        exchange: "NFO",
+                        side: leg.side as "BUY" | "SELL",
+                        tradingsymbol: leg.tradingsymbol,
+                        strike: leg.strike,
+                        optiontype: leg.optionType as "CE" | "PE",
+                        expiry: run.expiry,
+                        price: 0, // Frontend fetches live LTP at execution time
+                        quantity: leg.quantity,
+                        strategy: run.strategy,
+                        signalType: "ENTRY",
+                    });
+                    log.info(`📡 Signal broadcast: ${leg.tradingsymbol} (${leg.side}) → user ${user.user_name}`);
+                } catch (sigErr: any) {
+                    log.error(`Signal creation failed for ${leg.tradingsymbol}: ${sigErr.message}`);
+                }
+            }
+            continue; // Done for this Live user — NO server-side order
         }
 
-        for (const leg of resolvedLegs) {
-            if (user.licence === "Demo") {
+        // ── Demo users → Paper trading (server-side simulation) ───────────────
+        if (user.licence === "Demo") {
+            for (const leg of resolvedLegs) {
                 const paperId = `PAPER-${Date.now()}-${Math.random()}`;
                 await Position.create({
                     userId: String(user._id),
@@ -208,7 +239,6 @@ async function placeTradesForRun(run: any) {
                     status: "ok",
                 });
 
-                // Simulated Broker Response for Demo users to see in dashboard
                 try {
                     const BrokerResponse = require("../models/BrokerResponse").default;
                     await BrokerResponse.create({
@@ -223,90 +253,12 @@ async function placeTradesForRun(run: any) {
                 } catch (e) {
                     log.error("Failed to create simulated BrokerResponse in AlgoEngineV2", e);
                 }
-
-                continue;
             }
-
-            try {
-                const resp = await placeOrderForClient(user._id, clientcode, {
-                    exchange: "NFO",
-                    tradingsymbol: leg.tradingsymbol,
-                    side: leg.side,
-                    transactiontype: leg.side,
-                    quantity: leg.quantity,
-                    ordertype: "MARKET",
-                });
-
-                const orderid =
-                    resp?.data?.orderid ||
-                    resp?.data?.data?.orderid ||
-                    `BROKER-${Date.now()}-${Math.random()}`;
-
-                // 🚀 [BROKER AWARE SESSION]
-                let session: any = null;
-                let tokenToUse: string = "";
-
-                if (user.broker === "AliceBlue") {
-                  const AliceTokensModel = require("../models/AliceTokens").default;
-                  session = await AliceTokensModel.findOne({ userId: user._id, clientcode }).lean();
-                  tokenToUse = session?.sessionId || ""; // Alice uses sessionId
-                } else {
-                  session = await AngelTokensModel.findOne({ userId: user._id, clientcode }).lean() as any;
-                  tokenToUse = session?.jwtToken || ""; // Angel uses jwtToken
-                }
-
-                const entryPrice = tokenToUse && leg.symboltoken
-                    ? await getEntryPrice(tokenToUse, "NFO", leg.tradingsymbol, leg.symboltoken)
-                    : 0;
-
-                await Position.create({
-                    userId: String(user._id),
-                    clientcode,
-                    orderid,
-                    tradingsymbol: leg.tradingsymbol,
-                    exchange: "NFO",
-                    side: leg.side,
-                    quantity: leg.quantity,
-                    entryPrice: entryPrice || 0,
-                    symboltoken: leg.symboltoken,
-                    status: "OPEN",
-                    runId: String(run._id),
-                    strategy: run.strategy,
-                    mode: "live",
-                });
-
-                await AlgoTrade.create({
-                    runId: String(run._id),
-                    batchId,
-                    userId: String(user._id),
-                    clientcode,
-                    orderid,
-                    tradingsymbol: leg.tradingsymbol,
-                    optiontype: leg.optionType,
-                    strike: leg.strike,
-                    side: leg.side,
-                    quantity: leg.quantity,
-                    mode: "live",
-                    status: "ok",
-                });
-            } catch (err: any) {
-                await AlgoTrade.create({
-                    runId: String(run._id),
-                    batchId,
-                    userId: String(user._id),
-                    clientcode,
-                    orderid: `ERR-${Date.now()}`,
-                    tradingsymbol: leg.tradingsymbol,
-                    optiontype: leg.optionType,
-                    strike: leg.strike,
-                    side: leg.side,
-                    quantity: leg.quantity,
-                    mode: "live",
-                    status: "error",
-                    error: err?.message || String(err),
-                });
-            }
+            continue;
         }
+
+        // ── Any other licence type → log and skip ────────────────────────────
+        log.warn(`[AlgoEngine] Unknown licence type '${user.licence}' for ${user.user_name}. Skipping.`);
     }
 }
 
@@ -379,7 +331,11 @@ export async function stopRun(runId: string, reason = "Stopped") {
 
     const openPositions = await Position.find({ runId, status: "OPEN" });
     for (const p of openPositions) {
-        await squareOffPosition(p);
+        try {
+            await squareOffPosition(p);
+        } catch (err: any) {
+            log.error(`[AlgoEngine] Square off failed for position ${p._id}:`, err.message);
+        }
     }
 
     log.info(`🛑 Stopped algo run: ${reason}`);
@@ -432,6 +388,18 @@ export async function getSummary(date?: string) {
         return sum + diff * p.quantity;
     }, 0);
 
+    const signals = await Signal.find({
+        createdAt: { $gte: start, $lt: end },
+    }).lean();
+
+    const signalIds = signals.map(s => s._id);
+    const executionResults = await SignalExecutionResult.find({
+        signalId: { $in: signalIds }
+    }).lean();
+
+    const successSignals = executionResults.filter(r => r.status === "SUCCESS").length;
+    const totalSignalExecutions = executionResults.length;
+
     return {
         date: start.toISOString().slice(0, 10),
         totalTrades,
@@ -440,5 +408,81 @@ export async function getSummary(date?: string) {
         openPositions,
         closedPositions: closedPositions.length,
         pnl,
+        connectedUsersCount: getConnectedUserCount(),
+        signalStats: {
+            totalSignals: signals.length,
+            totalExecutions: totalSignalExecutions,
+            successRate: totalSignalExecutions > 0 ? ((successSignals / totalSignalExecutions) * 100).toFixed(2) : 0
+        }
     };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX #8: RUNNERS RECOVERY — call this once on server boot
+// Reattaches setInterval timers for any AlgoRun still marked "running" in DB.
+// Prevents ghost "running" state after server restart / crash.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Internal helper: restart a single run's interval without creating a new DB record.
+ * Used by recoverRunningRuns() on startup.
+ */
+function restartRunner(run: any): void {
+    const runId = String(run._id);
+
+    if (RUNNERS.has(runId)) {
+        log.warn(`[AlgoEngine] Runner ${runId} already in RUNNERS map. Skipping restart.`);
+        return;
+    }
+
+    log.info(`[AlgoEngine] 🔄 Recovering runner for AlgoRun: ${runId} (${run.strategy})`);
+
+    const interval = setInterval(async () => {
+        const current = await AlgoRun.findById(runId).lean();
+        if (!current || current.status !== "running") {
+            clearInterval(interval);
+            RUNNERS.delete(runId);
+            return;
+        }
+
+        if (isEodTime()) {
+            await stopRun(runId, "EOD");
+            return;
+        }
+
+        await enforceRisk(current);
+        await placeTradesForRun(current);
+    }, 30000);
+
+    RUNNERS.set(runId, interval);
+    log.info(`[AlgoEngine] ✅ Runner recovered for ${runId}`);
+}
+
+/**
+ * Call this ONCE on server startup (in index.ts after DB connection).
+ * Finds all AlgoRuns with status === "running" and reattaches their intervals.
+ */
+export async function recoverRunningRuns(): Promise<void> {
+    try {
+        const runningRuns = await AlgoRun.find({ status: "running" }).lean();
+
+        if (runningRuns.length === 0) {
+            log.info("[AlgoEngine] No orphaned running AlgoRuns to recover.");
+            return;
+        }
+
+        log.warn(`[AlgoEngine] Found ${runningRuns.length} orphaned AlgoRun(s). Recovering...`);
+
+        for (const run of runningRuns) {
+            // If EOD already passed, stop the run instead of restarting
+            if (isEodTime()) {
+                log.warn(`[AlgoEngine] EOD time detected during recovery. Stopping run: ${run._id}`);
+                await stopRun(String(run._id), "EOD_ON_RECOVERY");
+            } else {
+                restartRunner(run);
+            }
+        }
+    } catch (err: any) {
+        log.error("[AlgoEngine] RUNNERS recovery failed:", err.message);
+    }
 }

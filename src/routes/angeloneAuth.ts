@@ -67,7 +67,12 @@ router.post('/generate-session', auth, async (req: any, res) => {
         let totp: string = req.body.totp || '';
         let totp_secret: string = req.body.totp_secret || '';
         if (!totp && !totp_secret && profile.broker_totp_secret) {
-            totp_secret = profile.broker_totp_secret;
+            // FIX #4: Decrypt stored TOTP secret before using it
+            try {
+                totp_secret = decrypt(profile.broker_totp_secret);
+            } catch (_) {
+                totp_secret = profile.broker_totp_secret; // Legacy fallback (plaintext)
+            }
             log.info(`[AUTH] Smart Login: Using saved TOTP secret for ${client_code}`);
         }
 
@@ -135,9 +140,9 @@ router.post('/generate-session', auth, async (req: any, res) => {
         if (req.body.api_key) {
             updatePayload.api_key = encrypt(req.body.api_key);
         }
-        // Save TOTP secret if provided (for future auto-TOTP generation)
+        // FIX #4: Encrypt TOTP secret before persisting to DB
         if (req.body.totp_secret) {
-            updatePayload.broker_totp_secret = req.body.totp_secret;
+            updatePayload.broker_totp_secret = encrypt(req.body.totp_secret);
         }
 
         if (userType === 'admin') {

@@ -28,6 +28,18 @@ export const executeSignal = async (req: Request, res: Response) => {
 
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
+        // FIX: Idempotency check — prevent duplicate execution of SAME signal by SAME user
+        const existingExecution = await SignalExecutionResult.findOne({ signalId, userId });
+        if (existingExecution && existingExecution.status === "SUCCESS") {
+            log.warn(`[SignalController] Blocked duplicate execution for user ${userId} on signal ${signalId}`);
+            return res.status(200).json({ 
+                message: "Signal already executed successfully", 
+                status: true, 
+                alreadyExecuted: true 
+            });
+        }
+
+
         const signal = await Signal.findById(signalId);
         if (!signal || signal.status !== "ACTIVE") {
             return res.status(404).json({ error: "Signal not found or inactive", status: false });
