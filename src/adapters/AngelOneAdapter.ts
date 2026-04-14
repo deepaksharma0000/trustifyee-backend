@@ -5,6 +5,7 @@ import { config } from "../config";
 import { log } from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import speakeasy from 'speakeasy';
+import { ipv4Agent } from "../utils/httpAgent";
 
 export type AngelSessionResp = {
   status?: boolean | string;
@@ -33,6 +34,7 @@ export class AngelOneAdapter {
 
     const agentOptions: any = {
       keepAlive: true,
+      family: 4, // 🚀 FORCE IPv4
       timeout: 60000
     };
 
@@ -43,7 +45,7 @@ export class AngelOneAdapter {
     this.client = axios.create({
       baseURL: config.angelBaseUrl,
       timeout: 60000,
-      httpsAgent: new https.Agent(agentOptions)
+      httpsAgent: this.outgoingIp ? new https.Agent(agentOptions) : ipv4Agent
     });
 
     // Allow ENV override for token paths
@@ -126,9 +128,11 @@ export class AngelOneAdapter {
       totp: finalTotp
     };
 
+    log.info("[HTTP_AGENT] AngelOne API call (generateSession) forced to family: 4");
     try {
       const resp = await this.client.post(this.loginPath, body, {
-        headers: this.baseHeaders()
+        headers: this.baseHeaders(),
+        httpsAgent: this.outgoingIp ? undefined : ipv4Agent // Explicit pass if not using local binding
       });
 
       log.debug("Angel loginByPassword response:", resp.data);
@@ -146,9 +150,11 @@ export class AngelOneAdapter {
 
   async generateSessionByAuthToken(authToken: string): Promise<AngelSessionResp> {
     const body = { refreshToken: authToken };
+    log.info("[HTTP_AGENT] AngelOne API call (OAuth Token) forced to family: 4");
     try {
       const resp = await this.client.post(this.tokenPath, body, {
-        headers: this.baseHeaders()
+        headers: this.baseHeaders(),
+        httpsAgent: this.outgoingIp ? undefined : ipv4Agent
       });
       log.debug("Angel generateTokens (OAuth) response:", resp.data);
       return resp.data;
@@ -162,10 +168,11 @@ export class AngelOneAdapter {
 
   // ------------ GENERIC AUTHP POST / GET ------------
 
-  async authPost(jwtToken: string, path: string, body?: any) {
+    log.info("[HTTP_AGENT] AngelOne API call (authPost) forced to family: 4");
     try {
       const resp = await this.client.post(path, body || {}, {
-        headers: this.baseHeaders(jwtToken)
+        headers: this.baseHeaders(jwtToken),
+        httpsAgent: this.outgoingIp ? undefined : ipv4Agent
       });
       return resp.data;
     } catch (err: any) {
@@ -184,10 +191,11 @@ export class AngelOneAdapter {
     }
   }
 
-  async authGet(jwtToken: string, path: string, params?: any) {
+    log.info("[HTTP_AGENT] AngelOne API call (authGet) forced to family: 4");
     try {
       const resp = await this.client.get(path, {
         headers: this.baseHeaders(jwtToken),
+        httpsAgent: this.outgoingIp ? undefined : ipv4Agent,
         params
       });
       return resp.data;
@@ -290,9 +298,11 @@ export class AngelOneAdapter {
 
   async generateTokensUsingRefresh(refreshToken: string) {
     const body = { refreshToken: decrypt(refreshToken) };
+    log.info("[HTTP_AGENT] AngelOne API call (RefreshToken) forced to family: 4");
     try {
       const resp = await this.client.post(this.refreshTokenPath, body, {
-        headers: this.baseHeaders()
+        headers: this.baseHeaders(),
+        httpsAgent: this.outgoingIp ? undefined : ipv4Agent
       });
       return resp.data;
     } catch (err: any) {
@@ -306,9 +316,11 @@ export class AngelOneAdapter {
   // ------------ USER PROFILE ------------
   async getProfile(jwtToken: string) {
     const path = "/rest/secure/angelbroking/user/v1/getProfile";
+    log.info("[HTTP_AGENT] AngelOne API call (getProfile) forced to family: 4");
     try {
       const resp = await this.client.get(path, {
-        headers: this.baseHeaders(jwtToken)
+        headers: this.baseHeaders(jwtToken),
+        httpsAgent: this.outgoingIp ? undefined : ipv4Agent
       });
       return resp.data;
     } catch (err: any) {

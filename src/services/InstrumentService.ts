@@ -2,14 +2,17 @@
 import axios from "axios";
 import InstrumentModel from "../models/Instrument";
 import { log } from "../utils/logger";
+import { ipv4Agent } from "../utils/httpAgent";
 
 const MASTER_URL =
   "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
 
 
 export async function syncAllOptionInstruments() {
-  log.info("[Sync] Starting Dynamic Instrument Sync from AngelOne Master...");
-  const { data } = await axios.get<any[]>(MASTER_URL);
+  log.info("[HTTP_AGENT] AngelOne Master Sync forced to family: 4");
+  const { data } = await axios.get<any[]>(MASTER_URL, {
+    httpsAgent: ipv4Agent
+  });
 
   const targetIndices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50", "BANKEX"];
 
