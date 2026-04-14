@@ -25,12 +25,8 @@ export class ProfileValidationService {
                 return { status: false, message: "No active broker session found" };
             }
 
-            const user = await User.findById(userId) || (await import('../models/Admin')).default.findById(userId);
-            if (!user || !(user as any).api_key) {
-                return { status: false, message: "User API Key missing" };
-            }
-            const { decrypt } = await import('../utils/encryption');
-            const adapter = new AngelOneAdapter(decrypt((user as any).api_key), (user as any).outgoing_ip);
+            const { createAngelAdapter } = await import('../utils/broker');
+            const adapter = await createAngelAdapter(userId.toString());
 
             const profile = await adapter.getProfile(tokens.jwtToken);
 

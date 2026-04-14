@@ -115,8 +115,9 @@ export const getActivePositions = async (req: Request, res: Response) => {
       return res.status(401).json({ ok: false, message: "No active session for client" });
     }
 
+    if (!tokens?.userId) return res.status(401).json({ ok: false, message: "Invalid session metadata" });
     const { createAngelAdapter } = await import('../utils/broker');
-    const adapter = await createAngelAdapter(tokens.userId!);
+    const adapter = await createAngelAdapter(tokens.userId.toString());
     const positionsWithLtp = await Promise.all(positions.map(async (p) => {
       try {
         let currentSymbolToken = p.symboltoken;
@@ -319,9 +320,9 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
         try {
           // Fetch LTP for LIVE calculation
           const tokens = await AngelTokensModel.findOne({ clientcode: t.clientcode });
-          if (tokens?.jwtToken && t.symboltoken) {
+          if (tokens?.jwtToken && tokens?.userId && t.symboltoken) {
             const { createAngelAdapter } = await import('../utils/broker');
-            const adapter = await createAngelAdapter(tokens.userId!);
+            const adapter = await createAngelAdapter(tokens.userId.toString());
             const ltpResp = await adapter.getLtp(tokens.jwtToken, t.exchange, t.tradingsymbol, t.symboltoken);
             const ltp = ltpResp?.data?.ltp || 0;
             exitPrice = ltp;

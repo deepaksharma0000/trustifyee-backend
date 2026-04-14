@@ -76,8 +76,9 @@ router.get("/full-quote", async (req, res) => {
     }
 
     // 3. Fetch Full Quote using the session owner's API key
+    if (!tokens?.userId) return res.status(403).json({ ok: false, error: "Invalid session owner" });
     const { createAngelAdapter } = await import('../utils/broker');
-    const adapter = await createAngelAdapter(tokens.userId!);
+    const adapter = await createAngelAdapter(tokens.userId.toString());
     const result = await adapter.getMarketData(tokens.jwtToken, "FULL", { [exch]: [symboltoken] });
 
     if (result?.status === false) {
@@ -127,8 +128,9 @@ router.get("/historical", async (req, res) => {
     if (!tokens?.jwtToken) return res.status(403).json({ ok: false, error: "Broker session inactive" });
 
     // 3. Fetch from AngelOne
+    if (!tokens?.userId) return res.status(403).json({ ok: false, error: "Broker user mapping lost" });
     const { createAngelAdapter } = await import('../utils/broker');
-    const adapter = await createAngelAdapter(tokens.userId!);
+    const adapter = await createAngelAdapter(tokens.userId.toString());
     const path = "/rest/secure/angelbroking/historical/v1/getCandleData";
     const body = {
         exchange: exch,

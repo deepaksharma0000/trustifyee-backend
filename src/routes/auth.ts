@@ -166,11 +166,8 @@ router.post("/validate-session", auth, async (req: any, res) => {
       return res.json({ ok: false, error: "No session found" });
     }
 
-    const user = await User.findById(userId) || await Admin.findById(userId);
-    if (!user || !user.api_key) {
-      return res.status(403).json({ ok: false, error: "User API Key missing" });
-    }
-    const adapter = new AngelOneAdapter(decrypt(user.api_key), user.outgoing_ip);
+    const { createAngelAdapter } = await import('../utils/broker');
+    const adapter = await createAngelAdapter(userId.toString());
 
     const profile = await adapter.getProfile(tokenData.jwtToken);
 

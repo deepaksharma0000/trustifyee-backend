@@ -129,14 +129,10 @@ async function executeExit(position: any, jwtToken: string, reason: string) {
     try {
         const exitSide = position.side === "BUY" ? "SELL" : "BUY";
 
-        // 🚀 [LAZY ADAPTER] fetch user key
-        const user = await User.findById(position.userId) || (await import('../models/Admin')).default.findById(position.userId);
-        if (!user || !(user as any).api_key) {
-            log.error(`Cannot auto-exit: API Key missing for user ${position.userId}`);
-            return;
-        }
-        const { decrypt } = await import('../utils/encryption');
-        const adapter = new AngelOneAdapter(decrypt((user as any).api_key), (user as any).outgoing_ip);
+        // 🚀 [LAZY ADAPTER] fetch user/admin
+        if (!position.userId) throw new Error("Position userId missing");
+        const { createAngelAdapter } = await import('../utils/broker');
+        const adapter = await createAngelAdapter(position.userId.toString());
 
         // Place Market Exit (Angel One Specific)
         const apiRes = await adapter.placeOrder(jwtToken, {
