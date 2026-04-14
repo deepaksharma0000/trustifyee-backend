@@ -770,6 +770,7 @@ router.post("/close", async (req, res, next) => {
     try {
       const tokens = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean();
       if (tokens?.jwtToken && position.symboltoken) {
+        if (!position.userId) throw new Error("Position userId missing");
         const { createAngelAdapter } = await import('../utils/broker');
         const adapter = await createAngelAdapter(position.userId.toString());
         const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
