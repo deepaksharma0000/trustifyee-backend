@@ -2,7 +2,7 @@ import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import { config } from "../config";
 import { log } from "../utils/logger";
-import { decrypt } from "../utils/encryption";
+import { decrypt, ensureEncrypted } from "../utils/encryption";
 import User from "../models/User";
 import Admin from "../models/Admin";
 
@@ -14,7 +14,8 @@ export interface MarginInfo {
 }
 
 export class RiskManagementService {
-    private static adapter = new AngelOneAdapter();
+    // Removed static adapter to enforce per-user keys
+    // private static adapter = new AngelOneAdapter();
     private static MAX_MARGIN_USAGE = 0.7; // Max usage limit: 70%
 
     /**
@@ -22,21 +23,24 @@ export class RiskManagementService {
      */
     static async getAvailableMargin(userId: string, clientcode: string): Promise<{ status: boolean; data?: MarginInfo; message?: string }> {
         try {
-            const tokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+            const tokens = await AngelTokensModel.findOne({ userId, clientcode });
             if (!tokens?.jwtToken) {
                 return { status: false, message: "No session for RMS check" };
             }
 
-            let user = await User.findById(userId).lean() as any;
+            let user = await User.findById(userId);
             if (!user) {
-                user = await Admin.findById(userId).lean() as any;
+                user = await Admin.findById(userId);
             }
 
-            // 🚀 [FIX] Decrypt user-specific API Key and pass outgoing_ip for binding
-            const userApiKey = tokens.apiKey ? decrypt(tokens.apiKey) : config.angelApiKey;
-            const dynamicAdapter = new AngelOneAdapter(userApiKey, user?.outgoing_ip);
+            // 🚀 [ISSUE 2 FIX] Ensure user-specific API Key is used (No global fallback)
+            if (!tokens.apiKey) throw new Error("API Key missing in session");
+            
+            const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_rms_val`);
+            const userApiKey = await ensureEncrypted(tokens, 'apiKey', `user_${userId}_rms_check`);
+            const dynamicAdapter = new AngelOneAdapter(userApiKey, (user as any)?.outgoing_ip);
 
-            const rmsRes = await dynamicAdapter.getRMS(tokens.jwtToken);
+            const rmsRes = await dynamicAdapter.getRMS(decJwtToken);
             if (rmsRes && rmsRes.status === true) {
                 const data = rmsRes.data || {};
                 

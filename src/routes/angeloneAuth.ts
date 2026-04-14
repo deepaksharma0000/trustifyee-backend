@@ -5,7 +5,7 @@ import { log } from '../utils/logger';
 import AngelTokensModel from '../models/AngelTokens';
 import User from '../models/User';
 import Admin from '../models/Admin';
-import { encrypt, decrypt } from '../utils/encryption';
+import { encrypt, decrypt, ensureEncrypted } from '../utils/encryption';
 import { auth } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -18,10 +18,10 @@ router.post('/generate-session', auth, async (req: any, res) => {
 
     try {
         // Step 1: Load profile from DB
-        const profile: any = userType === 'admin'
+        const profile = userType === 'admin'
             ? await Admin.findById(userId)
             : await User.findById(userId);
-
+ 
         if (!profile) {
             return res.status(404).json({ status: false, error: 'Profile not found' });
         }
@@ -29,50 +29,39 @@ router.post('/generate-session', auth, async (req: any, res) => {
         // Step 2: Resolve client_code (Request Body > Decrypted Profile)
         let client_code: string = req.body.client_code || '';
         if (!client_code && profile.client_key) {
-            try {
-                client_code = decrypt(profile.client_key);
-            } catch (_) {
-                // client_key may be stored plain for legacy reasons
-                client_code = profile.client_key;
-            }
+            client_code = await ensureEncrypted(profile, 'client_key', `user_${userId}`);
         }
 
         // Step 3: Resolve password (Request Body > Decrypted Profile)
         let password: string = req.body.password || '';
         if (!password && profile.broker_password) {
-            try {
-                password = decrypt(profile.broker_password);
-            } catch (_) {
-                password = profile.broker_password;
-            }
+            password = await ensureEncrypted(profile, 'broker_password', `user_${userId}`);
         }
 
-        // Step 4: Resolve API Key (Request Body > Decrypted Profile > Global Config)
-        let decryptedApiKey = config.angelApiKey;
-        let keySource = 'Global Default';
+        // Step 4: Resolve API Key (Request Body > Decrypted Profile)
+        let decryptedApiKey = "";
+        let keySource = 'None';
         if (req.body.api_key) {
             decryptedApiKey = req.body.api_key;
             keySource = 'Request Body';
         } else if (profile.api_key) {
-            try {
-                decryptedApiKey = decrypt(profile.api_key);
-                keySource = 'User Profile';
-            } catch (_) {
-                decryptedApiKey = profile.api_key;
-                keySource = 'User Profile (plain)';
-            }
+            decryptedApiKey = await ensureEncrypted(profile, 'api_key', `user_${userId}`);
+            keySource = 'User Profile';
+        }
+
+        if (!decryptedApiKey) {
+            log.error(`[AUTH] generate-session failed: API Key missing for user ${userId}`);
+            return res.status(400).json({ 
+                status: false, 
+                error: 'AngelOne API Key is missing. Please provide it in the request or your user profile.' 
+            });
         }
 
         // Step 5: Resolve TOTP (Request Body TOTP > Request Body Secret > Profile Secret)
         let totp: string = req.body.totp || '';
         let totp_secret: string = req.body.totp_secret || '';
         if (!totp && !totp_secret && profile.broker_totp_secret) {
-            // FIX #4: Decrypt stored TOTP secret before using it
-            try {
-                totp_secret = decrypt(profile.broker_totp_secret);
-            } catch (_) {
-                totp_secret = profile.broker_totp_secret; // Legacy fallback (plaintext)
-            }
+            totp_secret = await ensureEncrypted(profile, 'broker_totp_secret', `user_${userId}`);
             log.info(`[AUTH] Smart Login: Using saved TOTP secret for ${client_code}`);
         }
 

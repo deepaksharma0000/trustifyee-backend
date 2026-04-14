@@ -4,10 +4,12 @@ import UpstoxTokensModel from "../models/UpstoxTokens";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { config } from "../config";
 import { log } from "../utils/logger";
-import { decrypt } from "../utils/encryption";
+import { decrypt, ensureEncrypted, encrypt } from "../utils/encryption";
 
-const adapter = new AngelOneAdapter();
-const upstoxAdapter = new UpstoxAdapter();
+// Removed global adapters to enforce per-user keys
+// const adapter = new AngelOneAdapter();
+// const upstoxAdapter = new UpstoxAdapter();
+const upstoxAdapter = new UpstoxAdapter(); // Keep Upstox as it's separate for now
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
 const CACHE_MS = 1500; // 1.5s for real-time feel
 let cooldownUntil = 0;
@@ -73,9 +75,14 @@ async function refreshAngelSession(session: any) {
     if (!session?.refreshToken) {
         throw new Error("Angel refreshToken missing. Please login again.");
     }
-    const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey; // [FIX] Decrypt session's own API Key if available
+    if (!session.apiKey) throw new Error("API Key missing in session for refresh");
+    
+    // [AUTO-MIGRATION on refresh]
+    const sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_refresh_${session.clientcode}`);
+    const decRefreshToken = await ensureEncrypted(session, 'refreshToken', `market_data_refresh_rt_${session.clientcode}`);
+    
     const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
-    const resp = await dynamicAdapter.generateTokensUsingRefresh(session.refreshToken);
+    const resp = await dynamicAdapter.generateTokensUsingRefresh(decRefreshToken);
     if (!resp || resp.status === false || !resp.data) {
         log.error("Angel refresh failed:", resp);
         throw new Error(resp?.message || "Angel refresh failed");
@@ -87,17 +94,24 @@ async function refreshAngelSession(session: any) {
     if (!jwtToken) {
         throw new Error("Angel refresh returned no jwtToken");
     }
+    
+    // Encrypt new tokens with prefix before saving
     await AngelTokensModel.findOneAndUpdate(
         { clientcode: session.clientcode },
-        { jwtToken, refreshToken, feedToken, expiresAt: undefined },
+        { 
+            jwtToken: encrypt(jwtToken), 
+            refreshToken: encrypt(refreshToken), 
+            feedToken: encrypt(feedToken), 
+            expiresAt: undefined 
+        },
         { new: true }
-    ).lean();
+    );
     return { jwtToken, apiKey: sessionApiKey };
 }
 
-async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string, apiKey?: string) {
+async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string, apiKey: string) {
     const key = `${exchange}:${symbol}:${token}`;
-    const dynamicAdapter = apiKey ? new AngelOneAdapter(apiKey) : adapter;
+    const dynamicAdapter = new AngelOneAdapter(apiKey);
     return await throttledFetch(key, () => dynamicAdapter.getLtp(jwtToken, exchange, symbol, token));
 }
 
@@ -114,7 +128,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
     // 2. Refresh logic
     try {
         if (now >= cooldownUntil && !config.disableLiveLtp) {
-            const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
+            const session = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
 
             if (session && session.jwtToken) {
                 const indexConfig: Record<string, { symbol: string, token: string }> = {
@@ -123,8 +137,12 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                     "FINNIFTY": { symbol: config.angelIndexSymbolFinNifty, token: config.angelIndexTokenFinNifty }
                 };
                 const index = indexConfig[indexName];
-                const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey; // [FIX] Decrypt session's own API Key if available
-                let resp = await getLtpInternal(session.jwtToken, "NSE", index.symbol, index.token, sessionApiKey);
+                if (!session.apiKey) throw new Error("User API Key missing for index fetching");
+                
+                const decJwtToken = await ensureEncrypted(session, 'jwtToken', `market_data_index_val_${indexName}`);
+                const sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_index_${indexName}`);
+                
+                let resp = await getLtpInternal(decJwtToken, "NSE", index.symbol, index.token, sessionApiKey);
 
                 if (isInvalidTokenResponse(resp)) {
                     try {
@@ -227,10 +245,14 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
         } else {
             // Only try Angel if not in cooldown
             if (now >= cooldownUntil) {
-                const session: any = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
-                if (session?.jwtToken) {
-                    const sessionApiKey = session.apiKey ? decrypt(session.apiKey) : config.angelApiKey; // [FIX] Decrypt session's own API Key if available
-                    let resp = await getLtpInternal(session.jwtToken, exchange, tradingsymbol, symboltoken, sessionApiKey);
+                const session = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+                if (session && session.jwtToken) {
+                    if (!session.apiKey) throw new Error("User API Key missing for instrument fetching");
+                    
+                    const decJwtToken = await ensureEncrypted(session, 'jwtToken', `market_data_instrument_val_${symboltoken}`);
+                    const sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_instrument_${symboltoken}`);
+                    
+                    let resp = await getLtpInternal(decJwtToken, exchange, tradingsymbol, symboltoken, sessionApiKey);
                     if (isInvalidTokenResponse(resp)) {
                         try {
                             const refreshed = await refreshAngelSession(session);

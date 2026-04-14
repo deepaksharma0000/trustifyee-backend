@@ -9,10 +9,11 @@ import { log } from "../utils/logger";
 import { ProfileValidationService } from "./ProfileValidationService";
 import { RiskManagementService } from "./RiskManagementService";
 import User from "../models/User";
-import { decrypt } from "../utils/encryption";
+import { decrypt, ensureEncrypted } from "../utils/encryption";
 
-const adapter = new AngelOneAdapter();
-const upstoxAdapter = new UpstoxAdapter();
+// Removed global adapters to enforce per-user API keys
+// const adapter = new AngelOneAdapter();
+// const upstoxAdapter = new UpstoxAdapter();
 
 export type PlaceOrderInput = {
   exchange: string;
@@ -50,8 +51,14 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
   if (orderInput.isDynamicQty && orderInput.riskPercent) {
       // We need LTP for calculation
       try {
-          const tokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
-          const ltpRes = await adapter.getLtp(tokens.jwtToken, orderInput.exchange || "NFO", orderInput.tradingsymbol, orderInput.symboltoken || "");
+          const tokens = await AngelTokensModel.findOne({ userId, clientcode });
+          if (!tokens?.apiKey) throw new Error("API Key missing in tokens");
+          
+          const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_ltp_val`);
+          const userApiKey = await ensureEncrypted(tokens, 'apiKey', `user_${userId}_ltp_check`);
+          
+          const ltpAdapter = new AngelOneAdapter(userApiKey);
+          const ltpRes = await ltpAdapter.getLtp(decJwtToken, orderInput.exchange || "NFO", orderInput.tradingsymbol, orderInput.symboltoken || "");
           const ltp = Number(ltpRes?.data?.ltp || 0);
           
           const instrument = await InstrumentModel.findOne({ tradingsymbol: orderInput.tradingsymbol, exchange: orderInput.exchange || "NFO" }).lean() as any;
@@ -154,11 +161,22 @@ export async function placeOrderForClient(
       }
 
       // 2. Fetch tokens and resolve API Key
-      const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+      const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
       if (!angelTokens?.jwtToken) throw new Error("No Angel session");
 
-      // 🚀 [FIX] Decrypt user-specific API Key and use their designated outgoing_ip (IPv6)
-      const userApiKey = angelTokens.apiKey ? decrypt(angelTokens.apiKey) : config.angelApiKey;
+      // 🚀 [PRE-EXECUTION GUARD] - Fall fast if state is invalid
+      const decJwtToken = await ensureEncrypted(angelTokens, 'jwtToken', `user_${userId}_order`);
+      const userApiKey = await ensureEncrypted(angelTokens, 'apiKey', `user_${userId}_order_placement`);
+      
+      if (!userApiKey || userApiKey.length < 10) {
+          log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid API Key for ${clientcode}`);
+          throw new Error("Invalid or missing API key. Please update your broker settings.");
+      }
+      if (!decJwtToken || decJwtToken.length < 20) {
+          log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid session token for ${clientcode}`);
+          throw new Error("Invalid session. Please login to your broker again.");
+      }
+
       const dynamicAdapter = new AngelOneAdapter(userApiKey, (user as any)?.outgoing_ip);
 
       // 3. Place Order
@@ -180,7 +198,7 @@ export async function placeOrderForClient(
 
       // Use dynamic adapter instance with the correct API key
       const resp = await dynamicAdapter.authPost(
-        angelTokens.jwtToken,
+        decJwtToken,
         "/rest/secure/angelbroking/order/v1/placeOrder",
         payload
       );
@@ -223,7 +241,8 @@ export async function getOrderStatusForClient(
 ) {
   const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
   if (angelTokens?.jwtToken) {
-    const userApiKey = angelTokens.apiKey || config.angelApiKey;
+    if (!angelTokens.apiKey) throw new Error("User API Key missing in session");
+    const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_status_check`);
     const dynamicAdapter = new AngelOneAdapter(userApiKey);
     const orderBookResp = await dynamicAdapter.getOrderBook(angelTokens.jwtToken);
     if (orderBookResp && orderBookResp.status && Array.isArray(orderBookResp.data)) {
@@ -245,7 +264,10 @@ export async function getOrderStatusForClient(
     
     // If exact ID lookup is possible (not our UUID)
     if (!orderId.startsWith("BROKER-")) {
-        return await adapter.getOrderStatus(angelTokens.jwtToken, orderId);
+        // Reuse dynamicAdapter created above (it's in scope if we refactor slightly, but for now just use the one we have or create new)
+        const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_single_status_check`);
+        const lookupAdapter = new AngelOneAdapter(userApiKey);
+        return await lookupAdapter.getOrderStatus(angelTokens.jwtToken, orderId);
     }
     
     return { status: false, message: "Order not found in broker book" };

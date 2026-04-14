@@ -104,7 +104,8 @@ export function startMarketStream(server: any) {
 
           // Handle AngelOne Batched
           if (angelItems.length > 0 && jwtToken) {
-            const sessionApiKey = angelSession.apiKey ? decrypt(angelSession.apiKey) : config.angelApiKey;
+            if (!angelSession.apiKey) throw new Error(`API Key missing for ${angelSession.clientcode}`);
+            const sessionApiKey = decrypt(angelSession.apiKey, `market_stream_${angelSession.clientcode}`);
             const angelAdapter = new AngelOneAdapter(sessionApiKey);
             try {
               const exchangeTokens: Record<string, string[]> = {};

@@ -71,6 +71,11 @@ async function updatePublicIp() {
 async function start() {
   try {
     log.info("🚀 Starting server...");
+    
+    // [ISSUE 1 FIX] Ensure ENCRYPTION_SECRET is present and length >= 32
+    const { validateConfig } = require("./config");
+    validateConfig();
+
     await updatePublicIp();
     setInterval(updatePublicIp, 5 * 60 * 1000); // Update every 5 mins
 
@@ -78,7 +83,7 @@ async function start() {
     await mongoose.connect(config.mongoUri);
     log.info("✅ Connected to MongoDB");
 
-    // FIX 2: ENCRYPTION KEY GUARD
+    // Additional guard check
     if (!config.encryptionKey || config.encryptionKey.length < 32) {
       log.error("❌ CRITICAL: ENCRYPTION_SECRET is missing or too short in .env! Encryption will fail or be insecure.");
       if (config.nodeEnv === 'production') process.exit(1);

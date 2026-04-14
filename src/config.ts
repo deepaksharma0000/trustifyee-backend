@@ -38,48 +38,34 @@ export const config = {
   upstoxBaseUrl: process.env.UPSTOX_BASE_URL || "https://api.upstox.com",
   upstoxHftBaseUrl: process.env.UPSTOX_HFT_BASE_URL || "https://api-hft.upstox.com",
 
-
   // -------- ALICE BLUE ----------
-
-  // -------- ALICE BLUE ----------
-
-  // Trading login / internal client code agar kahin use kar rahe ho
   aliceClientId: process.env.ALICE_CLIENT_ID || "",
-  // Developer Portal se
   aliceAppCode: process.env.ALICE_APP_CODE || "",
   aliceApiSecret: process.env.ALICE_API_SECRET || "",
-  aliceRedirectUrl:
-    process.env.ALICE_REDIRECT_URL || "http://localhost:3000/api/alice/auth/callback",
-
-  aliceAuthBaseUrl:
-    process.env.ALICE_AUTH_BASE_URL || "https://ant.aliceblueonline.com",
-
-  aliceOrderBaseUrl:
-    process.env.ALICE_ORDER_BASE_URL || "https://a3.aliceblueonline.com",
-
-  alicePlaceOrderPath:
-    process.env.ALICE_PLACE_ORDER_PATH || "/open-api/od/v1/orders/place",
-
-  aliceOrderStatusPath:
-    process.env.ALICE_ORDER_STATUS_PATH || "/open-api/od/v1/orders/book",
-
-  aliceContractMasterNseUrl:
-    process.env.ALICE_CM_NSE_URL || "",
-
-  aliceContractMasterNfoUrl:
-    process.env.ALICE_CM_NFO_URL || "",
-
-  aliceContractMasterIndicesUrl:
-    process.env.ALICE_CM_INDICES_URL || "",
-
-  aliceGetUserDetailsPath:
-    process.env.ALICE_GET_USER_DETAILS_PATH ||
-    "/open-api/od/v1/vendor/getUserDetails",
-
-  aliceContractMasterPath:
-    process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
+  aliceRedirectUrl: process.env.ALICE_REDIRECT_URL || "http://localhost:3000/api/alice/auth/callback",
+  aliceAuthBaseUrl: process.env.ALICE_AUTH_BASE_URL || "https://ant.aliceblueonline.com",
+  aliceOrderBaseUrl: process.env.ALICE_ORDER_BASE_URL || "https://a3.aliceblueonline.com",
+  alicePlaceOrderPath: process.env.ALICE_PLACE_ORDER_PATH || "/open-api/od/v1/orders/place",
+  aliceOrderStatusPath: process.env.ALICE_ORDER_STATUS_PATH || "/open-api/od/v1/orders/book",
+  aliceContractMasterNseUrl: process.env.ALICE_CM_NSE_URL || "",
+  aliceContractMasterNfoUrl: process.env.ALICE_CM_NFO_URL || "",
+  aliceContractMasterIndicesUrl: process.env.ALICE_CM_INDICES_URL || "",
+  aliceGetUserDetailsPath: process.env.ALICE_GET_USER_DETAILS_PATH || "/open-api/od/v1/vendor/getUserDetails",
+  aliceContractMasterPath: process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
 
   encryptionKey: process.env.ENCRYPTION_SECRET || "",
-  publicIp: process.env.PUBLIC_IP || "106.193.147.98", // [FIXED] Configurable via PUBLIC_IP env var
+  publicIp: process.env.PUBLIC_IP || "106.193.147.98", 
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8080",
+};
+
+// --- STARTUP VALIDATION ---
+export const validateConfig = () => {
+  if (!config.encryptionKey) {
+    throw new Error("FATAL: ENCRYPTION_SECRET is missing from environment variables.");
+  }
+  if (config.encryptionKey.length < 32) {
+    throw new Error("FATAL: ENCRYPTION_SECRET must be at least 32 characters long for security.");
+  }
+  
+  // Notice: We don't throw for angelApiKey here because it should be per-user now.
 };

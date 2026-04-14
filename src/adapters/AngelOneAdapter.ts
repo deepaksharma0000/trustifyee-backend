@@ -22,8 +22,14 @@ export class AngelOneAdapter {
   private refreshTokenPath: string = "/rest/auth/angelbroking/jwt/v1/refreshToken";
 
   constructor(apiKey?: string, outgoingIp?: string) {
-    this.apiKey = apiKey || config.angelApiKey;
+    // [ISSUE 2 FIX] REMOVE global API key fallback completely
+    this.apiKey = apiKey || "";
     this.outgoingIp = outgoingIp;
+
+    if (!this.apiKey) {
+      log.error("AngelOneAdapter: User API key missing. Connection rejected.");
+      throw new Error("User API key missing. Please provide a valid API key in your profile.");
+    }
 
     const agentOptions: any = {
       keepAlive: true,
@@ -47,22 +53,43 @@ export class AngelOneAdapter {
 
   // common headers
   private baseHeaders(jwtToken?: string) {
+    // [ISSUE 2 HARDENING] Strict validation layer
+    const { validateApiKey } = require("../utils/encryption");
+    if (!validateApiKey(this.apiKey)) {
+        log.error(`[INVALID_API_KEY] Connection rejected for key: ${this.apiKey.substring(0, 5)}...`);
+        throw new Error("Invalid decrypted API key. Access Denied.");
+    }
+
+    const decApiKey = decrypt(this.apiKey, "angel_api_key");
+    const maskedKey = decApiKey ? (decApiKey.substring(0, 4) + "****") : "MISSING";
+    const keySource = this.apiKey === config.angelApiKey ? "GLOBAL (UNAUTHORIZED)" : "USER";
+
     const headers: Record<string, string> = {
       "Content-type": "application/json",
       "Accept": "application/json",
       "X-ClientLocalIP": "127.0.0.1",
-      "X-ClientPublicIP": this.outgoingIp || config.publicIp, // [FIX] Use assigned IPv6 if present
+      "X-ClientPublicIP": this.outgoingIp || config.publicIp,
       "X-MACAddress": "fe:ed:fa:ce:12:34",
-      "X-PrivateKey": this.apiKey,
-      "X-Api-Key": this.apiKey, // [FIX] Added standard API Key header
+      "X-PrivateKey": decApiKey,
+      "X-Api-Key": decApiKey,
       "X-UserType": "USER",
       "X-SourceID": "WEB"
     };
 
-    log.debug(`[AngelAPI] Sending request with PrivateKey (first 4): ${this.apiKey.substring(0, 4)}...`);
+    log.debug(`[API_KEY_USED] Source: ${keySource} | Key: ${maskedKey}`);
+
+    if (keySource === "GLOBAL (UNAUTHORIZED)") {
+        log.warn("CRITICAL: System attempted to use Global API Key fallback. Access denied by enforcement.");
+        throw new Error("Invalid API Key: Global fallback is no longer supported. Please update user profile API key.");
+    }
 
     if (jwtToken) {
-      headers["Authorization"] = `Bearer ${decrypt(jwtToken)}`;
+      const decJwt = decrypt(jwtToken, "jwt_token");
+      if (!decJwt) {
+          log.error("[INVALID_SESSION_TOKEN] Decryption failed for JWT");
+          throw new Error("Invalid session token. Please re-login.");
+      }
+      headers["Authorization"] = `Bearer ${decJwt}`;
     }
 
     return headers;
