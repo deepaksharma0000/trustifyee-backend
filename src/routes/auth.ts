@@ -10,7 +10,7 @@ import Admin from "../models/Admin";
 import { loginUser, loginAdmin } from "../controllers/AuthController";
 
 const router = express.Router();
-const adapter = new AngelOneAdapter();
+// Removed global adapter to prevent startup crash. Adapters are now created lazily per request.
 
 // --------------------------------------------------------------------------
 //  Unified App Login (Handles /api/auth/login from frontend)
@@ -78,6 +78,13 @@ router.post("/angel/login", auth, async (req: any, res) => {
     if (!clientcode || !password) {
       return res.status(400).json({ ok: false, error: "Client code and password required" });
     }
+
+    // 🚀 [LAZY ADAPTER]
+    const user = await User.findById(req.id) || await Admin.findById(req.id);
+    const apiKey = req.body.api_key || (user ? decrypt(user.api_key || "") : "");
+    if (!apiKey) return res.status(400).json({ ok: false, error: "API Key missing. Please provide it." });
+
+    const adapter = new AngelOneAdapter(apiKey, (user as any)?.outgoing_ip);
 
     // Call Angel One API
     const resp: AngelSessionResp = await adapter.generateSession({ clientcode, password, totp });
@@ -158,6 +165,12 @@ router.post("/validate-session", auth, async (req: any, res) => {
     if (!tokenData || !tokenData.jwtToken) {
       return res.json({ ok: false, error: "No session found" });
     }
+
+    const user = await User.findById(userId) || await Admin.findById(userId);
+    if (!user || !user.api_key) {
+      return res.status(403).json({ ok: false, error: "User API Key missing" });
+    }
+    const adapter = new AngelOneAdapter(decrypt(user.api_key), user.outgoing_ip);
 
     const profile = await adapter.getProfile(tokenData.jwtToken);
 

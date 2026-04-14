@@ -86,7 +86,8 @@ router.post("/place", async (req, res, next) => {
     // Capture LTP as fallback
     let broadcastLtp = 0;
     try {
-      const adapter = new AngelOneAdapter();
+      const { createAngelAdapter } = await import('../utils/broker');
+      const adapter = await createAngelAdapter(targetUser._id);
       const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
       if (tokens?.jwtToken && symboltoken) {
         const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
@@ -233,12 +234,13 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
 
     const symboltoken = instrument?.symboltoken as string | undefined;
 
-    // Capture LTP ONCE for all users
+    // Capture LTP ONCE for all users (using an active session)
     let broadcastLtp = 0;
     try {
-      const adapter = new AngelOneAdapter();
       const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
       if (tokens?.jwtToken && symboltoken) {
+        const { createAngelAdapter } = await import('../utils/broker');
+        const adapter = await createAngelAdapter(tokens.userId!);
         const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
         broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
         if (broadcastLtp === 0 && ltpResp?.data) broadcastLtp = Number(ltpResp.data.lastPrice || 0);
@@ -451,10 +453,11 @@ router.post("/place-user", auth, async (req, res) => {
     // Capture LTP BEFORE deciding Demo vs Live for both fallback and demo entry
     let paperEntryPrice = 0;
     try {
-      const adapter = new AngelOneAdapter();
       // Try to get any active admin/user token
       const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
       if (tokens?.jwtToken && symboltoken) {
+        const { createAngelAdapter } = await import('../utils/broker');
+        const adapter = await createAngelAdapter(tokens.userId!);
         const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", tradingsymbol, symboltoken);
         paperEntryPrice = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
         if (paperEntryPrice === 0 && ltpResp?.data) paperEntryPrice = Number(ltpResp.data.lastPrice || 0);
@@ -768,7 +771,8 @@ router.post("/close", async (req, res, next) => {
     try {
       const tokens = await AngelTokensModel.findOne({ clientcode: position.clientcode });
       if (tokens?.jwtToken && position.symboltoken) {
-        const adapter = new AngelOneAdapter();
+        const { createAngelAdapter } = await import('../utils/broker');
+        const adapter = await createAngelAdapter(position.userId);
         const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
         exitPrice = ltpResp?.data?.ltp || 0;
       }

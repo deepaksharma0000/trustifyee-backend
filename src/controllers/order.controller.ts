@@ -115,7 +115,8 @@ export const getActivePositions = async (req: Request, res: Response) => {
       return res.status(401).json({ ok: false, message: "No active session for client" });
     }
 
-    const adapter = new AngelOneAdapter();
+    const { createAngelAdapter } = await import('../utils/broker');
+    const adapter = await createAngelAdapter(tokens.userId!);
     const positionsWithLtp = await Promise.all(positions.map(async (p) => {
       try {
         let currentSymbolToken = p.symboltoken;
@@ -305,8 +306,7 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
 
     const trades = await Position.find(query).sort({ createdAt: -1 }).limit(100).lean();
 
-    // Helper to get LTP for Open trades
-    const adapter = new AngelOneAdapter();
+    // Helper to get LTP for Open trades (now handled lazily below)
     const tradesWithPnl = await Promise.all(trades.map(async (t) => {
       let pnl = 0;
       let exitPrice = t.exitPrice || 0;
@@ -320,6 +320,8 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
           // Fetch LTP for LIVE calculation
           const tokens = await AngelTokensModel.findOne({ clientcode: t.clientcode });
           if (tokens?.jwtToken && t.symboltoken) {
+            const { createAngelAdapter } = await import('../utils/broker');
+            const adapter = await createAngelAdapter(tokens.userId!);
             const ltpResp = await adapter.getLtp(tokens.jwtToken, t.exchange, t.tradingsymbol, t.symboltoken);
             const ltp = ltpResp?.data?.ltp || 0;
             exitPrice = ltp;

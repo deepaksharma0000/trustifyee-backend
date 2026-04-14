@@ -7,7 +7,8 @@ const profileCache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export class ProfileValidationService {
-    private static adapter = new AngelOneAdapter();
+    // Removed global static adapter to prevent startup crash
+    // private static adapter = new AngelOneAdapter();
 
     static async validateUserSession(userId: string, clientcode: string) {
         const cacheKey = `${userId}-${clientcode}`;
@@ -24,7 +25,14 @@ export class ProfileValidationService {
                 return { status: false, message: "No active broker session found" };
             }
 
-            const profile = await this.adapter.getProfile(tokens.jwtToken);
+            const user = await User.findById(userId) || (await import('../models/Admin')).default.findById(userId);
+            if (!user || !(user as any).api_key) {
+                return { status: false, message: "User API Key missing" };
+            }
+            const { decrypt } = await import('../utils/encryption');
+            const adapter = new AngelOneAdapter(decrypt((user as any).api_key), (user as any).outgoing_ip);
+
+            const profile = await adapter.getProfile(tokens.jwtToken);
 
             if (profile && profile.status === true) {
                 // Check for exchange permission
