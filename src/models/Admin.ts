@@ -27,6 +27,7 @@ export interface IAdmin extends Document {
     broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
     api_key?: string; // [NEW] Added for admin's own broker connection
     broker_password?: string; // [NEW] Added for automated session re-sync
+    outgoing_ip?: string; // [NEW] Binding IP for requests
     created_at: Date;
     updated_at: Date;
 }
@@ -58,6 +59,7 @@ const AdminSchema: Schema = new Schema({
     broker_totp_secret: { type: String }, // [NEW] Added for automated TOTP generation
     api_key: { type: String }, // [NEW] Added for admin's own broker connection
     broker_password: { type: String }, // [NEW] Added for automated session re-sync
+    outgoing_ip: { type: String }, // [NEW] Binding IP for requests
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IAdmin>('Admin', AdminSchema);

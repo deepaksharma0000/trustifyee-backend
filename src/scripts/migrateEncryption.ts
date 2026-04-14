@@ -30,9 +30,9 @@ async function migrate() {
           const plaintext = safeDecrypt(value, `user_${user.user_name}_${String(field)}`);
           
           if (!plaintext || plaintext.length < 3) {
-             log.error(`[MIGRATION_FAILED] User: ${user.user_name} | Field: ${field} - Invalid plaintext.`);
+             log.error(`[MIGRATION_FAILED] User: ${user.user_name} | Field: ${String(field)} - Invalid plaintext.`);
              stats.users.failed++;
-             stats.users.failedIds.push(`${user.user_name}:${field}`);
+             stats.users.failedIds.push(`${user.user_name}:${String(field)}`);
              continue;
           }
 
@@ -64,9 +64,9 @@ async function migrate() {
           const plaintext = safeDecrypt(value, `tokens_${token.clientcode}_${String(field)}`);
           
           if (!plaintext || plaintext.length < 5) {
-             log.error(`[MIGRATION_FAILED] Token: ${token.clientcode} | Field: ${field} - Invalid plaintext.`);
+             log.error(`[MIGRATION_FAILED] Token: ${token.clientcode} | Field: ${String(field)} - Invalid plaintext.`);
              stats.tokens.failed++;
-             stats.tokens.failedIds.push(`${token.clientcode}:${field}`);
+             stats.tokens.failedIds.push(`${token.clientcode}:${String(field)}`);
              continue;
           }
 

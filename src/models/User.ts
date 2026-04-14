@@ -29,6 +29,7 @@ export interface IUser extends Document {
     consecutive_failures: number;
     broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
     broker_password?: string; // [NEW] Added for automated session re-sync
+    outgoing_ip?: string; // [NEW] Binding IP for requests
     created_at: Date;
     updated_at: Date;
 }

@@ -177,7 +177,7 @@ export async function placeOrderForClient(
           throw new Error("Invalid session. Please login to your broker again.");
       }
 
-      const dynamicAdapter = new AngelOneAdapter(userApiKey, (user as any)?.outgoing_ip);
+      const dynamicAdapter = new AngelOneAdapter(userApiKey, user?.outgoing_ip);
 
       // 3. Place Order
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";

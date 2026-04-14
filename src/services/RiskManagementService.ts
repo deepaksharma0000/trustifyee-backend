@@ -38,7 +38,7 @@ export class RiskManagementService {
             
             const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_rms_val`);
             const userApiKey = await ensureEncrypted(tokens, 'apiKey', `user_${userId}_rms_check`);
-            const dynamicAdapter = new AngelOneAdapter(userApiKey, (user as any)?.outgoing_ip);
+            const dynamicAdapter = new AngelOneAdapter(userApiKey, user?.outgoing_ip);
 
             const rmsRes = await dynamicAdapter.getRMS(decJwtToken);
             if (rmsRes && rmsRes.status === true) {
