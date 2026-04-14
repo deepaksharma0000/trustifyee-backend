@@ -4,9 +4,9 @@
   "description": "Angel One (SmartAPI) adapter + simple order API - TypeScript",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "build": "tsc -p .",
-    "start": "node dist/index.js",
+    "dev": "node init && ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "node init && tsc -p .",
+    "start": "node init && node dist/index.js",
     "lint": "eslint . --ext .ts"
   },
   "author": "you",

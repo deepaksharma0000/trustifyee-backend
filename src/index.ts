@@ -44,6 +44,8 @@ import { syncPendingOrders } from "./jobs/orderSync.job";
 import { log } from "./utils/logger";
 import cors from "cors";
 import { startMarketStream } from "./services/marketStream";
+import { startSignalStream } from "./services/signalStream"; // FIX #1
+import { recoverRunningRuns } from "./services/algoEngineV2"; // FIX #8
 
 
 import axios from "axios";
@@ -56,7 +58,7 @@ async function updatePublicIp() {
       axios.get("https://ipv4.icanhazip.com").then(r => r.data.trim()).catch(() => null),
       axios.get("https://ipv6.icanhazip.com").then(r => r.data.trim()).catch(() => null)
     ]);
-    
+
     // Prioritize IPv6 if available (since many users whitelist IPv6 range)
     const ip = ipv6 || ipv4;
     (config as any).publicIp = ip;
@@ -76,6 +78,12 @@ async function start() {
     await mongoose.connect(config.mongoUri);
     log.info("✅ Connected to MongoDB");
 
+    // FIX 2: ENCRYPTION KEY GUARD
+    if (!config.encryptionKey || config.encryptionKey.length < 32) {
+      log.error("❌ CRITICAL: ENCRYPTION_SECRET is missing or too short in .env! Encryption will fail or be insecure.");
+      if (config.nodeEnv === 'production') process.exit(1);
+    }
+
     // Validate Lot Sizes (Production Ready Check)
     await forceFixLotSizes();
 
@@ -84,6 +92,9 @@ async function start() {
 
     // Start Auto Exit Worker
     initAutoExitWorker();
+
+    // FIX #8: Recover any AlgoRuns that were "running" before last restart
+    await recoverRunningRuns();
 
     // ----------------------------------------------------------------------
     // ⚡ OPTIMIZED SYNC (Only if DB is empty to prevent hang on restart)
@@ -114,9 +125,9 @@ async function start() {
     const app = express();
     const allowedOrigins = config.corsOrigins.length > 0
       ? config.corsOrigins
-      : ["http://localhost:8080", "http://localhost:3000", "https://6920-2405-201-300b-721e-a4ea-b208-cd7d-2464.ngrok-free.app"];
+      : ["http://localhost:8080", "http://localhost:3000", "https://your-production-domain.com"];
 
-    app.use(cors({ origin: true, credentials: true }));
+    app.use(cors({ origin: allowedOrigins, credentials: true }));
 
     app.use(bodyParser.json());
 
@@ -136,8 +147,6 @@ async function start() {
     app.use("/api/order", orderRoutes);
     app.use("/api/instruments", instrumentRoutes);
     app.use("/api/nifty", niftyRoutes);
-    app.use("/api/positions", positionRoutes);
-    app.use("/api/pnl", pnlRoutes);
     app.use("/api/positions", positionRoutes);
     app.use("/api/pnl", pnlRoutes);
     app.use("/api/webhook", webhookRoutes);
@@ -176,9 +185,12 @@ async function start() {
     app.use("/api/tickets", ticketRoutes);
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
+    // FIX: Health check endpoint
+    app.get("/health", (_req, res) => res.json({ status: "ok", ts: new Date().toISOString() }));
 
     const server = http.createServer(app);
-    startMarketStream(server);
+    startMarketStream(server);  // LTP stream on /ws/market
+    startSignalStream(server);  // FIX #1 — Signal push on /ws/signals
 
     server.listen(config.port, () =>
       log.info(`📡 Server listening on port ${config.port}`)
