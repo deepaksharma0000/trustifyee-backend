@@ -6,6 +6,7 @@ import { encrypt, maskKey, decrypt } from '../utils/encryption';
 import { AngelOneAdapter } from '../adapters/AngelOneAdapter';
 import AngelTokensModel from '../models/AngelTokens';
 import UpstoxTokensModel from '../models/UpstoxTokens';
+import log from '../utils/logger';
 
 const updateUserSchema = Joi.object({
     full_name: Joi.string().optional(),
@@ -65,7 +66,8 @@ export const updateUser = async (req: any, res: Response) => {
             }
         }
 
-        const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
+        await User.updateOne({ _id: id }, updateData);
+        const updatedUser = await User.findById(id);
         if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
 
         const maskedUpdatedUser = {
@@ -100,7 +102,8 @@ export const updateUserBroker = async (req: Request, res: Response) => {
         updateData.broker_verified = false;
         updateData.broker_connected = false;
 
-        const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true });
+        await User.updateOne({ _id: id }, updateData);
+        const updatedUser = await User.findById(id);
         if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
 
         res.status(200).json({
@@ -295,7 +298,7 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
         const { verified } = req.body;
 
         if (!verified) {
-            await User.findByIdAndUpdate(id, { broker_verified: false, broker_connected: false });
+            await User.updateOne({ _id: id }, { broker_verified: false, broker_connected: false });
             return res.status(200).json({ message: "Broker unverified successfully!", status: true });
         }
 
@@ -324,7 +327,7 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
         const adapter = new AngelOneAdapter();
         const profile = await adapter.getProfile(tokenData.jwtToken);
 
-        if (profile && profile.status === true) {
+        if (profile && profile.status === 200) {
             user.broker_verified = true;
             user.broker_connected = true;
             await user.save();
@@ -443,7 +446,8 @@ export const updateLotMultipliers = async (req: Request, res: Response) => {
         const { id } = req.params;
         const { lot_multipliers } = req.body;
 
-        const updatedUser = await User.findByIdAndUpdate(id, { lot_multipliers }, { new: true });
+        await User.updateOne({ _id: id }, { lot_multipliers });
+        const updatedUser = await User.findById(id);
         if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
 
         res.status(200).json({

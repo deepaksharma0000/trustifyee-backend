@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import User from '../models/User';
 import { SignalExecutionResult } from '../models/SignalExecutionResult';
 import { Signal } from '../models/Signal';
-import { log } from '../utils/logger';
+import log from '../utils/logger';
 
 export const executeSignal = async (req: Request, res: Response) => {
     const signalId = req.body?.signalId;

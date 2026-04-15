@@ -3,7 +3,7 @@ import express from "express";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import UpstoxInstrumentModel from "../models/UpstoxInstrument";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 const router = express.Router();
 const adapter = new UpstoxAdapter();

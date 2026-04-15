@@ -3,7 +3,7 @@ import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import User, { IUser } from "../models/User";
 import Admin, { IAdmin } from "../models/Admin";
 import { decrypt } from "./encryption";
-import { log } from "./logger";
+import log from "./logger";
 
 /**
  * Safe conversion of ID to string

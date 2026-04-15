@@ -1,4 +1,5 @@
 import axios from "axios";
+import log from "../utils/logger";
 import { config } from "../config";
 
 interface PlaceOrderPayload {

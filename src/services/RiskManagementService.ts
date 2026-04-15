@@ -1,7 +1,7 @@
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { decrypt, ensureEncrypted } from "../utils/encryption";
 import User from "../models/User";
 import Admin from "../models/Admin";
@@ -33,6 +33,10 @@ export class RiskManagementService {
                 user = await Admin.findById(userId);
             }
 
+            if (!user) {
+                throw new Error("User not found");
+            }
+
             // 🚀 [ISSUE 2 FIX] Ensure user-specific API Key is used (No global fallback)
             if (!tokens.apiKey) throw new Error("API Key missing in session");
             
@@ -41,7 +45,7 @@ export class RiskManagementService {
             const dynamicAdapter = new AngelOneAdapter(userApiKey, user?.outgoing_ip);
 
             const rmsRes = await dynamicAdapter.getRMS(decJwtToken);
-            if (rmsRes && rmsRes.status === true) {
+            if (rmsRes && rmsRes.status === 200) {
                 const data = rmsRes.data || {};
                 
                 // Extract metrics as per SmartAPI response structure (varies slightly)

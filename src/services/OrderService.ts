@@ -5,7 +5,7 @@ import UpstoxInstrumentModel from "../models/UpstoxInstrument";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { ProfileValidationService } from "./ProfileValidationService";
 import { RiskManagementService } from "./RiskManagementService";
 import User from "../models/User";
@@ -115,14 +115,14 @@ export async function placeOrderForClient(
      throw new Error("User not found");
   }
 
-  if (user.trading_paused) {
-      log.warn(`TRADE_BLOCKED: Trading is paused for ${user.user_name} due to consecutive failures.`);
+  if (user!.trading_paused) {
+      log.warn(`TRADE_BLOCKED: Trading is paused for ${user!.user_name} due to consecutive failures.`);
       return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
   }
 
   // 🚀 [BROKER ROUTING]
   // If user is AliceBlue, delegate to AliceOrderService
-  if (user.broker === "AliceBlue") {
+  if (user!.broker === "AliceBlue") {
     try {
       const { placeAliceOrderForClient } = await import("./AliceOrderService");
       const aliceResp = await placeAliceOrderForClient(clientcode, {
@@ -138,8 +138,8 @@ export async function placeOrderForClient(
       });
 
       if (aliceResp && (aliceResp.status === "Ok" || aliceResp.stat === "Ok")) {
-        user.consecutive_failures = 0;
-        await user.save();
+        user!.consecutive_failures = 0;
+        await user!.save();
         log.info(`PLACE_ORDER_ALICE_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
         return { status: true, data: aliceResp };
       } else {
@@ -147,11 +147,11 @@ export async function placeOrderForClient(
       }
     } catch (err: any) {
       log.error(`ALICE_ORDER_FAILURE: ${clientcode} - ${err.message}`);
-      user.consecutive_failures = (user.consecutive_failures || 0) + 1;
-      if (user.consecutive_failures >= 3) {
-        user.trading_paused = true;
+      user!.consecutive_failures = (user!.consecutive_failures || 0) + 1;
+      if (user!.consecutive_failures >= 3) {
+        user!.trading_paused = true;
       }
-      await user.save();
+      await user!.save();
       return { status: false, message: err.message };
     }
   }
@@ -159,7 +159,7 @@ export async function placeOrderForClient(
   // 😇 [DEFAULT / ANGELONE FLOW] - Unmodified production logic
   try {
       // 1. Run Validations
-      const validation = await runPreTradeValidation(user._id.toString(), clientcode, orderInput);
+      const validation = await runPreTradeValidation(user!._id.toString(), clientcode, orderInput);
       if (!validation.status) {
           throw new Error(validation.message || "Validation failed");
       }
@@ -181,7 +181,7 @@ export async function placeOrderForClient(
           throw new Error("Invalid session. Please login to your broker again.");
       }
 
-      const dynamicAdapter = new AngelOneAdapter(userApiKey, user?.outgoing_ip);
+      const dynamicAdapter = new AngelOneAdapter(userApiKey, user!?.outgoing_ip);
 
       // 3. Place Order
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
@@ -208,13 +208,13 @@ export async function placeOrderForClient(
       );
 
       // Reset failures on success
-      if (resp && resp.status === true) {
-          user.consecutive_failures = 0;
-          await user.save();
+      if (resp && resp.status === 200) {
+          user!.consecutive_failures = 0;
+          await user!.save();
           log.info(`PLACE_ORDER_BROKER_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
           return resp;
       } else {
-          throw new Error(resp?.message || "Broker rejected order");
+          throw new Error(resp?.data?.message || "Broker rejected order");
       }
 
   } catch (err: any) {
@@ -226,12 +226,12 @@ export async function placeOrderForClient(
       }
 
       // Circuit Breaker logic
-      user.consecutive_failures = (user.consecutive_failures || 0) + 1;
-      if (user.consecutive_failures >= 3) {
-          user.trading_paused = true;
-          log.error(`CIRCUIT_BREAKER_TRIGGERED: Pausing trading for ${user.user_name}`);
+      user!.consecutive_failures = (user!.consecutive_failures || 0) + 1;
+      if (user!.consecutive_failures >= 3) {
+          user!.trading_paused = true;
+          log.error(`CIRCUIT_BREAKER_TRIGGERED: Pausing trading for ${user!.user_name}`);
       }
-      await user.save();
+      await user!.save();
 
       return { status: false, message: err.message };
   }
@@ -249,7 +249,7 @@ export async function getOrderStatusForClient(
     const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_status_check`);
     const dynamicAdapter = new AngelOneAdapter(userApiKey);
     const orderBookResp = await dynamicAdapter.getOrderBook(angelTokens.jwtToken);
-    if (orderBookResp && orderBookResp.status && Array.isArray(orderBookResp.data)) {
+    if (orderBookResp && orderBookResp.status === 200 && Array.isArray(orderBookResp.data)) {
       // 1. Try exact Match
       let order = orderBookResp.data.find((o: any) => o.orderid === orderId);
       

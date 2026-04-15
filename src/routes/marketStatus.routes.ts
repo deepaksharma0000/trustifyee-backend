@@ -3,7 +3,7 @@ import { MarketStatusService } from "../services/MarketStatusService";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import InstrumentModel from "../models/Instrument";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 const router = Router();
 
@@ -81,8 +81,8 @@ router.get("/full-quote", async (req, res) => {
     const adapter = await createAngelAdapter(tokens.userId.toString());
     const result = await adapter.getMarketData(tokens.jwtToken, "FULL", { [exch]: [symboltoken] });
 
-    if (result?.status === false) {
-       return res.status(400).json({ ok: false, error: result.message || "Failed to fetch quote from broker" });
+    if (result?.status !== 200) {
+       return res.status(400).json({ ok: false, error: result.data?.message || "Failed to fetch quote from broker" });
     }
 
     // Success
@@ -142,8 +142,8 @@ router.get("/historical", async (req, res) => {
 
     const result = await adapter.authPost(tokens.jwtToken, path, body);
 
-    if (result?.status === false) {
-       return res.status(400).json({ ok: false, error: result.message || "Historical fetch failed" });
+    if (result?.status !== 200) {
+       return res.status(400).json({ ok: false, error: result.data?.message || "Historical fetch failed" });
     }
 
     return res.json({ ok: true, data: result?.data || [] });

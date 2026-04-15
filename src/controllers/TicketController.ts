@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import Ticket from '../models/Ticket';
-import { log } from '../utils/logger';
+import log from '../utils/logger';
 
 export const getTicketsAdmin = async (req: Request, res: Response) => {
     try {
@@ -21,7 +21,8 @@ export const updateTicketStatus = async (req: Request, res: Response) => {
             return res.status(400).json({ error: "Invalid status", status: false });
         }
 
-        const updated = await Ticket.findByIdAndUpdate(id, { status }, { new: true });
+        await Ticket.updateOne({ _id: id }, { status });
+        const updated = await Ticket.findById(id);
         if (!updated) return res.status(404).json({ error: "Ticket not found", status: false });
 
         res.status(200).json({ message: "Ticket status updated!", data: updated, status: true });

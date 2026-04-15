@@ -2,7 +2,7 @@
 import UpstoxInstrumentModel, {
   IUpstoxInstrument,
 } from "../models/UpstoxInstrument";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 export type OptionSide = "CE" | "PE";
 export type OptionSelectionMode = "ATM" | "OTM" | "ITM";

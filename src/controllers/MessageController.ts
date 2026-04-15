@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import Message from '../models/Message';
 import User from '../models/User';
-import { log } from '../utils/logger';
+import log from '../utils/logger';
 
 export const createMessage = async (req: Request, res: Response) => {
     try {
@@ -57,11 +57,12 @@ export const updateMessage = async (req: Request, res: Response) => {
         const { id } = req.params;
         const { subject, message, target } = req.body;
 
-        const updated = await Message.findByIdAndUpdate(id, {
+        await Message.updateOne({ _id: id }, {
             subject,
             message,
             target
-        }, { new: true });
+        });
+        const updated = await Message.findById(id);
 
         if (!updated) return res.status(404).json({ error: "Message not found", status: false });
 

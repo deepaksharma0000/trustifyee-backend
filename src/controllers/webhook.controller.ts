@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { getLiveNiftyLtp } from "../services/MarketDataService";
 import { getNiftyOptionChain } from "../services/NiftyOptionService";
 import User from "../models/User";
@@ -72,7 +72,7 @@ export const handleWebhookSignal = async (req: Request, res: Response) => {
                     symboltoken: targetOption.symboltoken
                 });
 
-                if (resp && resp.status === true) {
+                if (resp && resp.status === 200) {
                     // Save to Database
                     await Position.create({
                         userId: user._id,

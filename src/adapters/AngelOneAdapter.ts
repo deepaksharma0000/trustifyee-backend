@@ -2,12 +2,12 @@
 import axios, { AxiosInstance } from "axios";
 import https from "https";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { ipv4Agent } from "../utils/httpAgent";
 
 export type AngelSessionResp = {
-  status?: boolean | string;
+  status?: boolean | string | number;
   message?: string;
   errorcode?: string;
   data?: any;
@@ -83,7 +83,7 @@ export class AngelOneAdapter {
   }
 
   // ------------ LOGIN (Trading APIs - Password Based) ------------
-  async generateSession(credentials: { clientcode: string; password: string; totp: string }) {
+  async generateSession(credentials: { clientcode: string; password: string; totp: string; totp_secret?: string }) {
     const path = "/rest/auth/angelbroking/user/v1/loginByPassword";
     const fullUrl = `${this.forcedBaseUrl}${path}`;
     
@@ -93,7 +93,7 @@ export class AngelOneAdapter {
       const resp = await this.client.post(path, credentials, {
         headers: this.baseHeaders(),
       });
-      return resp.data;
+      return resp;
     } catch (err: any) {
       log.error("Login session failed", err?.response?.data || err.message);
       throw err;
@@ -101,13 +101,13 @@ export class AngelOneAdapter {
   }
 
   // ------------ OAUTH / PUBLISHER LOGIN FLOW ------------
-  async generateSessionByAuthToken(authToken: string): Promise<AngelSessionResp> {
+  async generateSessionByAuthToken(authToken: string): Promise<any> {
     const body = { refreshToken: authToken };
     try {
       const resp = await this.client.post(this.tokenPath, body, {
         headers: this.baseHeaders(),
       });
-      return resp.data;
+      return resp;
     } catch (err: any) {
       throw err;
     }
@@ -127,7 +127,7 @@ export class AngelOneAdapter {
       const resp = await this.client.post(path, body || {}, {
         headers: this.baseHeaders(jwtToken),
       });
-      return resp.data;
+      return resp;
     } catch (err: any) {
       throw err;
     }
@@ -139,7 +139,7 @@ export class AngelOneAdapter {
         headers: this.baseHeaders(jwtToken),
         params
       });
-      return resp.data;
+      return resp;
     } catch (err: any) {
       throw err;
     }
@@ -173,5 +173,14 @@ export class AngelOneAdapter {
   async getRMS(jwtToken: string) {
     const path = "/rest/secure/angelbroking/user/v1/getRMS";
     return await this.authGet(jwtToken, path);
+  }
+
+  async getOrderBook(token: string) {
+    return this.authPost(token, "/rest/secure/angelbroking/order/v1/getOrderBook");
+  }
+
+  async getOrderStatus(token: string, orderId: string) {
+    const path = "/rest/secure/angelbroking/order/v1/getOrderStatus/" + orderId;
+    return this.authGet(token, path);
   }
 }

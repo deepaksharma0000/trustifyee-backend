@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { SystemSetting } from '../models/SystemSetting';
 import User from '../models/User';
-import { log } from '../utils/logger';
+import log from '../utils/logger';
 
 export const getGlobalTradingStatus = async (req: Request, res: Response) => {
     try {

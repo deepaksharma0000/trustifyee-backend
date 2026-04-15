@@ -316,7 +316,7 @@ export const logoutAdmin = async (req: Request, res: Response) => {
         const adminId = (req as any).id;
         if (!adminId) return res.status(401).json({ error: "Unauthorized", status: false });
 
-        await Admin.findByIdAndUpdate(adminId, { is_login: false });
+        await Admin.updateOne({ _id: adminId }, { is_login: false });
 
         res.status(200).json({
             message: "Admin logged out successfully!",
@@ -333,7 +333,7 @@ export const logoutUser = async (req: Request, res: Response) => {
         const userId = (req as any).id;
         if (!userId) return res.status(401).json({ error: "Unauthorized", status: false });
 
-        await User.findByIdAndUpdate(userId, { is_login: false, is_online: false });
+        await User.updateOne({ _id: userId }, { is_login: false, is_online: false });
 
         res.status(200).json({
             message: "User logged out successfully!",

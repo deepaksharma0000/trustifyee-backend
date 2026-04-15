@@ -3,7 +3,7 @@
 // Handles: auth via JWT query param, signal push, ping, reconnect heartbeat
 
 import { Server as WebSocketServer, WebSocket } from "ws";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import {
   extractUserIdFromToken,
   registerUserSocket,

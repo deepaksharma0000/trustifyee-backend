@@ -1,7 +1,7 @@
 // src/routes/aliceAuth.ts
 import express from "express";
 import AliceTokensModel from "../models/AliceTokens";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
 import { encrypt } from "../utils/encryption";
 import { config } from "../config";
@@ -81,8 +81,8 @@ router.get("/auth/callback", async (req, res) => {
     const User = require("../models/User").default;
     
     if (mongoUserId) {
-      await User.findByIdAndUpdate(
-        mongoUserId,
+      await User.updateOne(
+        { _id: mongoUserId },
         { 
           broker: "AliceBlue",
           broker_connected: true,

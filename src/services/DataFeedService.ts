@@ -1,6 +1,6 @@
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import speakeasy from "speakeasy";
 
 /**
@@ -65,13 +65,13 @@ class DataFeedService {
         totp: totp,
       });
 
-      if (resp && resp.status === true && resp.data) {
+      if (resp && resp.status === 200 && resp.data) {
         log.info(`[DATA_SESSION_CREATED] Success: ${config.dataClientCode} | Session Token Received.`);
         this.jwtToken = resp.data.jwtToken || resp.data.accessToken;
         this.lastRefresh = Date.now();
       } else {
         log.error(`[DATA_LOGIN_RESPONSE] Broker Error: ${JSON.stringify(resp)}`);
-        throw new Error(resp?.message || "Login failed for Data Account");
+        throw new Error(resp?.data?.message || "Login failed for Data Account");
       }
     } catch (err: any) {
       log.error("[DATA_SESSION_FAILED] Fatal: " + err.message);
@@ -109,7 +109,7 @@ class DataFeedService {
       // 2. Log raw response
       log.debug("RAW_QUOTE_RESPONSE: " + JSON.stringify(resp));
 
-      if (resp && resp.status === true && resp.data) {
+      if (resp && resp.status === 200 && resp.data) {
         const fetched = Array.isArray(resp.data) ? resp.data : (resp.data.fetched || []);
         
         // 3. Mapping and Validation

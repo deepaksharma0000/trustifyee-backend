@@ -3,7 +3,7 @@
 import { Signal } from "../models/Signal";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
 import User from "../models/User";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { broadcastToAllUsers, broadcastToUser } from "./UserSocketService";
 
 export class SignalService {

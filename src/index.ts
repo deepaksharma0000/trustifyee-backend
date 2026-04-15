@@ -41,7 +41,7 @@ import aliceOrderRoutes from "./routes/aliceOrders";
 import aliceInstrumentsRoutes from "./routes/aliceInstruments";
 import { syncPendingOrders } from "./jobs/orderSync.job";
 
-import { log } from "./utils/logger";
+import log from "./utils/logger";
 import cors from "cors";
 import { startMarketStream } from "./services/marketStream";
 import { startSignalStream } from "./services/signalStream"; // FIX #1

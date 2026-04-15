@@ -2,7 +2,7 @@
 import AliceTokensModel, { IAliceTokens } from "../models/AliceTokens";
 import AliceInstrumentModel, { IAliceInstrument } from "../models/AliceInstrument";
 import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 const aliceAdapter = new AliceBlueAdapter();
 

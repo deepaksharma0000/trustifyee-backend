@@ -1,7 +1,7 @@
 import { Position } from "../models/Position.model";
 import { getInstrumentLtp } from "./MarketDataService";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import InstrumentModel from "../models/Instrument";
 import AngelTokensModel from "../models/AngelTokens";
 import User from "../models/User";
@@ -93,7 +93,7 @@ async function checkAndManagePositions() {
                             producttype: (p.productType || "INTRADAY") as any
                         });
 
-                        if (aliceRes && aliceRes.status === true) {
+                        if (aliceRes && aliceRes.status === 200) {
                             p.status = "CLOSED";
                             p.exitPrice = ltp;
                             p.exitAt = new Date();

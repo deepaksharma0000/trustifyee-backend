@@ -1,6 +1,6 @@
 import express from "express";
 import { syncNiftyOptionsOnly, syncBankNiftyOptionsOnly, syncFinNiftyOptionsOnly, findSymbolToken, findSymbol } from "../services/InstrumentService";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 const router = express.Router();
 

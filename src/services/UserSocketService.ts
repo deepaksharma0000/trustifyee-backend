@@ -1,7 +1,7 @@
 // src/services/UserSocketService.ts
 // FIX #1 — Dedicated User Socket Registry (per-user WebSocket mapping)
 import { WebSocket } from "ws";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import jwt, { JwtPayload } from "jsonwebtoken";
 
 const USER_ACCESS_SECRET = process.env.USER_ACCESS_SECRET || "user_access_secret_123";

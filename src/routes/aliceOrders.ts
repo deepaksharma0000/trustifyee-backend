@@ -5,7 +5,7 @@ import {
   getAliceOrderStatusForClient,
   AlicePlaceOrderInput
 } from "../services/AliceOrderService";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { auth, adminOnly } from "../middleware/auth.middleware";
 
 const router = express.Router();

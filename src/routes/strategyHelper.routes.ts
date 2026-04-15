@@ -4,7 +4,7 @@ import { auth } from "../middleware/auth.middleware";
 import { resolveStrategyLegs, getAllStrategies } from "../services/StrategyEngine";
 import { addStrategy, getStrategies } from "../controllers/StrategyController";
 import Strategy from "../models/Strategy";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 const router = Router();
 

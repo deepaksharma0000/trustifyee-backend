@@ -1,7 +1,7 @@
 // src/services/InstrumentService.ts
 import axios from "axios";
 import InstrumentModel from "../models/Instrument";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { ipv4Agent } from "../utils/httpAgent";
 
 const MASTER_URL =

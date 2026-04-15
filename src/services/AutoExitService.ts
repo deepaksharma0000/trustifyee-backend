@@ -1,7 +1,7 @@
 import { Queue } from "bullmq";
 import moment from "moment-timezone";
 import { Position } from "../models/Position.model";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 const connection = {
     host: process.env.REDIS_HOST || "127.0.0.1",

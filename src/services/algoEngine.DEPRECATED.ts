@@ -14,7 +14,7 @@ import {
   StrategyName,
   ResolvedStrategyLeg
 } from "./StrategyEngine";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { SignalService } from "./SignalService";
 

@@ -2,7 +2,7 @@
 import axios from "axios";
 import zlib from "zlib";
 import UpstoxInstrumentModel from "../models/UpstoxInstrument";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 const COMPLETE_URL =
   "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz";

@@ -1,6 +1,6 @@
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import User from "../models/User";
 
 const profileCache = new Map<string, { data: any; timestamp: number }>();
@@ -30,7 +30,7 @@ export class ProfileValidationService {
 
             const profile = await adapter.getProfile(tokens.jwtToken);
 
-            if (profile && profile.status === true) {
+            if (profile && profile.status === 200) {
                 // Check for exchange permission
                 // Robust check for F&O permissions
                 const exchanges = (profile.data?.exchanges || []).map((e: string) => e.toUpperCase().trim());
@@ -49,8 +49,8 @@ export class ProfileValidationService {
                 return { status: true, data: profile.data, message: "Session Active" };
             }
 
-            log.error(`PRE_VALIDATION_FAILED: Profile check failed for ${clientcode}: ${profile.message}`);
-            return { status: false, message: profile.message || "Broker profile check failed" };
+            log.error(`PRE_VALIDATION_FAILED: Profile check failed for ${clientcode}: ${profile.data?.message}`);
+            return { status: false, message: profile.data?.message || "Broker profile check failed" };
 
         } catch (error: any) {
             log.error(`PROFILE_INVALID: Exception during profile validation for ${clientcode}: ${error.message}`);

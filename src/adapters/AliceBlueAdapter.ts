@@ -3,7 +3,7 @@ import axios, { AxiosInstance } from "axios";
 import zlib from "zlib";
 import crypto from "crypto";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 
 export class AliceBlueAdapter {

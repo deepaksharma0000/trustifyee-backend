@@ -13,9 +13,9 @@ async function resetLoginState(type: 'admin' | 'user', token: string, secret: st
         const decoded = jwt.decode(token) as JwtPayload | null;
         if (decoded?.user_id) {
             if (type === 'user') {
-                await model.findByIdAndUpdate(decoded.user_id, { is_login: false, is_online: false });
+                await model.updateOne({ _id: decoded.user_id }, { is_login: false, is_online: false });
             } else {
-                await model.findByIdAndUpdate(decoded.user_id, { is_login: false });
+                await model.updateOne({ _id: decoded.user_id }, { is_login: false });
             }
         }
     } catch (_e) {

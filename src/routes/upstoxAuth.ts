@@ -2,7 +2,7 @@
 import express from "express";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import UpstoxTokensModel from "../models/UpstoxTokens";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { encrypt } from "../utils/encryption";
 
 const router = express.Router();

@@ -1,7 +1,7 @@
 import express from 'express';
 import { config } from '../config';
 import { AngelOneAdapter } from '../adapters/AngelOneAdapter';
-import { log } from '../utils/logger';
+import log from '../utils/logger';
 import AngelTokensModel from '../models/AngelTokens';
 import User from '../models/User';
 import Admin from '../models/Admin';
@@ -23,7 +23,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
             : await User.findById(userId);
  
         if (!profile) {
-            return res.status(404).json({ status: false, error: 'Profile not found' });
+            throw new Error("User not found");
         }
 
         // Step 2: Resolve client_code (Request Body > Decrypted Profile)
@@ -83,13 +83,13 @@ router.post('/generate-session', auth, async (req: any, res) => {
         const loginResp = await adapter.generateSession({
             clientcode: client_code,
             password: password,
-            totp: totp || undefined,
-            totp_secret: totp_secret || undefined
+            totp: totp ?? '',
+            totp_secret: totp_secret ?? ''
         });
 
-        if (!loginResp.status || !loginResp.data) {
+        if (!loginResp || loginResp.status !== 200 || !loginResp.data) {
             // Provide specific error from broker
-            const brokerMsg = loginResp.message || 'Login failed';
+            const brokerMsg = loginResp.data?.message || 'Login failed';
             log.error(`[AUTH] AngelOne rejected login for ${client_code}: ${brokerMsg}`);
             return res.status(401).json({
                 status: false,
@@ -135,13 +135,13 @@ router.post('/generate-session', auth, async (req: any, res) => {
         }
 
         if (userType === 'admin') {
-            await Admin.findOneAndUpdate(
+            await Admin.updateOne(
                 { panel_client_key: client_code },
                 { ...updatePayload, panel_client_key: client_code },
-                { upsert: true, new: true }
+                { upsert: true }
             );
         } else {
-            await User.findByIdAndUpdate(userId, updatePayload);
+            await User.updateOne({ _id: userId }, updatePayload);
         }
 
         log.info(`[AUTH] ✅ Session generated successfully for ${client_code} (${userType})`);

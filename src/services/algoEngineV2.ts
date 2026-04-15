@@ -13,7 +13,7 @@ import {
     StrategyName,
     ResolvedStrategyLeg
 } from "./StrategyEngine";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { getInstrumentLtp } from "./MarketDataService";
 import { SignalService } from "./SignalService";

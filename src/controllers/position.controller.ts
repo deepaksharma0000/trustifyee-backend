@@ -3,7 +3,7 @@ import { Position } from "../models/Position.model";
 import { placeOrderForClient, getOrderStatusForClient } from "../services/OrderService";
 import AngelTokensModel from "../models/AngelTokens";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { PlaceOrderInput } from "../services/OrderService";
 
 export const getOpenPositions = async (req: Request, res: Response) => {
@@ -160,7 +160,7 @@ export const getOpenPositions = async (req: Request, res: Response) => {
           if (bData && (bData.averageprice || bData.price)) {
             const newPrice = Number(bData.averageprice || bData.price);
             if (newPrice > 0) {
-              await Position.findByIdAndUpdate(p._id, { entryPrice: newPrice });
+              await Position.updateOne({ _id: p._id }, { entryPrice: newPrice });
               p.entryPrice = newPrice;
             }
           }
@@ -214,7 +214,7 @@ export const closePosition = async (req: Request, res: Response) => {
     if (position.mode !== "paper") {
       const resp = await placeOrderForClient(position.userId, position.clientcode, orderInput);
 
-      if (resp && resp.status === false) {
+      if (resp && resp.status !== 200) {
         return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
       }
 

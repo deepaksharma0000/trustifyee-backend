@@ -3,7 +3,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { decrypt, ensureEncrypted, encrypt } from "../utils/encryption";
 
 // Removed global adapters to enforce per-user keys
@@ -83,9 +83,9 @@ async function refreshAngelSession(session: any) {
     
     const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
     const resp = await dynamicAdapter.generateTokensUsingRefresh(decRefreshToken);
-    if (!resp || resp.status === false || !resp.data) {
-        log.error("Angel refresh failed:", resp);
-        throw new Error(resp?.message || "Angel refresh failed");
+    if (!resp || resp.status !== 200 || !resp.data) {
+        log.error("Angel refresh failed:", resp?.data);
+        throw new Error(resp?.data?.message || "Angel refresh failed");
     }
     const tokensData = resp.data;
     const jwtToken = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
@@ -153,7 +153,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                     }
                 }
 
-                if (resp && resp.status === true && resp.data) {
+                if (resp && resp.status === 200 && resp.data) {
                     const ltp = Number(resp.data.ltp);
                     if (!Number.isNaN(ltp) && ltp > 0) {
                         ltpCache.set(cacheKey, { ltp, ts: now });
@@ -262,7 +262,7 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
                         }
                     }
 
-                    if (resp && resp.status === true && resp.data) {
+                    if (resp && resp.status === 200 && resp.data) {
                         const ltp = Number(resp.data.ltp);
                         if (!Number.isNaN(ltp) && ltp > 0) {
                             ltpCache.set(cacheKey, { ltp, ts: now });
@@ -324,7 +324,7 @@ export async function getMultipleInstrumentsLtp(payload: Record<string, string[]
                 const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
                 const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));
                 
-                if (resp && resp.status === true && resp.data) {
+                if (resp && resp.status === 200 && resp.data) {
                     const fetched = Array.isArray(resp.data) ? resp.data : (resp.data.fetched || []);
                     fetched.forEach((item: any) => {
                         const ltp = Number(item.ltp || item.lastPrice || 0);

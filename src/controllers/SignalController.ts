@@ -3,7 +3,7 @@ import User from '../models/User';
 import { Group } from '../models/GroupServices';
 import { Position } from '../models/Position.model';
 import { placeOrderForClient } from '../services/OrderService';
-import { log } from '../utils/logger';
+import log from '../utils/logger';
 import { decrypt } from '../utils/encryption';
 import AngelTokensModel from '../models/AngelTokens';
 import { getInstrumentLtp } from '../services/MarketDataService';

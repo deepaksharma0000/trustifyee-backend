@@ -4,7 +4,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import AliceTokensModel from "../models/AliceTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { AngelOneAdapter, AngelSessionResp } from "../adapters/AngelOneAdapter";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { encrypt, decrypt } from "../utils/encryption";
 import { auth } from "../middleware/auth.middleware";
 import User from "../models/User";
@@ -101,7 +101,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
     // Call Angel One API
     const resp: AngelSessionResp = await adapter.generateSession({ clientcode, password, totp });
 
-    if (!resp || resp.status === false || resp.data == null) {
+    if (!resp || resp.status !== 200 || resp.data == null) {
       log.error("Angel login failed:", resp);
       return res.status(401).json({
         ok: false,
@@ -170,7 +170,7 @@ router.post("/logout", auth, async (req: any, res) => {
 
     // 2. Update the User/Admin profile flags
     const ProfileModel = userType === 'admin' ? Admin : User;
-    await ProfileModel.findByIdAndUpdate(userId, {
+    await ProfileModel.updateOne({ _id: userId }, {
       broker_connected: false,
       broker_verified: false,
       is_online: false
@@ -203,7 +203,7 @@ router.post("/validate-session", auth, async (req: any, res) => {
 
     const profile = await adapter.getProfile(tokenData.jwtToken);
 
-    if (profile && profile.status === true) {
+    if (profile && profile.status === 200) {
       return res.json({ ok: true, data: profile.data });
     } else {
       // Try refresh
@@ -211,7 +211,7 @@ router.post("/validate-session", auth, async (req: any, res) => {
         log.info("Session invalid, trying refresh for", clientcode);
         try {
           const refreshResp = await adapter.generateTokensUsingRefresh(tokenData.refreshToken);
-          if (refreshResp && refreshResp.status === true && refreshResp.data) {
+          if (refreshResp && refreshResp.status === 200 && refreshResp.data) {
             const newJwt = refreshResp.data.jwtToken || refreshResp.data.accessToken;
             const newFeed = refreshResp.data.feedToken || refreshResp.data.refreshToken;
 

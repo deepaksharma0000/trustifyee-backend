@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from "axios";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 
 export interface UpstoxTokenResponse {

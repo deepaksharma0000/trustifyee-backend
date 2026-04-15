@@ -4,7 +4,7 @@ import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { config } from "../config";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { encrypt, decrypt } from "../utils/encryption";
 
 type QuoteRequestItem = {
@@ -28,8 +28,8 @@ const quoteCache = new Map<
 >();
 
 function isInvalidTokenResponse(resp: any) {
-  const code = resp?.errorcode || resp?.errorCode;
-  const msg = String(resp?.message || "").toLowerCase();
+  const code = resp?.errorcode || resp?.errorCode || resp?.data?.errorcode;
+  const msg = String(resp?.data?.message || resp?.message || "").toLowerCase();
   return code === "AG8001" || msg.includes("invalid token");
 }
 
@@ -39,9 +39,9 @@ async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
   }
   const decRefreshToken = decrypt(session.refreshToken);
   const resp = await adapter.generateTokensUsingRefresh(decRefreshToken);
-  if (!resp || resp.status === false || !resp.data) {
+  if (!resp || resp.status !== 200 || !resp.data) {
     log.error("Angel refresh failed:", resp);
-    throw new Error(resp?.message || "Angel refresh failed");
+    throw new Error((resp as any)?.data?.message || (resp as any)?.message || "Angel refresh failed");
   }
   const tokensData = resp.data;
   const jwtToken = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
@@ -123,7 +123,7 @@ export function startMarketStream(server: any) {
                 resp = await angelAdapter.getMarketData(jwtToken, "FULL", exchangeTokens);
               }
 
-              if (resp && resp.status === true && resp.data && resp.data.fetched) {
+              if (resp && resp.status === 200 && resp.data && resp.data.fetched) {
                 resp.data.fetched.forEach((data: any) => {
                   const token = data.symbolToken;
                   const ltp = Number(data.ltp || 0);

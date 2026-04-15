@@ -75,7 +75,8 @@ export const updateAdmin = async (req: Request, res: Response) => {
             updateData.password = await bcrypt.hash(updateData.password, 10);
         }
 
-        const updatedAdmin = await Admin.findByIdAndUpdate(id, updateData, { new: true });
+        await Admin.updateOne({ _id: id }, updateData);
+        const updatedAdmin = await Admin.findById(id);
 
         if (!updatedAdmin) return res.status(404).json({ error: "Admin not found", status: false });
 

@@ -3,7 +3,7 @@ import { config } from "../config";
 import User from "../models/User";
 import AngelTokens from "../models/AngelTokens";
 import { encrypt, isMigrated, safeDecrypt } from "../utils/encryption";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 
 async function migrate() {
   let stats = {

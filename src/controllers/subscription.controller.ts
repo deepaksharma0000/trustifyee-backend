@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { SubscriptionRequest } from '../models/SubscriptionRequest';
 import User from '../models/User';
-import { log } from '../utils/logger';
+import log from '../utils/logger';
 
 export const submitSubscriptionRequest = async (req: Request, res: Response) => {
     try {

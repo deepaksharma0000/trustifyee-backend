@@ -1,5 +1,5 @@
 // src/services/StrategyEngine.ts
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { getLiveIndexLtp } from "./MarketDataService";
 import { getATMStrike } from "../utils/optionUtils";
 import InstrumentModel from "../models/Instrument";

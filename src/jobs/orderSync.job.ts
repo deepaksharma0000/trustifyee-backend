@@ -1,5 +1,5 @@
 import { Position } from "../models/Position.model";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import axios from "axios";
 import { config } from "../config";
 

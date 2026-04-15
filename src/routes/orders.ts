@@ -5,7 +5,7 @@ import {
   getOrderStatusForClient,
   PlaceOrderInput
 } from "../services/OrderService";
-import { log } from "../utils/logger";
+import log from "../utils/logger";
 import { auth, adminOnly } from "../middleware/auth.middleware";
 import User from "../models/User";
 import { Position } from "../models/Position.model";
@@ -91,7 +91,7 @@ router.post("/place", async (req, res, next) => {
       const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
       if (tokens?.jwtToken && symboltoken) {
         const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
-        broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
+        broadcastLtp = (ltpResp as any)?.data?.ltp || (ltpResp as any)?.ltp || 0;
         if (broadcastLtp === 0 && ltpResp?.data) {
           broadcastLtp = Number(ltpResp.data.lastPrice || 0);
         }
