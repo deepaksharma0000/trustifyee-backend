@@ -62,6 +62,11 @@ export class AliceBlueAdapter {
   }
 
   async authPost(sessionId: string, path: string, body?: any) {
+    // 🛡️ HARD GUARD: Prevent order placement from server
+    if (path.includes('/orders/place')) {
+        log.error(`[EXECUTION_BLOCKED] Alice: Attempted to call ${path} from server.`);
+        throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+    }
     try {
       const resp = await this.client.post(path, body || {}, {
         headers: this.baseHeaders(sessionId)
@@ -208,6 +213,10 @@ export class AliceBlueAdapter {
         duration: order.duration || "DAY",
         triggerPrice: String(order.triggerPrice || "0")
     };
+
+    // 🛡️ HARD GUARD
+    log.error("[EXECUTION_BLOCKED] AliceBlueAdapter.placeOrder called on server.");
+    throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
 
     return await this.authPost(sessionId, this.placeOrderPath, payload);
   }

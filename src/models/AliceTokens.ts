@@ -1,6 +1,7 @@
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IAliceTokens extends Document {
+  userId?: mongoose.Types.ObjectId;
   clientcode: string;
   aliceUserId?: string;
   aliceClientId?: string;
@@ -11,6 +12,7 @@ export interface IAliceTokens extends Document {
 
 const AliceTokensSchema = new Schema<IAliceTokens>(
   {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     clientcode: { type: String, required: true, unique: true, index: true },
     sessionId: { type: String, required: true },
     accessToken: { type: String },

@@ -98,6 +98,10 @@ export async function placeOrderForClient(
   orderInput: PlaceOrderInput,
   retryCount = 0
 ): Promise<any> {
+  // 🛡️ HARD GUARD: Compliance Enforcement
+  log.error(`[EXECUTION_BLOCKED] Server-side order attempt for ${clientcode}.`);
+  throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+
   let user = await User.findById(userId);
   
   if (!user) {

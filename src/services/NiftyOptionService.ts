@@ -145,7 +145,7 @@ export async function getOptionChain(
   const maxIdx = Math.min(sorted.length - 1, idx + strikeRange);
   const strikeSet = sorted.slice(minIdx, maxIdx + 1);
 
-  const options = await InstrumentModel.find({
+  let options = await InstrumentModel.find({
     ...strikeQuery,
     strike: { $in: strikeSet }
   })
@@ -153,12 +153,23 @@ export async function getOptionChain(
     .select("tradingsymbol strike optiontype expiry symboltoken")
     .lean();
 
+  // 🚀 [LIVE DATA FIX] Fetch LTP for all option legs in this chain
+  const { dataFeedService } = await import("./DataFeedService");
+  const tokensToFetch = options.map((o: any) => o.symboltoken);
+  const ltpMap = await dataFeedService.getLTPBatch({ "NFO": tokensToFetch });
+
+  // Map LTP back to the options
+  const optionsWithLtp = options.map((opt: any) => ({
+    ...opt,
+    ltp: ltpMap[opt.symboltoken] || 0
+  }));
+
   const response = {
     symbol,
     ltp: currentLtp,
     atmStrike: finalAtm,
     usedStrike,
-    options,
+    options: optionsWithLtp, // Return options with real LTP
     expiries: expiryList
   };
   optionChainCache.set(cacheKey, { ts: Date.now(), data: response });

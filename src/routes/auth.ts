@@ -1,12 +1,15 @@
 // src/routes/auth.ts
 import express from "express";
 import AngelTokensModel from "../models/AngelTokens";
+import AliceTokensModel from "../models/AliceTokens";
+import UpstoxTokensModel from "../models/UpstoxTokens";
 import { AngelOneAdapter, AngelSessionResp } from "../adapters/AngelOneAdapter";
 import { log } from "../utils/logger";
 import { encrypt, decrypt } from "../utils/encryption";
 import { auth } from "../middleware/auth.middleware";
 import User from "../models/User";
 import Admin from "../models/Admin";
+import mongoose from "mongoose";
 import { loginUser, loginAdmin } from "../controllers/AuthController";
 
 const router = express.Router();
@@ -23,28 +26,37 @@ router.post("/login", async (req, res) => {
     return res.status(400).json({ error: "Email, User name or Client Code is required", status: false });
   }
 
-  // 1. Try Admin Login (usually email based)
-  const admin = await Admin.findOne({ email: loginIdentifier });
+  // 1. Try Admin Login (handles email, mobile, or panel_client_key)
+  const admin = await Admin.findOne({
+    $or: [
+      { email: loginIdentifier },
+      { mobile: loginIdentifier },
+      { panel_client_key: loginIdentifier },
+      { client_key: loginIdentifier }
+    ]
+  });
+
   if (admin) {
-    req.body.email = loginIdentifier; // ensure loginAdmin gets it as email
+    req.body.email = loginIdentifier; 
     return loginAdmin(req, res);
   }
 
-  // 2. Try User Login (could be email, user_name or client_key)
+  // 2. Try User Login (email, user_name or client_key)
   const user = await User.findOne({
     $or: [
       { email: loginIdentifier },
-      { user_name: loginIdentifier }
+      { user_name: loginIdentifier },
+      { client_key: loginIdentifier }
     ]
   });
 
   if (user) {
-    req.body.user_name = user.user_name; // pass the actual user_name to loginUser controller
+    req.body.user_name = user.user_name; 
+    req.body.email = user.email;
     return loginUser(req, res);
   }
 
-  // Fallback to loginUser controller for standard error handling
-  req.body.user_name = loginIdentifier;
+  // Fallback
   return loginUser(req, res);
 });
 
@@ -143,15 +155,35 @@ router.post("/angel/login", auth, async (req: any, res) => {
 // --------------------------------------------------------------------------
 
 router.post("/logout", auth, async (req: any, res) => {
-  const { clientcode } = req.body;
   const userId = req.id;
-  if (!clientcode) return res.status(400).json({ error: "clientcode required" });
+  const userType = req.userType;
 
   try {
-    await AngelTokensModel.deleteOne({ userId, clientcode }).exec();
-    return res.json({ ok: true });
+    log.info(`[AUTH] Disconnecting broker session for ${userType}: ${userId}`);
+
+    // 1. Delete tokens from all possible broker models
+    await Promise.allSettled([
+      AngelTokensModel.deleteMany({ userId }).exec(),
+      UpstoxTokensModel.deleteMany({ userId }).exec(),
+      AliceTokensModel.deleteMany({ userId }).exec()
+    ]);
+
+    // 2. Update the User/Admin profile flags
+    const ProfileModel = userType === 'admin' ? Admin : User;
+    await ProfileModel.findByIdAndUpdate(userId, {
+      broker_connected: false,
+      broker_verified: false,
+      is_online: false
+    });
+
+    return res.json({ 
+      status: true, 
+      ok: true, 
+      message: "Broker disconnected successfully and status synchronized." 
+    });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || err });
+    log.error(`[AUTH] Logout error for ${userId}:`, err);
+    return res.status(500).json({ status: false, error: err.message || "Logout failed" });
   }
 });
 

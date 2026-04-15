@@ -8,6 +8,11 @@ export interface ISignalExecutionResult extends Document {
     status: "SUCCESS" | "FAILED";
     errorMessage?: string;
     executedAt: Date;
+    source?: "USER_DEVICE" | "BACKEND_BLOCKED";
+    orderType?: "LIMIT";
+    strategyId?: string;
+    ipAddress?: string;
+    brokerResponse?: unknown;
 }
 
 const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
@@ -19,6 +24,11 @@ const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
         status: { type: String, enum: ["SUCCESS", "FAILED"], required: true },
         errorMessage: { type: String },
         executedAt: { type: Date, default: Date.now },
+        source: { type: String, enum: ["USER_DEVICE", "BACKEND_BLOCKED"] },
+        orderType: { type: String, enum: ["LIMIT"] },
+        strategyId: { type: String },
+        ipAddress: { type: String },
+        brokerResponse: { type: Schema.Types.Mixed },
     },
     { timestamps: true }
 );

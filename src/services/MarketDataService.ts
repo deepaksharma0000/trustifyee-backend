@@ -291,6 +291,58 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
     return cached?.ltp || 0;
 }
 
+/**
+ * 🚀 [BATCH LTP] Fetch live prices for multiple tokens at once.
+ * Reduces API hits and improves Option Chain performance.
+ */
+export async function getMultipleInstrumentsLtp(payload: Record<string, string[]>): Promise<Record<string, number>> {
+    const results: Record<string, number> = {};
+    const now = Date.now();
+    
+    // 1. Resolve from cache first
+    for (const exch in payload) {
+        payload[exch] = payload[exch].filter(token => {
+            const cacheKey = `${exch}:${token}`;
+            const cached = ltpCache.get(cacheKey);
+            if (cached && (now - cached.ts < CACHE_MS)) {
+                results[token] = cached.ltp;
+                return false; // Skip already cached
+            }
+            return true;
+        });
+    }
+
+    // 2. Fetch missing from AngelOne
+    const remainingCount = Object.values(payload).flat().length;
+    if (remainingCount > 0 && now >= cooldownUntil) {
+        try {
+            const session = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+            if (session && session.jwtToken && session.apiKey) {
+                const decJwtToken = await ensureEncrypted(session, 'jwtToken', 'batch_ltp_val');
+                const sessionApiKey = await ensureEncrypted(session, 'apiKey', 'batch_ltp');
+                
+                const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
+                const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));
+                
+                if (resp && resp.status === true && resp.data) {
+                    const fetched = Array.isArray(resp.data) ? resp.data : (resp.data.fetched || []);
+                    fetched.forEach((item: any) => {
+                        const ltp = Number(item.ltp || item.lastPrice || 0);
+                        if (ltp > 0) {
+                            results[item.symbolToken] = ltp;
+                            ltpCache.set(`${item.exchange}:${item.symbolToken}`, { ltp, ts: now });
+                        }
+                    });
+                }
+            }
+        } catch (err: any) {
+            log.error("Batch LTP Fetch error:", err.message);
+        }
+    }
+
+    return results;
+}
+
 export function getLastIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY") {
     return ltpCache.get(`INDEX:${indexName}`)?.ltp || 0;
 }

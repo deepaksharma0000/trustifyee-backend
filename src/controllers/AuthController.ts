@@ -248,7 +248,13 @@ export const loginUser = async (req: Request, res: Response) => {
         if (!user_name) return res.status(400).json({ error: "User name is required", status: false });
         if (!password) return res.status(400).json({ error: "Password is required", status: false });
 
-        const user = await User.findOne({ user_name }).select('+password');
+        const user = await User.findOne({
+            $or: [
+                { user_name },
+                { email: user_name }, // handle case where email was sent as user_name
+                { email: req.body.email }
+            ]
+        }).select('+password');
         if (!user) return res.status(404).json({ error: "User does not exist.", status: false });
 
         // Phase 1: Check account status

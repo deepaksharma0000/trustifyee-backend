@@ -67,6 +67,7 @@ router.get("/auth/callback", async (req, res) => {
     const saved = await AliceTokensModel.findOneAndUpdate(
       { clientcode },
       {
+        userId: mongoUserId ? (mongoUserId as any) : undefined,
         clientcode,
         // 🚀 Alice Blue Open API requires "Bearer <UserId> <UserSession>"
         // Concatenate them before encrypting for the adapter to use

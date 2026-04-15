@@ -54,8 +54,8 @@ export async function createAngelAdapter(userIdOrDoc: string | Types.ObjectId | 
     const { safeDecrypt } = require("./encryption");
     const decKey = safeDecrypt(encKey, userIdent);
     
-    if (!decKey || decKey.length < 10) {
-        log.error(`[INVALID_ADAPTER_STATE] Decrypted API Key invalid/missing for user: ${userIdent}. RawKey: ${encKey.substring(0, 10)}...`);
+    if (!decKey || decKey.length < 5) {
+        log.error(`[INVALID_ADAPTER_STATE] Decrypted API Key invalid/missing for user: ${userIdent}. RawKey: ${encKey.substring(0, 5)}...`);
         throw new Error("Invalid Decrypted API Key. Please reconnect broker in your profile.");
     }
 

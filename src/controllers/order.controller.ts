@@ -176,36 +176,25 @@ export const closeOrder = async (req: Request, res: Response) => {
 
     const exitSide = position.side === "BUY" ? "SELL" : "BUY";
 
-    // 🔥 EXIT = NEW ORDER PLACE
-    const angelResp = await placeAngelOrder({
-      clientcode,
-      tradingsymbol: position.tradingsymbol,
+    // 🚀 [COMPLIANCE FIX] Generate an EXIT signal instead of placing a server-side order
+    const { SignalService } = await import("../services/SignalService");
+    const signal = await SignalService.createSignal({
+      symbol: position.tradingsymbol,
       exchange: position.exchange,
       side: exitSide,
+      tradingsymbol: position.tradingsymbol,
+      price: 0, 
       quantity: position.quantity,
-      ordertype: "MARKET",
+      strategy: (position as any).strategy || "MANUAL_EXIT",
+      signalType: "EXIT",
     });
-
-    if (!angelResp?.ok) {
-      // Check if it's already closed or failed
-      return res.status(400).json({
-        ok: false,
-        message: angelResp?.error || "Angel exit order failed",
-      });
-    }
-
-    // ✅ DB UPDATE
-    position.status = "CLOSED";
-    position.exitOrderId = angelResp.resp?.data?.orderid || "MANUAL";
-    position.exitAt = new Date();
-
-    await position.save();
 
     res.json({
       ok: true,
-      message: "Position squared off successfully",
-      orderid: position.exitOrderId
+      message: "Exit signal pushed to user device.",
+      signalId: signal?._id
     });
+
 
     // [NEW] Cancel Auto Exit Job if exists
     if (position.autoSquareOffEnabled && position.autoSquareOffJobId) {

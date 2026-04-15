@@ -133,7 +133,7 @@ export const ensureEncrypted = async (doc: any, field: string, identifier: strin
 export const validateApiKey = (key: string | null | undefined): boolean => {
     if (!key) return false;
     const clean = isMigrated(key) ? safeDecrypt(key, 'validation') : key;
-    return !!(clean && clean.length > 10);
+    return !!(clean && clean.length > 5);
 };
 
 export const maskKey = (key: string): string => {

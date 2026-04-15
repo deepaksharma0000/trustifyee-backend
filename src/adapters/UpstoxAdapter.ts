@@ -262,6 +262,11 @@ export class UpstoxAdapter {
    * Generic authenticated POST call
    */
   async authPost(accessToken: string, endpoint: string, data?: any) {
+    // 🛡️ HARD GUARD: Prevent order placement from server
+    if (endpoint.includes('/order/place')) {
+        log.error(`[EXECUTION_BLOCKED] Upstox: Attempted to call ${endpoint} from server.`);
+        throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+    }
     try {
       const response = await this.client.post(endpoint, data, {
         headers: {
@@ -319,6 +324,9 @@ export class UpstoxAdapter {
     return this.authGet(accessToken, path);
   }
   async placeOrder(accessToken: string, order: any) {
+    // 🛡️ HARD GUARD
+    log.error("[EXECUTION_BLOCKED] UpstoxAdapter.placeOrder called on server.");
+    throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
     const path = "/v2/order/place";
     return this.authPost(accessToken, path, {
       quantity: order.quantity,

@@ -98,6 +98,14 @@ async function start() {
     // Start Auto Exit Worker
     initAutoExitWorker();
 
+    // 💹 Initialize dedicated Data Feed Layer
+    const { dataFeedService } = require("./services/DataFeedService");
+    try {
+      await dataFeedService.init();
+    } catch (e: any) {
+      log.warn(`[DATA_FEED] Initialization failed, will retry on use: ${e.message}`);
+    }
+
     // FIX #8: Recover any AlgoRuns that were "running" before last restart
     await recoverRunningRuns();
 

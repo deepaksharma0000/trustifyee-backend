@@ -98,65 +98,26 @@ router.post("/place", async (req, res, next) => {
       }
     } catch (e: any) { log.warn("LTP fetch failed in /place:", e.message); }
 
-    // Pass the plain-text clientcode for token lookup
-    const resp = await placeOrderForClient(targetUser._id, clientcode, orderPayload);
-
-    if (resp && resp.status === false) {
-      log.error("AngelOne order placement failed:", resp);
-      return res.status(400).json({ ok: false, error: resp.message || "Broker order failed", resp });
-    }
-
-    const orderid =
-      (resp as any)?.data?.orderid ||
-      (resp as any)?.data?.data?.orderid ||
-      (resp as any)?.orderId ||
-      (resp as any)?.orderid ||
-      `BROKER-${uuidv4()}`;
-
-    if (orderid.startsWith("BROKER-")) {
-      log.warn(`Broker confirmation missing in /place for ${clientcode}. Resp:`, JSON.stringify(resp));
-    }
-
-    // Capture real entry price if possible
-    let entryPrice = 0;
-    if (resp?.ok !== false) {
-      try {
-        // Allow small delay for broker execution
-        await new Promise(r => setTimeout(r, 2000));
-        const statusResp = await getOrderStatusForClient(targetUser._id, clientcode, orderid);
-        let bData = statusResp?.data || statusResp;
-        if (Array.isArray(bData)) bData = bData[0];
-
-        if (bData && (bData.averageprice || bData.price)) {
-          entryPrice = Number(bData.averageprice || bData.price);
-        }
-      } catch (e: any) { log.warn("Price capture failed in /place:", e.message); }
-    }
-
-    if (entryPrice === 0) entryPrice = broadcastLtp;
-
-    await Position.create({
-      userId: targetUser._id,
-      clientcode,
-      orderid,
-      tradingsymbol: orderPayload.tradingsymbol,
+    // 🚀 [COMPLIANCE FIX] Generate a signal instead of placing a server-side order
+    const { SignalService } = await import("../services/SignalService");
+    const signal = await SignalService.createSignal({
+      symbol: orderPayload.tradingsymbol,
       exchange: orderPayload.exchange,
-      side: orderPayload.side,
+      side: orderPayload.side as any,
+      tradingsymbol: orderPayload.tradingsymbol,
+      price: Number(orderPayload.price) || 0,
       quantity: orderPayload.quantity,
-      entryPrice: entryPrice,
-      symboltoken,
-      strategy: req.body.strategy || "Manual",
-      status: "OPEN",
-      stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-      targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
-      tradeType: req.body.tradeType || "Manual",
-      signalTime: new Date(),
-      productType: req.body.producttype || "INTRADAY",
+      strategy: req.body.strategy || "AdminManual",
+      signalType: req.body.signalType || "ENTRY",
     });
 
-    return res.json({ ok: true, resp, orderid });
+    return res.json({ 
+      ok: true, 
+      message: "Signal generated and pushed to user device.", 
+      signalId: signal?._id 
+    });
   } catch (err: any) {
-    log.error("place order error", err.message || err);
+    log.error("place order (signal) error", err.message || err);
     return res.status(500).json({ error: err.message || err });
   }
 });
@@ -214,391 +175,41 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
 
     let users = await User.find(userQuery).lean();
 
-    // 3. Add admin themselves to the processing list
-    const adminReqUser = (req as any).user;
-    const userType = (req as any).userType;
-    if (adminReqUser && adminReqUser._id && userType === 'admin') {
-       const AdminModel = require('../models/Admin').default;
-       const adminData = await AdminModel.findById(adminReqUser._id).lean();
-       if (adminData && !users.find((u: any) => u._id.toString() === adminData._id.toString())) {
-           adminData.licence = adminData.broker_connected ? "Live" : "Demo";
-           if (!adminData.client_key && adminData.panel_client_key) adminData.client_key = adminData.panel_client_key;
-           users.push(adminData as any);
-       }
-    }
-
-    if (users.length === 0) {
-      log.warn(`[PLACE_ALL] Aborted: No active users matched Strategy: ${targetStrategy}`);
-      return res.json({ ok: true, totalUsers: 0, message: "No active users found for this strategy." });
-    }
-
-    const symboltoken = instrument?.symboltoken as string | undefined;
-
-    // Capture LTP ONCE for all users (using an active session)
-    let broadcastLtp = 0;
-    try {
-      const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
-      if (tokens?.jwtToken && tokens?.userId && symboltoken) {
-        const { createAngelAdapter } = await import('../utils/broker');
-        const adapter = await createAngelAdapter(tokens.userId.toString());
-        const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
-        broadcastLtp = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
-        if (broadcastLtp === 0 && ltpResp?.data) broadcastLtp = Number(ltpResp.data.lastPrice || 0);
-      }
-    } catch (e: any) { log.warn("LTP fetch for broadcast failed:", e.message); }
-
-    const enrichedResults = await Promise.all(users.map(async (user: any) => {
-      // 4. Resolve Group Service Multiplier
-      const groupConfig = allGroups.find(g => g.name === user.group_service);
-      
-      // Smart search for service (handle spaces in symbols)
-      const serviceConfig = groupConfig?.services.find(s => {
-          const sName = (s.name || "").toUpperCase().replace(/\s+/g, "");
-          const bSym = baseSymbol.replace(/\s+/g, "");
-          return sName.includes(bSym) || bSym.includes(sName);
-      });
-
-      // If user is in a group but we can't find this specific service, we might skip to avoid wrong trades
-      // UNLESS it's the admin themselves or the user has no group.
-      if (user.group_service && !serviceConfig && userType !== 'admin') {
-          return { userId: user._id, userName: user.user_name, status: "skipped", reason: `Symbol ${baseSymbol} not enabled in Group ${user.group_service}` };
-      }
-
-      const userMultiplier = serviceConfig?.group_qty || 1;
-      const lotMultiplier = instrument?.lotSize || 1;
-      const totalUserUnits = Math.max(1, (orderPayload.quantity * userMultiplier) * lotMultiplier);
-
-      let clientcode = user.client_key;
-      const userName = user.user_name || user.name || "N/A";
-
-      if (!clientcode && user.licence !== "Demo") {
-          return { userId: user._id, userName, licence: user.licence, status: "skipped", reason: "Missing client_key", brokerConnected: !!user.broker_connected };
-      }
-
-      try {
-        if (clientcode) clientcode = decrypt(clientcode);
-      } catch (e) { log.warn("Decrypt failed for:", user._id); }
-
-      // Order Slicing
-      const orderSlices: number[] = [];
-      let freezeLimit = baseSymbol === "BANKNIFTY" ? 900 : (baseSymbol === "MIDCPNIFTY" ? 4200 : 1800);
-      let rem = totalUserUnits;
-      while (rem > 0) {
-        const s = Math.min(rem, freezeLimit);
-        orderSlices.push(s);
-        rem -= s;
-      }
-
-      const userSlices: any[] = [];
-
-      for (const sliceQty of orderSlices) {
-        if (user.licence === "Demo") {
-          const paperOrderId = `PAPER-${uuidv4()}`;
-          await Position.create({
-            userId: user._id, clientcode: clientcode || "DEMO-USER", orderid: paperOrderId,
-            tradingsymbol: orderPayload.tradingsymbol, exchange: orderPayload.exchange,
-            side: orderPayload.side, quantity: sliceQty, entryPrice: broadcastLtp,
-            symboltoken, strategy: targetStrategy, status: "OPEN", mode: "paper",
-            tradeType: req.body.tradeType || "Manual", productType: req.body.producttype || "INTRADAY",
-            isSystemGenerated: true,
-          });
-          userSlices.push({ status: "paper", orderid: paperOrderId });
-        } else if (!user.broker_connected) {
-          const skippedOrderId = `REJ-${uuidv4()}`;
-          await Position.create({
-            userId: user._id, clientcode: clientcode || "MISSING-CC", orderid: skippedOrderId,
-            tradingsymbol: orderPayload.tradingsymbol, exchange: orderPayload.exchange,
-            side: orderPayload.side, quantity: sliceQty, entryPrice: broadcastLtp,
-            symboltoken, strategy: targetStrategy, status: "REJECTED", mode: "live",
-            tradeType: req.body.tradeType || "Manual", productType: req.body.producttype || "INTRADAY",
-            isSystemGenerated: true, userLicenceAtTrade: user.licence,
-          });
-          userSlices.push({ status: "skipped", reason: "Broker Disconnected" });
-        } else {
-          try {
-            const resp = await placeOrderForClient(user._id, clientcode, { ...orderPayload, quantity: sliceQty });
-            
-            let actualStatus = "OPEN";
-            let brokerMsg = resp?.message || "Order Submitted";
-            let orderid = resp?.data?.orderid || resp?.orderid;
-
-            if (resp && resp.status === false) {
-                actualStatus = "REJECTED";
-                brokerMsg = resp.message || "Rejected by Broker";
-                orderid = orderid || `REJ-${uuidv4()}`;
-            } else {
-                orderid = orderid || `BR-${uuidv4()}`;
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                
-                try {
-                    const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
-                    if (statusResp && statusResp.status && statusResp.data) {
-                        const bData = Array.isArray(statusResp.data) ? statusResp.data[0] : statusResp.data;
-                        const bStatus = String(bData.orderstatus || bData.status || "").toUpperCase();
-                        
-                        // 🎯 IMPROVED: If broker text is empty, generate professional message based on status
-                        const bStatusText = bData.text || bData.message || bData.cancelreason || "";
-                        if (!bStatusText || bStatusText.toUpperCase() === "SUCCESS") {
-                            if (bStatus === "COMPLETE") brokerMsg = "Order Executed Successfully";
-                            else if (["OPEN", "PENDING", "TRIGGER PENDING"].includes(bStatus)) brokerMsg = "Order is pending in broker terminal";
-                            else if (bStatus === "REJECTED") brokerMsg = "Rejected by Broker RMS";
-                            else brokerMsg = bStatus || brokerMsg;
-                        } else {
-                            brokerMsg = bStatusText;
-                        }
-
-                        if (["REJECTED", "CANCELLED", "ERROR", "FAILED"].includes(bStatus)) {
-                            actualStatus = "REJECTED";
-                        } else if (bStatus === "COMPLETE") {
-                            actualStatus = "COMPLETE";
-                        }
-                    }
-                } catch (e: any) { log.warn("Broadcast status verification failed:", e.message); }
-            }
-
-            await Position.create({
-              userId: user._id, clientcode, orderid,
-              tradingsymbol: orderPayload.tradingsymbol, exchange: orderPayload.exchange,
-              side: orderPayload.side, quantity: sliceQty, entryPrice: broadcastLtp,
-              symboltoken, strategy: targetStrategy, status: actualStatus === "COMPLETE" ? "OPEN" : actualStatus, mode: "live",
-              tradeType: req.body.tradeType || "Manual", productType: req.body.producttype || "INTRADAY",
-              isSystemGenerated: true,
-            });
-
-            await BrokerResponse.create({
-               userId: user._id, clientcode, orderid, tradingsymbol: orderPayload.tradingsymbol,
-               action: "BROADCAST_ORDER", 
-               status: actualStatus === "REJECTED" ? "REJECTED" : "SUCCESS", 
-               message: brokerMsg, 
-               brokerError: resp
-            });
-
-            userSlices.push({ status: actualStatus === "REJECTED" ? "error" : "ok", orderid, reason: brokerMsg });
-          } catch (err: any) {
-            log.error("Broadcast slice error:", err.message);
-            userSlices.push({ status: "error", error: err.message });
-          }
-        }
-      }
-
-      const firstSlice = userSlices[0] || {};
-      return { 
-        userId: user._id, userName, licence: user.licence, 
-        totalUnits: totalUserUnits, status: userSlices.some(s => s.status === 'ok' || s.status === 'paper') ? (user.licence === "Demo" ? "paper" : "ok") : "error",
-        isOnline: !!user.is_online, brokerConnected: !!user.broker_connected,
-        orderid: firstSlice.orderid, reason: firstSlice.reason, error: firstSlice.error
-      };
-    }));
-
-    return res.json({ ok: true, totalUsers: users.length, results: enrichedResults });
-  } catch (err: any) {
-    log.error("place-all error", err.message || err);
-    return res.status(500).json({ error: err.message || err });
-  }
-});
-
-// 🔥 NEW: Place order for the logged-in user themselves
-router.post("/place-user", auth, async (req, res) => {
-  const user = (req as any).user;
-  let clientcode = user.client_key;
-
-  if (user.licence === "Live" && !clientcode) {
-    return res.status(400).json({ error: "No broker client code assigned to your account" });
-  }
-
-  // Decrypt clientcode for token lookup
-  if (clientcode) {
-    try {
-      clientcode = decrypt(clientcode);
-    } catch (e) {
-      log.warn("Failed to decrypt clientcode for user:", user._id);
-    }
-  }
-
-  try {
-    const { symbol, optiontype, side, quantity, ordertype, producttype } = req.body;
-    let { tradingsymbol, symboltoken } = req.body;
-
-    // Auto-resolve ATM if tradingsymbol is missing but symbol/optiontype provided
-    if (!tradingsymbol && symbol && optiontype) {
-      const chain = await getOptionChain(symbol.toUpperCase());
-      const atmStrike = chain.atmStrike;
-      const match = chain.options.find((o: any) => o.strike === atmStrike && o.optiontype === optiontype.toUpperCase());
-
-      if (!match) return res.status(400).json({ error: `Could not find ATM ${optiontype} for ${symbol}` });
-
-      tradingsymbol = match.tradingsymbol;
-      symboltoken = match.symboltoken;
-    }
-
-    const instrument = await InstrumentModel.findOne({
-      tradingsymbol: tradingsymbol || "",
-      exchange: "NFO"
-    }).lean() as any;
-
-    let finalQuantity = Number(quantity) || 1;
-
-    const orderPayload: PlaceOrderInput = {
-      exchange: "NFO",
-      tradingsymbol,
-      side: side || "BUY",
-      transactiontype: side || "BUY",
-      quantity: finalQuantity,
-      ordertype: ordertype || "MARKET",
-      price: 0,
-      producttype: producttype || "INTRADAY",
-      symboltoken
-    };
-
-    // Capture LTP BEFORE deciding Demo vs Live for both fallback and demo entry
-    let paperEntryPrice = 0;
-    try {
-      // Try to get any active admin/user token
-      const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
-      if (tokens?.jwtToken && tokens?.userId && symboltoken) {
-        const { createAngelAdapter } = await import('../utils/broker');
-        const adapter = await createAngelAdapter(tokens.userId.toString());
-        const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", tradingsymbol, symboltoken);
-        paperEntryPrice = ltpResp?.data?.ltp || ltpResp?.ltp || 0;
-        if (paperEntryPrice === 0 && ltpResp?.data) paperEntryPrice = Number(ltpResp.data.lastPrice || 0);
-      }
-    } catch (e: any) { log.error("LTP fetch for paper trade failed", e.message); }
-
-    if (user.licence === "Demo") {
-      const paperOrderId = `PAPER-${uuidv4()}`;
-      await Position.create({
-        userId: user._id,
-        clientcode: clientcode || "DEMO-USER",
-        orderid: paperOrderId,
-        tradingsymbol: orderPayload.tradingsymbol,
-        exchange: "NFO",
-        side: orderPayload.side,
-        quantity: orderPayload.quantity,
-        entryPrice: paperEntryPrice,
-        symboltoken: orderPayload.symboltoken,
-        strategy: req.body.strategy || "Manual",
-        status: "OPEN",
-        mode: "paper",
-        stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-        targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
-        tradeType: req.body.tradeType || "Manual",
-        signalTime: new Date(),
-        productType: req.body.producttype || "INTRADAY",
-      });
-
-      // Simulate Broker Response for realism
-      await BrokerResponse.create({
-        userId: user._id,
-        clientcode: clientcode || "DEMO-USER",
-        orderid: paperOrderId,
-        tradingsymbol: orderPayload.tradingsymbol,
-        action: "USER_ORDER",
-        status: "SUCCESS",
-        message: "Order Placed Successfully (Demo Mode)",
-        brokerError: { message: "SIMULATED_SUCCESS", mode: "PAPER" }
-      });
-
-      return res.json({ ok: true, message: "Order placed successfully (Demo)", orderid: paperOrderId });
-    }
-
-    const resp = await placeOrderForClient(user._id, clientcode, orderPayload);
-    const orderid = (resp as any)?.data?.orderid || (resp as any)?.data?.data?.orderid || (resp as any)?.orderid || `BROKER-${uuidv4()}`;
-
-    let entryPrice = 0;
-    let actualStatus = "SUCCESS";
-    let actualMessage = "Order Placed Successfully";
-    let finalBrokerData = null;
-
-    if (resp && resp.status === false) {
-      actualStatus = "REJECTED";
-      actualMessage = resp.message || "Broker error";
-    } else {
-      // 🕒 WAIT for Broker RMS on success submission
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      try {
-        const statusResp = await getOrderStatusForClient(user._id, clientcode, orderid);
-        let brokerData = statusResp?.data || statusResp;
-
-        if (Array.isArray(brokerData)) {
-          brokerData = brokerData[0];
-        }
-
-        if (brokerData && typeof brokerData === 'object') {
-          finalBrokerData = brokerData;
-          const bStatus = String(brokerData.orderstatus || brokerData.status || "").toUpperCase();
-
-          // 🎯 IMPROVED: Professional message translation
-          const bStatusText = brokerData.text || brokerData.message || brokerData.cancelreason || "";
-          if (!bStatusText || bStatusText.toUpperCase() === "SUCCESS") {
-              if (bStatus === "COMPLETE") actualMessage = "Order Executed Successfully";
-              else if (["OPEN", "PENDING", "TRIGGER PENDING"].includes(bStatus)) actualMessage = "Order is pending in broker terminal";
-              else if (bStatus === "REJECTED") actualMessage = "Rejected by Broker RMS";
-              else actualMessage = bStatus || actualMessage;
-          } else {
-              actualMessage = bStatusText;
-          }
-
-          if (["REJECTED", "CANCELLED", "ERROR", "FAILED"].includes(bStatus)) {
-            actualStatus = "REJECTED";
-          } else if (bStatus === "COMPLETE") {
-            actualStatus = "SUCCESS";
-          }
-
-          // Capture REAL entry price
-          entryPrice = Number(brokerData.averageprice || brokerData.price || 0);
-        }
-      } catch (statusErr: any) {
-        log.warn("Direct user status check failed:", statusErr.message);
-      }
-    }
-
-    // Fallback to paperEntryPrice (LTP) if order is complete but averageprice is 0
-    if (actualStatus === "SUCCESS" && entryPrice === 0) {
-      entryPrice = paperEntryPrice;
-    }
-
-    await Position.create({
-      userId: user._id,
-      clientcode,
-      orderid,
+    // 🚀 [COMPLIANCE FIX] Generate ONE broadcast signal via SignalService
+    // All connected users will receive this TRADE_SIGNAL via WebSocket and execute it locally.
+    const { SignalService } = await import("../services/SignalService");
+    const signal = await SignalService.createSignal({
+      symbol: orderPayload.tradingsymbol,
+      exchange: orderPayload.exchange,
+      side: orderPayload.side as any,
       tradingsymbol: orderPayload.tradingsymbol,
-      exchange: "NFO",
-      side: orderPayload.side,
+      price: Number(orderPayload.price) || 0,
       quantity: orderPayload.quantity,
-      entryPrice: entryPrice,
-      symboltoken: orderPayload.symboltoken,
-      strategy: req.body.strategy || "Manual",
-      status: actualStatus === "REJECTED" ? "REJECTED" : "OPEN",
-      mode: "live",
-      stopLossPrice: req.body.stopLossPrice ? Number(req.body.stopLossPrice) : undefined,
-      targetPrice: req.body.targetPrice ? Number(req.body.targetPrice) : undefined,
-      tradeType: req.body.tradeType || "Manual",
-      signalTime: new Date(),
-      productType: req.body.producttype || "INTRADAY",
+      strategy: targetStrategy,
+      signalType: req.body.signalType || "ENTRY",
     });
 
-    // Log ACTUAL Response
-    await BrokerResponse.create({
-      userId: user._id,
-      clientcode,
-      orderid,
-      tradingsymbol: orderPayload.tradingsymbol,
-      action: "USER_ORDER",
-      status: (actualStatus === "REJECTED" ? "REJECTED" : "SUCCESS") as any,
-      message: actualMessage,
-      brokerError: finalBrokerData || resp
+    return res.json({ 
+      ok: true, 
+      message: `Broadcast signal generated for Strategy: ${targetStrategy}. Pushed to all active users.`, 
+      signalId: signal?._id 
     });
-
-    if (actualStatus === "REJECTED") {
-      return res.status(400).json({ ok: false, error: actualMessage, orderid });
-    }
-
-    return res.json({ ok: true, resp, orderid });
   } catch (err: any) {
+    log.error("place-all signal error", err.message || err);
     return res.status(500).json({ error: err.message || err });
   }
 });
+
+// 🔥 [COMPLIANCE] Disabled: User must execute from their own device via the frontend engine
+router.post("/place-user", auth, async (_req, res) => {
+  log.warn("[LEGACY_ROUTE_CALLED] /api/orders/place-user called. Resource is Gone.");
+  return res.status(410).json({
+    status: false,
+    code: 'USER_DEVICE_EXECUTION_REQUIRED',
+    error: "Server-side execution disabled. Use the integrated user-device executor in the dashboard."
+  });
+});
+
 
 router.get("/status/:clientcode/:orderId", async (req, res, next) => {
   if (req.headers['x-system-secret'] === 'INTERNAL_JOB_SECRET') {
@@ -745,60 +356,30 @@ router.post("/close", async (req, res, next) => {
 
     const exitSide = position.side === "BUY" ? "SELL" : "BUY";
 
-    const orderInput: PlaceOrderInput = {
+    // 🚀 [COMPLIANCE FIX] Generate an EXIT signal via SignalService
+    const { SignalService } = await import("../services/SignalService");
+    const signal = await SignalService.createSignal({
+      symbol: position.tradingsymbol,
       exchange: position.exchange,
-      tradingsymbol: position.tradingsymbol,
       side: exitSide,
-      transactiontype: exitSide,
+      tradingsymbol: position.tradingsymbol,
+      price: 0, 
       quantity: position.quantity,
-      ordertype: "MARKET",
-      producttype: position.productType as any || "INTRADAY",
-      symboltoken: position.symboltoken
-    };
+      strategy: (position as any).strategy || "ManualExit",
+      signalType: "EXIT",
+    });
 
-    // Use position's clientcode instead of the one from req.body
-    const resp = await placeOrderForClient(position.userId, position.clientcode, orderInput);
-
-    if (resp && resp.status === false) {
-      return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
-    }
-
-    const orderid_resp = resp?.data?.orderid || resp?.data?.data?.orderid || "MANUAL";
-
-    // Fetch Exit Price
-    let exitPrice = 0;
-    try {
-      const tokens = await AngelTokensModel.findOne({ clientcode: position.clientcode }).lean();
-      if (tokens?.jwtToken && position.symboltoken) {
-        if (!position.userId) throw new Error("Position userId missing");
-        const { createAngelAdapter } = await import('../utils/broker');
-        const adapter = await createAngelAdapter(position.userId.toString());
-        const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
-        exitPrice = ltpResp?.data?.ltp || 0;
-      }
-    } catch (e) {
-      log.warn("Failed to fetch exit price during square off", e);
-    }
-
-    position.status = "CLOSED";
-    position.exitOrderId = orderid_resp;
-    position.exitQty = position.quantity;
-    position.exitPrice = exitPrice || position.targetPrice || position.stopLossPrice; // Fallback to target/SL as user suggested
-    position.exitAt = new Date();
-    await position.save();
-
-    if (position.autoSquareOffEnabled && position.autoSquareOffJobId) {
-      await AutoExitService.cancelExit(position.orderid);
-      position.autoSquareOffStatus = "CANCELLED";
-      await position.save();
-    }
-
-    res.json({ ok: true, message: "Position squared off successfully", orderid: position.exitOrderId });
+    res.json({ 
+      ok: true, 
+      message: "Exit signal generated and pushed to user device.", 
+      signalId: signal?._id 
+    });
   } catch (err: any) {
-    log.error("Close order error:", err.message);
-    res.status(500).json({ ok: false, message: "Failed to close position" });
+    log.error("Close order (signal) error:", err.message);
+    res.status(500).json({ ok: false, message: "Failed to generate exit signal" });
   }
 });
+
 
 router.get("/active-positions/:clientcode", auth, async (req, res) => {
   try {

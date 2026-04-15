@@ -125,51 +125,30 @@ async function checkAndManagePositions() {
     }
 }
 
-async function executeExit(position: any, jwtToken: string, reason: string) {
+async function executeExit(position: any, _jwtToken: string, reason: string) {
     try {
         const exitSide = position.side === "BUY" ? "SELL" : "BUY";
 
-        // 🚀 [LAZY ADAPTER] fetch user/admin
-        if (!position.userId) throw new Error("Position userId missing");
-        const { createAngelAdapter } = await import('../utils/broker');
-        const adapter = await createAngelAdapter(position.userId.toString());
-
-        // Place Market Exit (Angel One Specific)
-        const apiRes = await adapter.placeOrder(jwtToken, {
+        // 🚀 [COMPLIANCE FIX] Generate an EXIT signal via SignalService
+        const { SignalService } = await import("./SignalService");
+        const signal = await SignalService.createSignal({
+            symbol: position.tradingsymbol,
             exchange: position.exchange,
+            side: exitSide,
             tradingsymbol: position.tradingsymbol,
-            transactiontype: exitSide,
+            price: 0, 
             quantity: position.quantity,
-            ordertype: "MARKET",
-            symboltoken: position.symboltoken,
-            producttype: (position.productType || "INTRADAY") as any
+            strategy: position.strategy || "WATCHDOG_EXIT",
+            signalType: "EXIT",
         });
 
-        if (apiRes && (apiRes.status === true || apiRes.status === "success")) {
-            // Update DB
-            position.status = "CLOSED";
-            position.exitPrice = 0;
-            position.exitAt = new Date();
-            position.exitOrderId = apiRes.data?.orderid;
-            await position.save();
-            log.info(`✅ Auto-Exit Success: ${position.tradingsymbol}`);
-        } else {
-            const errCode = apiRes?.errorcode || apiRes?.errorCode;
-            const errMsg = apiRes?.message || "Unknown API Error";
-
-            if (errCode === "AG8001") {
-                log.error(`❌ Session Expired for ${position.clientcode}: Please Re-Connect Broker.`);
-            } else if (errCode === "AB4014") {
-                log.error(`❌ Lot Size Mismatch for ${position.tradingsymbol}: Broker rejected qty ${position.quantity}. Closing in DB to prevent loop.`);
-                // Mark as failed to avoid infinite loop
-                position.status = "FAILED";
-                position.remarks = `Exit failed: ${errMsg}`;
-                await position.save();
-            } else {
-                log.error(`❌ Auto-Exit Failed API: ${JSON.stringify(apiRes)}`);
-            }
+        if (signal) {
+            log.info(`✅ Watchdog: Push EXIT signal for ${position.tradingsymbol} (${reason})`);
+            // We don't mark as CLOSED here because the user device needs to execute it first.
+            // However, to prevent signal spamming, we might want to mark it as 'EXIT_SIGNALED' 
+            // but for now, the 60s dedup in SignalService.createSignal handles rapid loops.
         }
     } catch (err: any) {
-        log.error(`❌ Auto-Exit Exception: ${err.message}`);
+        log.error(`❌ Watchdog Exit Signal Error: ${err.message}`);
     }
 }

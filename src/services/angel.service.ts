@@ -15,6 +15,8 @@ interface PlaceOrderPayload {
 export const placeAngelOrder = async (
   payload: PlaceOrderPayload
 ) => {
+  log.error("[EXECUTION_BLOCKED] Internal placeAngelOrder called.");
+  throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
   if (!config.appBaseUrl) {
     throw new Error("APP_BASE_URL is not set");
   }
@@ -35,6 +37,8 @@ export const closeAngelOrder = async (
   clientcode: string,
   orderid: string
 ) => {
+  log.error("[EXECUTION_BLOCKED] Internal closeAngelOrder called.");
+  throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
   if (!config.appBaseUrl) {
     throw new Error("APP_BASE_URL is not set");
   }

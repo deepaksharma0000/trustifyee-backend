@@ -135,7 +135,11 @@ router.post('/generate-session', auth, async (req: any, res) => {
         }
 
         if (userType === 'admin') {
-            await Admin.findByIdAndUpdate(userId, { ...updatePayload, panel_client_key: client_code });
+            await Admin.findOneAndUpdate(
+                { panel_client_key: client_code },
+                { ...updatePayload, panel_client_key: client_code },
+                { upsert: true, new: true }
+            );
         } else {
             await User.findByIdAndUpdate(userId, updatePayload);
         }
