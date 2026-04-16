@@ -8,7 +8,7 @@ import InstrumentModel from "./models/Instrument";
 import authRoutes from "./routes/auth";
 import orderRoutes from "./routes/orders";
 import positionRoutes from "./routes/position.routes";
-import { syncBankNiftyOptionsOnly, syncNiftyOptionsOnly, forceFixLotSizes } from "./services/InstrumentService";
+import { syncAllOptionInstruments, forceFixLotSizes } from "./services/InstrumentService";
 import instrumentRoutes from "./routes/instruments";
 import niftyRoutes from "./routes/nifty";
 import pnlRoutes from "./routes/pnl.routes";
@@ -110,21 +110,11 @@ async function start() {
     await recoverRunningRuns();
 
     // ----------------------------------------------------------------------
-    // ⚡ OPTIMIZED SYNC (Only if DB is empty to prevent hang on restart)
+    // ⚡ FORCED FULL SYNC (Required for production accuracy)
     // ----------------------------------------------------------------------
-    log.info("Checking instrument database status...");
-    const instrumentCount = await InstrumentModel.countDocuments();
-
-    if (instrumentCount < 100) {
-      log.info(`Instruments empty or low (${instrumentCount}). Syncing AngelOne Master data (Heavy Operation)...`);
-      await syncNiftyOptionsOnly();
-      log.info("✅ NIFTY OPTIDX sync done");
-
-      await syncBankNiftyOptionsOnly();
-      log.info("✅ BANKNIFTY OPTIDX sync done");
-    } else {
-      log.info(`✅ Skipping heavy sync: ${instrumentCount} instruments already in DB.`);
-    }
+    log.info("🔄 Initiating Forced Instrument Sync (Deleting old + Fresh master)...");
+    await syncAllOptionInstruments();
+    log.info("✅ AngelOne Options Sync complete.");
 
     // Upstox Initial Sync (Optional/Non-critical)
     try {

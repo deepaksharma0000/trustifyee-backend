@@ -9,30 +9,39 @@ const MASTER_URL =
 
 
 export async function syncAllOptionInstruments() {
-  log.info("[HTTP_AGENT] AngelOne Master Sync forced to family: 4");
+  log.info("[HTTP_AGENT] AngelOne Master Sync forced. Clearing old records...");
+  
+  // 🚀 1. Delete all existing records (Force Full Resync)
+  await InstrumentModel.deleteMany({});
+  log.info("[Sync] Database cleared. Fetching fresh master from Angel...");
+
   const { data } = await axios.get<any[]>(MASTER_URL, {
     httpsAgent: ipv4Agent
   });
 
   const targetIndices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50", "BANKEX"];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const bulk = data
-    .filter(r =>
-      r.exch_seg === "NFO" &&
-      r.instrumenttype === "OPTIDX" &&
-      targetIndices.includes(r.name) &&
-      r.strike &&
-      !isNaN(Number(r.strike))
-    )
+    .filter(r => {
+      // 🚀 2. Correct exchange and type mapping
+      const isTarget = r.exch_seg === "NFO" && r.instrumenttype === "OPTIDX" && targetIndices.includes(r.name);
+      
+      // 🚀 3. Correct expiry filtering (Today or later)
+      const expiryDate = new Date(r.expiry);
+      const isActive = expiryDate >= today;
+
+      return isTarget && isActive && r.strike && !isNaN(Number(r.strike));
+    })
     .map(r => {
       const rawStrike = Number(r.strike);
       const normalizedStrike = rawStrike / 100;
       
-      // CRITICAL: Pure dynamic lot size from Broker API with Custom Overrides
       let lotSize = Number(r.lotsize);
       
-      // 🛠️ Apply Production Overrides as per User Request
-      if (r.name === "NIFTY") lotSize = 65;
+      // 🛠️ Overrides (As per system standards)
+      if (r.name === "NIFTY") lotSize = 65; 
       if (r.name === "BANKNIFTY") lotSize = 30;
       if (r.name === "FINNIFTY") lotSize = 60;
 
@@ -58,8 +67,14 @@ export async function syncAllOptionInstruments() {
     });
 
   if (bulk.length) {
+    // 🚀 4. Log valid tokens sample
+    const sampleTokens = bulk.slice(0, 5).map(b => b.updateOne.update.$set.tradingsymbol);
+    log.info(`VALID_TOKENS_SAMPLE: ${JSON.stringify(sampleTokens)}`);
+
     await InstrumentModel.bulkWrite(bulk);
-    log.info(`[Sync] Dynamic sync complete. Processed ${bulk.length} instruments with overridden lot sizes (Nifty:65, BN:30, FN:60).`);
+    log.info(`[Sync] Full sync complete. Processed ${bulk.length} active options.`);
+  } else {
+      log.warn("[Sync] No active options found in master list!");
   }
 }
 

@@ -116,6 +116,7 @@ async function getLtpInternal(jwtToken: string, exchange: string, symbol: string
 }
 
 export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY"): Promise<number> {
+    log.info(`[LTP_FLOW_TRIGGERED] Fetching index LTP for ${indexName}`);
     const cacheKey = `INDEX:${indexName}`;
     const now = Date.now();
     const cached = ltpCache.get(cacheKey);
@@ -154,10 +155,12 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                 }
 
                 if (resp && resp.status === 200 && resp.data) {
-                    const ltp = Number(resp.data.ltp);
+                    const ltp = Number(resp.data.ltp || resp.data.lastPrice || 0);
                     if (!Number.isNaN(ltp) && ltp > 0) {
                         ltpCache.set(cacheKey, { ltp, ts: now });
                         return ltp;
+                    } else if (ltp === 0) {
+                        log.warn(`[INDEX_ZERO_LTP] Received 0 for ${indexName}. Raw: ${JSON.stringify(resp.data)}`);
                     }
                 }
                 if (resp && isRateLimitError(resp)) {
@@ -263,10 +266,12 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
                     }
 
                     if (resp && resp.status === 200 && resp.data) {
-                        const ltp = Number(resp.data.ltp);
+                        const ltp = Number(resp.data.ltp || resp.data.lastPrice || 0);
                         if (!Number.isNaN(ltp) && ltp > 0) {
                             ltpCache.set(cacheKey, { ltp, ts: now });
                             return ltp;
+                        } else if (ltp === 0) {
+                            log.warn(`[INSTRUMENT_ZERO_LTP] Received 0 for ${tradingsymbol}. Raw: ${JSON.stringify(resp.data)}`);
                         }
                     }
                     if (resp && isRateLimitError(resp)) {
@@ -327,10 +332,16 @@ export async function getMultipleInstrumentsLtp(payload: Record<string, string[]
                 if (resp && resp.status === 200 && resp.data) {
                     const fetched = Array.isArray(resp.data) ? resp.data : (resp.data.fetched || []);
                     fetched.forEach((item: any) => {
-                        const ltp = Number(item.ltp || item.lastPrice || 0);
-                        if (ltp > 0) {
-                            results[item.symbolToken] = ltp;
-                            ltpCache.set(`${item.exchange}:${item.symbolToken}`, { ltp, ts: now });
+                        const ltp = Number(item.ltp || 0);
+                        const lastPrice = Number(item.lastPrice || 0);
+                        const close = Number(item.close || 0);
+                        
+                        const finalLtp = ltp || lastPrice || close || 0;
+                        if (finalLtp > 0) {
+                            results[item.symbolToken] = finalLtp;
+                            ltpCache.set(`${item.exchange}:${item.symbolToken}`, { ltp: finalLtp, ts: now });
+                        } else {
+                            log.error(`[BATCH_ZERO_LTP] Token ${item.symbolToken} is 0. Raw: ${JSON.stringify(item)}`);
                         }
                     });
                 }

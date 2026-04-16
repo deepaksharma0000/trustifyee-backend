@@ -1,8 +1,10 @@
 import moment from "moment-timezone";
 import InstrumentModel from "../models/Instrument";
 import { config } from "../config";
+import log from "../utils/logger";
 import { getATMStrike } from "../utils/optionUtils";
 import { getLiveIndexLtp, getLastIndexLtp } from "./MarketDataService";
+import { DataFeedService } from "./DataFeedService";
 
 function formatIstDate(date: Date) {
   return moment(date).tz("Asia/Kolkata").format("YYYY-MM-DD");
@@ -36,12 +38,14 @@ export async function getOptionChain(
 ) {
   const cacheKey = `${symbol}|${expiry || "NEAREST"}|${strikeRange}`;
   const now = Date.now();
+  /* 🚀 Temporary: Disable cache to debug LTP flow
   if (optionChainCache.has(cacheKey)) {
     const cached = optionChainCache.get(cacheKey)!;
     if (now - cached.ts < OPTION_CHAIN_CACHE_MS) {
       return cached.data;
     }
   }
+  */
 
   // 1. Fetch live or fallback LTP
   let currentLtp = await getLiveIndexLtp(symbol);
@@ -153,15 +157,18 @@ export async function getOptionChain(
     .select("tradingsymbol strike optiontype expiry symboltoken")
     .lean();
 
-  // 🚀 [LIVE DATA FIX] Fetch LTP for all option legs in this chain
-  const { dataFeedService } = await import("./DataFeedService");
-  const tokensToFetch = options.map((o: any) => o.symboltoken);
-  const ltpMap = await dataFeedService.getLTPBatch({ "NFO": tokensToFetch });
+  // 🚀 [FORCE DEBUG]
+  log.info(`[LTP_FLOW_TRIGGERED] Fetching chain for ${symbol}...`);
 
-  // Map LTP back to the options
+  const symbolsToFetch = options.map((o: any) => o.tradingsymbol);
+  
+  // 🔥 [STRICT] Force resolution via searchScrip for every symbol
+  const ltpMap = await DataFeedService.getLTPBySymbols({ "NFO": symbolsToFetch });
+
+  // Map results back
   const optionsWithLtp = options.map((opt: any) => ({
     ...opt,
-    ltp: ltpMap[opt.symboltoken] || 0
+    ltp: ltpMap[opt.tradingsymbol] || 0
   }));
 
   const response = {

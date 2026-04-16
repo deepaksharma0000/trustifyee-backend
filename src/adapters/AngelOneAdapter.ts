@@ -183,4 +183,10 @@ export class AngelOneAdapter {
     const path = "/rest/secure/angelbroking/order/v1/getOrderStatus/" + orderId;
     return this.authGet(token, path);
   }
+
+  async searchScrip(token: string, exchange: string, searchtext: string) {
+    const path = "/rest/secure/angelbroking/order/v1/searchScrip";
+    const body = { exchange, searchtext };
+    return await this.authPost(token, path, body);
+  }
 }

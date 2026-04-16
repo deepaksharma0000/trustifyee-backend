@@ -97,7 +97,18 @@ router.post('/generate-session', auth, async (req: any, res) => {
             });
         }
 
-        const { jwtToken, refreshToken, feedToken } = loginResp.data;
+        // 🚀 CORRECT EXTRACTION: loginResp.data.data (Axios body > SmartAPI data object)
+        const tokenData = loginResp.data.data;
+        const { jwtToken, refreshToken, feedToken } = tokenData;
+
+        if (!jwtToken) {
+            log.error(`[AUTH] Login success but tokens missing in body for ${client_code}`);
+            return res.status(500).json({ status: false, error: "Broker response missing tokens" });
+        }
+
+        // 🚀 SESSION INJECTION: Pass the active session to DataFeedService immediately
+        const { DataFeedService } = await import("../services/DataFeedService");
+        DataFeedService.setSession(jwtToken, decryptedApiKey);
 
         // Step 8: Save tokens to DB
         await AngelTokensModel.findOneAndUpdate(

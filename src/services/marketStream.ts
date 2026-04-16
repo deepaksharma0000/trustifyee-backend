@@ -102,45 +102,73 @@ export function startMarketStream(server: any) {
           const angelItems = limitedItems.filter(item => !item.symboltoken.includes("|") && item.symboltoken.length <= 20);
           const upstoxItems = limitedItems.filter(item => item.symboltoken.includes("|") || item.symboltoken.length > 20);
 
-          // Handle AngelOne Batched
+          // Handle AngelOne Batched (Dynamic Resolution)
           if (angelItems.length > 0 && jwtToken) {
-            if (!angelSession.apiKey) throw new Error(`API Key missing for ${angelSession.clientcode}`);
-            const sessionApiKey = decrypt(angelSession.apiKey, `market_stream_${angelSession.clientcode}`);
-            const angelAdapter = new AngelOneAdapter(sessionApiKey);
+            const { DataFeedService } = require("./DataFeedService");
             try {
-              const exchangeTokens: Record<string, string[]> = {};
+              const exchangeSymbols: Record<string, string[]> = {};
+              const symbolToOrigItem: Record<string, any> = {};
+
               angelItems.forEach(item => {
-                if (!exchangeTokens[item.exchange]) exchangeTokens[item.exchange] = [];
-                exchangeTokens[item.exchange].push(item.symboltoken);
+                if (!exchangeSymbols[item.exchange]) exchangeSymbols[item.exchange] = [];
+                exchangeSymbols[item.exchange].push(item.tradingsymbol);
+                symbolToOrigItem[item.tradingsymbol] = item;
               });
 
-              let resp = await angelAdapter.getMarketData(jwtToken, "FULL", exchangeTokens);
+              // 🛡️ Resolve Symbols to Tokens dynamically
+              const resolvedMap: Record<string, string[]> = {};
+              for (const ex in exchangeSymbols) {
+                  const resolved = await DataFeedService.resolveSymbols(ex, exchangeSymbols[ex]);
+                  resolvedMap[ex] = Object.values(resolved);
+              }
+
+              if (Object.keys(resolvedMap).length === 0) return;
+
+              if (!angelSession.apiKey) throw new Error(`API Key missing for ${angelSession.clientcode}`);
+              const sessionApiKey = decrypt(angelSession.apiKey, `market_stream_${angelSession.clientcode}`);
+              const angelAdapter = new AngelOneAdapter(sessionApiKey);
+
+              let resp = await angelAdapter.getMarketData(jwtToken, "FULL", resolvedMap);
+
+              // 🔍 [DEBUG] RAW WS QUOTE RESPONSE
+              if (resp?.data) {
+                log.info(`[WS_QUOTE_DATA] Total fetched: ${resp.data.fetched?.length || 0}`);
+              }
 
               if (isInvalidTokenResponse(resp)) {
                 log.info(`[MarketStream] Token invalid for ${angelSession.clientcode}, refreshing...`);
                 const refreshed = await refreshAngelSession(angelSession, angelAdapter);
                 jwtToken = refreshed.jwtToken;
-                resp = await angelAdapter.getMarketData(jwtToken, "FULL", exchangeTokens);
+                resp = await angelAdapter.getMarketData(jwtToken, "FULL", resolvedMap);
               }
 
               if (resp && resp.status === 200 && resp.data && resp.data.fetched) {
                 resp.data.fetched.forEach((data: any) => {
                   const token = data.symbolToken;
                   const ltp = Number(data.ltp || 0);
-                  const close = Number(data.close || ltp);
+                  const lastPrice = Number(data.lastPrice || 0);
+                  const close = Number(data.close || ltp || lastPrice || 0);
+                  
+                  // Fallback Logic
+                  let finalLtp = ltp || lastPrice || close || 0;
+                  
+                  if (finalLtp === 0) {
+                     log.error(`[WS_ZERO_LTP] Token ${token} still 0. Raw: ${JSON.stringify(data)}`);
+                  }
+
                   const oi = Number(data.oi || data.openInterest || 0);
                   const volume = Number(data.volume || data.tradeVolume || 0);
                   let percentChange = Number(data.percentChange || 0);
 
-                  // Fallback: Calculate percentChange if it's 0 but there's a difference between ltp and close
-                  if (percentChange === 0 && ltp !== 0 && close !== 0 && ltp !== close) {
-                    percentChange = Number((((ltp - close) / close) * 100).toFixed(2));
+                  // Fallback: Calculate percentChange if it's 0 but there's a difference between finalLtp and close
+                  if (percentChange === 0 && finalLtp !== 0 && close !== 0 && finalLtp !== close) {
+                    percentChange = Number((((finalLtp - close) / close) * 100).toFixed(2));
                   }
 
-                  quoteCache.set(token, { ltp, oi, ts: Date.now(), volume, percentChange } as any);
+                  quoteCache.set(token, { ltp: finalLtp, oi, ts: Date.now(), volume, percentChange } as any);
                   results.push({
                     symboltoken: token,
-                    ltp,
+                    ltp: finalLtp,
                     oi,
                     volume,
                     percentChange,
