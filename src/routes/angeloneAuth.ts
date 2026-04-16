@@ -38,24 +38,39 @@ router.post('/generate-session', auth, async (req: any, res) => {
             password = await ensureEncrypted(profile, 'broker_password', `user_${userId}`);
         }
 
-        // Step 4: Resolve API Key (Request Body > Decrypted Profile)
-        let decryptedApiKey = "";
+        // Step 4: Resolve API Key (Request Body > User Profile > Env Config)
+        let resolvedApiKey = "";
         let keySource = 'None';
-        if (req.body.api_key) {
-            decryptedApiKey = req.body.api_key;
-            keySource = 'Request Body';
-        } else if (profile.api_key) {
-            decryptedApiKey = await ensureEncrypted(profile, 'api_key', `user_${userId}`);
-            keySource = 'User Profile';
+
+        const bodyApiKey = typeof req.body.api_key === 'string' ? req.body.api_key.trim() : "";
+        const profileApiKey = profile.api_key ? await ensureEncrypted(profile, 'api_key', `user_${userId}`) : "";
+        const envApiKey = config.angelApiKey || "";
+
+        if (bodyApiKey) {
+            resolvedApiKey = bodyApiKey;
+            keySource = 'USER';
+        } else if (profileApiKey) {
+            resolvedApiKey = profileApiKey;
+            keySource = 'USER';
+        } else if (envApiKey) {
+            resolvedApiKey = envApiKey;
+            keySource = 'SYSTEM';
+            log.info(`[API_KEY_SOURCE] SYSTEM | Injecting global key for ${client_code}`);
         }
 
-        if (!decryptedApiKey) {
+        if (!resolvedApiKey) {
             log.error(`[AUTH] generate-session failed: API Key missing for user ${userId}`);
             return res.status(400).json({ 
                 status: false, 
-                error: 'AngelOne API Key is missing. Please provide it in the request or your user profile.' 
+                error: 'AngelOne API Key is missing. Please provide it in the request or contact system administrator.' 
             });
         }
+        
+        if (keySource === 'USER') {
+            log.info(`[API_KEY_SOURCE] USER (masked) | Using provided key for ${client_code}`);
+        }
+        
+        const decryptedApiKey = resolvedApiKey; // For clarity with existing code
 
         // Step 5: Resolve TOTP (Request Body TOTP > Request Body Secret > Profile Secret)
         let totp: string = req.body.totp || '';
@@ -87,23 +102,29 @@ router.post('/generate-session', auth, async (req: any, res) => {
             totp_secret: totp_secret ?? ''
         });
 
-        if (!loginResp || loginResp.status !== 200 || !loginResp.data) {
+        if (!loginResp || loginResp.status !== 200 || !loginResp.data || loginResp.data.status !== true) {
             // Provide specific error from broker
             const brokerMsg = loginResp.data?.message || 'Login failed';
             log.error(`[AUTH] AngelOne rejected login for ${client_code}: ${brokerMsg}`);
             return res.status(401).json({
                 status: false,
-                error: `Broker Error: ${brokerMsg}. Please check: 1) Client Code correct? 2) Password correct? 3) TOTP valid (use current 6-digit code)?`
+                error: `Broker Error: ${brokerMsg}. Please check: 1) Client Code correct? 2) Password correct? 3) TOTP valid?`
             });
         }
 
         // 🚀 CORRECT EXTRACTION: loginResp.data.data (Axios body > SmartAPI data object)
         const tokenData = loginResp.data.data;
+        
+        if (!tokenData) {
+            log.error(`[AUTH] Login success but data object is null for ${client_code}`);
+            return res.status(500).json({ status: false, error: "Broker returned success but no token data. Please try again." });
+        }
+
         const { jwtToken, refreshToken, feedToken } = tokenData;
 
         if (!jwtToken) {
-            log.error(`[AUTH] Login success but tokens missing in body for ${client_code}`);
-            return res.status(500).json({ status: false, error: "Broker response missing tokens" });
+            log.error(`[AUTH] Login success but jwtToken missing in data for ${client_code}`);
+            return res.status(500).json({ status: false, error: "Broker response missing JWT token" });
         }
 
         // 🚀 SESSION INJECTION: Pass the active session to DataFeedService immediately
