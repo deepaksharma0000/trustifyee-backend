@@ -86,13 +86,14 @@ router.get("/me", auth, async (req: any, res) => {
 router.post("/angel/login", auth, async (req: any, res) => {
   try {
     const { clientcode, password, totp } = req.body;
+    const userId = req.id;
 
     if (!clientcode || !password) {
       return res.status(400).json({ ok: false, error: "Client code and password required" });
     }
 
     // 🚀 [LAZY ADAPTER]
-    const user = await User.findById(req.id) || await Admin.findById(req.id);
+    const user = await User.findById(userId) || await Admin.findById(userId);
     const apiKey = req.body.api_key || (user ? decrypt(user.api_key || "") : "");
     if (!apiKey) return res.status(400).json({ ok: false, error: "API Key missing. Please provide it." });
 
@@ -102,7 +103,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
     const resp: AngelSessionResp = await adapter.generateSession({ clientcode, password, totp });
 
     if (!resp || resp.status !== 200 || resp.data == null) {
-      log.error("Angel login failed:", resp);
+      log.error(`[ANGEL_LOGIN] Failed for User ID: ${userId}, Client: ${clientcode}, Reason:`, resp?.message || "Unknown");
       return res.status(401).json({
         ok: false,
         error: resp?.message || "Angel login failed",
@@ -119,8 +120,6 @@ router.post("/angel/login", auth, async (req: any, res) => {
       log.error("No jwtToken found in Angel response:", resp);
       return res.status(500).json({ ok: false, error: "Missing jwtToken in Angel response" });
     }
-
-    const userId = req.id;
 
     // Save tokens
     await AngelTokensModel.findOneAndUpdate(
@@ -141,7 +140,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
       await req.user.save();
     }
 
-    log.info(`Angel One session created for ${clientcode}`);
+    log.info(`[ANGEL_LOGIN] ✅ Session successfully created for User ID: ${userId}, Client: ${clientcode}`);
 
     return res.json({ ok: true, data: tokensData });
   } catch (err: any) {

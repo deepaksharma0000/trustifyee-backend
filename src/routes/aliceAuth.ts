@@ -58,7 +58,7 @@ router.get("/auth/callback", async (req, res) => {
     const data = await aliceAdapter.getSessionFromAuthCode(authCode, aliceUserId);
 
     if (data.stat !== "Ok" || !data.userSession) {
-      log.error("Alice getUserDetails failed:", data);
+      log.error(`[ALICE_AUTH] login failed for Client: ${clientcode}, Reason: ${data.emsg || "Unknown error"}`);
       return res
         .status(400)
         .send(`Alice login failed: ${data.emsg || "Unknown error"}`);
@@ -105,7 +105,7 @@ router.get("/auth/callback", async (req, res) => {
       );
     }
 
-    log.debug("Saved Alice session and updated User profile for:", clientcode);
+    log.info(`[ALICE_AUTH] ✅ Saved Alice session and updated User profile for: ${clientcode}`);
 
     // Redirect back to frontend dashboard
     return res.redirect(`${config.frontendUrl}/dashboard?broker_login=success&broker=AliceBlue`);

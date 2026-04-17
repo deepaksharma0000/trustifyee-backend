@@ -23,8 +23,13 @@ router.post('/generate-session', auth, async (req: any, res) => {
             : await User.findById(userId);
  
         if (!profile) {
+            log.error(`[AUTH] generate-session failed: User ${userId} not found`);
             throw new Error("User not found");
         }
+
+        const username = (profile as any).user_name || (profile as any).full_name || "Unknown";
+        const licence = (profile as any).licence || "N/A";
+        log.info(`[AUTH] Broker connect initiated: User=${username}, Licence=${licence}, ID=${userId}`);
 
         // Step 2: Resolve client_code (Request Body > Decrypted Profile)
         let client_code: string = req.body.client_code || '';
@@ -105,7 +110,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
         if (!loginResp || loginResp.status !== 200 || !loginResp.data || loginResp.data.status !== true) {
             // Provide specific error from broker
             const brokerMsg = loginResp.data?.message || 'Login failed';
-            log.error(`[AUTH] AngelOne rejected login for ${client_code}: ${brokerMsg}`);
+            log.error(`[AUTH] AngelOne rejected login for ${username} (${client_code}): ${brokerMsg}`);
             return res.status(401).json({
                 status: false,
                 error: `Broker Error: ${brokerMsg}. Please check: 1) Client Code correct? 2) Password correct? 3) TOTP valid?`
@@ -176,7 +181,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
             await User.updateOne({ _id: userId }, updatePayload);
         }
 
-        log.info(`[AUTH] ✅ Session generated successfully for ${client_code} (${userType})`);
+        log.info(`[AUTH] ✅ Session generated successfully for ${username} (${client_code}) [${userType}]`);
         return res.json({
             status: true,
             message: 'Broker connected successfully!',

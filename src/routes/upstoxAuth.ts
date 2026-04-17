@@ -64,7 +64,7 @@ router.get("/callback", async (req, res) => {
       { upsert: true, new: true }
     );
 
-    log.info("Upstox login successful for user:", tokenResp.user_id);
+    log.info(`[UPSTOX_AUTH] ✅ Upstox login successful for User: ${tokenResp.user_id} (${tokenResp.user_name})`);
 
     // You can redirect to your frontend or return JSON
     return res.json({
@@ -80,7 +80,7 @@ router.get("/callback", async (req, res) => {
     });
 
   } catch (err: any) {
-    log.error("Upstox callback error:", err.message || err);
+    log.error(`[UPSTOX_AUTH] Callback error for code ${code}:`, err.message || err);
     return res.status(500).json({
       ok: false,
       error: err.message || "Authentication failed"

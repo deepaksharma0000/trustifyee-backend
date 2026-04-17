@@ -283,6 +283,8 @@ export const loginUser = async (req: Request, res: Response) => {
         user.is_online = true;
         await user.save();
 
+        console.log(`[LOGIN_SUCCESS] User: ${user.user_name}, Licence: ${user.licence}, ID: ${user._id}`);
+
         const accessToken = generateAccessToken(user._id, 'user');
         const refreshToken = generateRefreshToken(user._id, 'user');
 
