@@ -84,9 +84,9 @@ router.get("/me", auth, async (req: any, res) => {
 //  Angel One Login (Password + TOTP) - Trading APIs
 // --------------------------------------------------------------------------
 router.post("/angel/login", auth, async (req: any, res) => {
+  const userId = req.id;
   try {
     const { clientcode, password, totp } = req.body;
-    const userId = req.id;
 
     if (!clientcode || !password) {
       return res.status(400).json({ ok: false, error: "Client code and password required" });
@@ -144,7 +144,10 @@ router.post("/angel/login", auth, async (req: any, res) => {
 
     return res.json({ ok: true, data: tokensData });
   } catch (err: any) {
-    log.error("Angel login error", err);
+    log.error(`[ANGEL_LOGIN_EXCEPTION] Error for User ID ${userId}:`, err.message);
+    if (err.response) {
+      log.error(`[ANGEL_LOGIN_EXCEPTION] Broker HTTP Status: ${err.response.status} | Data: ${JSON.stringify(err.response.data)}`);
+    }
     return res.status(500).json({ ok: false, error: err.message });
   }
 });

@@ -15,8 +15,14 @@ const router = express.Router();
 router.post('/generate-session', auth, async (req: any, res) => {
     const userId = req.id;
     const userType = req.userType;
+    let username = "Unknown";
+    let licence = "N/A";
 
     try {
+        log.info(`[AUTH_DEBUG] Broker connect route reached. Method: ${req.method}, Path: ${req.path}`);
+        log.info(`[AUTH_DEBUG] Request Head: ${JSON.stringify({ userId, userType, ip: req.ip })}`);
+        log.info(`[AUTH_DEBUG] Request Body (keys): ${Object.keys(req.body).join(', ')}`);
+
         // Step 1: Load profile from DB
         const profile = userType === 'admin'
             ? await Admin.findById(userId)
@@ -27,8 +33,8 @@ router.post('/generate-session', auth, async (req: any, res) => {
             throw new Error("User not found");
         }
 
-        const username = (profile as any).user_name || (profile as any).full_name || "Unknown";
-        const licence = (profile as any).licence || "N/A";
+        username = (profile as any).user_name || (profile as any).full_name || "Unknown";
+        licence = (profile as any).licence || "N/A";
         log.info(`[AUTH] Broker connect initiated: User=${username}, Licence=${licence}, ID=${userId}`);
 
         // Step 2: Resolve client_code (Request Body > Decrypted Profile)
@@ -110,7 +116,11 @@ router.post('/generate-session', auth, async (req: any, res) => {
         if (!loginResp || loginResp.status !== 200 || !loginResp.data || loginResp.data.status !== true) {
             // Provide specific error from broker
             const brokerMsg = loginResp.data?.message || 'Login failed';
-            log.error(`[AUTH] AngelOne rejected login for ${username} (${client_code}): ${brokerMsg}`);
+            const brokerCode = loginResp.data?.errorcode || 'NO_CODE';
+            log.error(`[AUTH] AngelOne REJECTED login for ${username} (${client_code}) | Code: ${brokerCode} | Msg: ${brokerMsg}`);
+            
+            // Detailed debug log for the full response object if it's not success
+            log.debug(`[AUTH_DEBUG] Full Broker Error Response: ${JSON.stringify(loginResp.data || {})}`);
             return res.status(401).json({
                 status: false,
                 error: `Broker Error: ${brokerMsg}. Please check: 1) Client Code correct? 2) Password correct? 3) TOTP valid?`
@@ -189,7 +199,10 @@ router.post('/generate-session', auth, async (req: any, res) => {
         });
 
     } catch (error: any) {
-        log.error('[AUTH] generate-session exception:', error.message);
+        log.error(`[AUTH_EXCEPTION] Fatal error for User ${username} (${userId}):`, error.message);
+        if (error.response) {
+            log.error(`[AUTH_EXCEPTION] Broker HTTP Response: ${error.response.status} | Data: ${JSON.stringify(error.response.data)}`);
+        }
         // Surface the real broker error clearly
         const msg = error.message || 'Unknown error';
         return res.status(500).json({

@@ -40,6 +40,7 @@ export class AngelOneAdapter {
 
     if (this.outgoingIp) {
       agentOptions.localAddress = this.outgoingIp;
+      log.info(`[ADAPTER_BIND] Using manual outgoing IP: ${this.outgoingIp}`);
     }
 
     this.client = axios.create({
@@ -48,7 +49,7 @@ export class AngelOneAdapter {
       httpsAgent: this.outgoingIp ? new https.Agent(agentOptions) : ipv4Agent
     });
 
-    log.info(`[DATA_ACCOUNT_USED] Adapter initialized | Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | URL: ${this.forcedBaseUrl}`);
+    log.info(`[DATA_ACCOUNT_USED] Adapter initialized | Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | IP: ${this.outgoingIp || 'SYSTEM_DEFAULT'}`);
 
     // Allow ENV override for token paths
     if (config.genPath) this.tokenPath = config.genPath;
