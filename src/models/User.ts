@@ -29,7 +29,9 @@ export interface IUser extends Document {
     consecutive_failures: number;
     broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
     broker_password?: string; // [NEW] Added for automated session re-sync
-    outgoing_ip?: string; // [NEW] Binding IP for requests
+    outgoing_ip?: string; // Binding IP for requests
+    strategy_id_map?: Map<string, string>; // { 'Alpha': 'STRAT_001', 'IronCondor': 'STRAT_002' }
+
     created_at: Date;
     updated_at: Date;
 }
@@ -63,7 +65,12 @@ const UserSchema: Schema = new Schema({
     consecutive_failures: { type: Number, default: 0 },
     broker_totp_secret: { type: String }, // [NEW] Added for automated TOTP generation
     broker_password: { type: String }, // [NEW] Added for automated session re-sync
-    outgoing_ip: { type: String }, // [NEW] Specific IPv6 for binding requests (to bypass AngelOne IP limits)
+    outgoing_ip: { type: String }, // Static IPv4 assigned to this user
+    strategy_id_map: { type: Map, of: String, default: {} },
+    execution_node_id: { type: String }, // Docker container ID or Node name
+    dedicated_ip_enabled: { type: Boolean, default: false } // Whether user has a dedicated IP environment
+ // Mapping internal strategy names to unique broker Strategy IDs
+
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);

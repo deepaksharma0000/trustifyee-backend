@@ -1,6 +1,7 @@
 // src/adapters/AngelOneAdapter.ts
 import axios, { AxiosInstance } from "axios";
 import https from "https";
+import speakeasy from "speakeasy";
 import { config } from "../config";
 import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
@@ -88,10 +89,30 @@ export class AngelOneAdapter {
     const path = "/rest/auth/angelbroking/user/v1/loginByPassword";
     const fullUrl = `${this.forcedBaseUrl}${path}`;
     
+    // 🛡️ Automated TOTP Generation
+    let finalTotp = credentials.totp;
+    if (!finalTotp && credentials.totp_secret) {
+        try {
+            finalTotp = speakeasy.totp({
+                secret: credentials.totp_secret,
+                encoding: 'base32'
+            });
+            log.info(`[TOTP] Generated auto-TOTP for ${credentials.clientcode}`);
+        } catch (err: any) {
+            log.error(`[TOTP_ERROR] Failed to generate TOTP from secret for ${credentials.clientcode}:`, err.message);
+        }
+    }
+
+    const payload = {
+        clientcode: credentials.clientcode,
+        password: credentials.password,
+        totp: finalTotp
+    };
+
     log.info(`[LOGIN_REQUEST] LOGIN_URL: ${fullUrl} | Account: ${credentials.clientcode}`);
     
     try {
-      const resp = await this.client.post(path, credentials, {
+      const resp = await this.client.post(path, payload, {
         headers: this.baseHeaders(),
       });
       return resp;
@@ -100,6 +121,7 @@ export class AngelOneAdapter {
       throw err;
     }
   }
+
 
   // ------------ OAUTH / PUBLISHER LOGIN FLOW ------------
   async generateSessionByAuthToken(authToken: string): Promise<any> {
@@ -116,9 +138,8 @@ export class AngelOneAdapter {
 
   // ------------ GENERIC AUTHP POST / GET ------------
   async authPost(jwtToken: string, path: string, body?: any) {
-    if (path.includes('/order/v1/placeOrder')) {
-        throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
-    }
+    // Server-side execution enabled via backend worker
+
     // [DATA_FEED GUARD]
     if (this.apiKey === config.dataApiKey && path.includes('/order')) {
         throw new Error("DATA_ACCOUNT_CANNOT_TRADE");

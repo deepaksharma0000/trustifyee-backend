@@ -51,6 +51,11 @@ import { recoverRunningRuns } from "./services/algoEngineV2"; // FIX #8
 import axios from "axios";
 import { startPositionWatchdog } from "./services/PositionManager";
 import { initAutoExitWorker } from "./jobs/AutoExitWorker";
+import { initTradeExecutionWorker } from "./jobs/TradeExecutionWorker";
+
+// Initialize Workers
+initAutoExitWorker();
+initTradeExecutionWorker();
 
 async function updatePublicIp() {
   try {

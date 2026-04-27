@@ -241,116 +241,32 @@ export const broadcastSignal = async (req: Request, res: Response) => {
                         return { userId, status: "skipped", reason: "already_executed" };
                     }
 
-                    let clientcode = user.client_key;
-                    if (!clientcode) {
-                        await SignalExecutionResult.create({
-                            signalId,
-                            userId,
-                            broker: user.broker || "UNKNOWN",
-                            status: "FAILED",
-                            errorMessage: "No client code configured",
-                            executedAt: new Date()
-                        });
-                        return { userId, status: "FAILED", error: "No client code" };
-                    }
-
-                    // Decrypt
-                    try { clientcode = decrypt(clientcode); } catch (e) { }
-
-                    let orderid = "";
-                    let sideRes = signal.side;
-
-                    if (user.licence === "Demo") {
-                        // Capture LTP for Paper trades if no price
-                        let paperEntryPrice = signal.price || 0;
-                        if (paperEntryPrice === 0) {
-                            try {
-                                let symboltoken = "";
-                                const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
-                                if (inst) symboltoken = inst.symboltoken;
-                                else {
-                                    const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
-                                    if (upstoxInst) symboltoken = upstoxInst.instrument_key;
-                                }
-                                if (symboltoken) {
-                                    const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
-                                    if (ltp > 0) paperEntryPrice = ltp;
-                                }
-                            } catch (e: any) { log.warn("Signal paper LTP fetch failed", e.message); }
-                        }
-
-                        orderid = `SIG-PAPER-${Date.now()}-${Math.random()}`;
-                        await Position.create({
-                            userId: user._id,
-                            clientcode,
-                            orderid: orderid,
-                            tradingsymbol: signal.tradingsymbol,
-                            exchange: signal.exchange,
-                            side: signal.side,
-                            quantity: finalQuantity,
-                            entryPrice: paperEntryPrice,
-                            status: "OPEN",
-                            strategy: signal.strategy,
-                            mode: "paper",
-                            signalId: signal._id,
-                            tradeType: "Signal"
-                        });
-                    } else {
-                        // Live Execution
-                        let entryPrice = signal.price;
-                        try {
-                            let symboltoken = "";
-                            const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
-                            if (inst) symboltoken = inst.symboltoken;
-                            else {
-                                const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
-                                if (upstoxInst) symboltoken = upstoxInst.instrument_key;
-                            }
-
-                            if (symboltoken) {
-                                const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
-                                if (ltp > 0) entryPrice = ltp;
-                            }
-                        } catch (e) { }
-
-                        const resp = await placeOrderForClient(user._id, clientcode, {
-                            exchange: signal.exchange,
-                            tradingsymbol: signal.tradingsymbol,
-                            side: signal.side,
-                            transactiontype: signal.side,
-                            quantity: finalQuantity,
-                            ordertype: "MARKET",
-                        });
-
-                        orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `BROKER-${Date.now()}`;
-
-                        await Position.create({
-                            userId: user._id,
-                            clientcode,
-                            orderid,
-                            tradingsymbol: signal.tradingsymbol,
-                            exchange: signal.exchange,
-                            side: signal.side,
-                            quantity: finalQuantity,
-                            entryPrice: entryPrice,
-                            status: "OPEN",
-                            strategy: signal.strategy,
-                            mode: "live",
-                            signalId: signal._id,
-                            symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.instrument_key
-                        });
-                    }
-
-                    // 5. Track Success
-                    await SignalExecutionResult.create({
-                        signalId,
-                        userId,
-                        broker: user.broker || "ANGELONE",
-                        orderId: orderid,
-                        status: "SUCCESS",
-                        executedAt: new Date()
+                    // 7. Enqueue for ISOLATED Backend Execution (Per-User Node)
+                    const { Queue } = require("bullmq");
+                    const userQueue = new Queue(`trade-execution:${userId}`, {
+                        connection: { host: process.env.REDIS_HOST || "127.0.0.1", port: 6379 }
                     });
-                    return { userId, status: "SUCCESS", orderid };
+
+                    await userQueue.add(`trade-${userId}-${signalId}`, {
+                        userId,
+                        signalId,
+                        clientCode: clientcode,
+                        orderData: {
+                            exchange: signal.exchange,
+                            tradingsymbol: signal.tradingsymbol,
+                            side: signal.side,
+                            quantity: finalQuantity,
+                            strategy: signal.strategy,
+                            symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken
+                        }
+                    }, {
+                        attempts: 2,
+                        backoff: { type: 'exponential', delay: 2000 }
+                    });
+
+                    return { userId, status: "ENQUEUED_TO_NODE", signalId };
+
+
 
                 } catch (err: any) {
                     // 6. Track Failure
