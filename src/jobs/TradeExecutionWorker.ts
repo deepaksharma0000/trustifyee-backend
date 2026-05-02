@@ -1,85 +1,110 @@
-import { Worker, Queue } from "bullmq";
-import { Position } from "../models/Position.model";
-import { placeOrderForClient } from "../services/OrderService";
+// src/jobs/TradeExecutionWorker.ts
+import { Worker } from "bullmq";
+import { redisConnection } from "../utils/redis";
+import { placeOrderForClient, fetchBrokerOrder } from "../services/OrderService";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
-import User from "../models/User";
+import { CircuitBreakerService } from "../services/CircuitBreakerService";
+import { AlertService } from "../services/AlertService";
 import log from "../utils/logger";
 
-const connection = {
-    host: process.env.REDIS_HOST || "127.0.0.1",
-    port: parseInt(process.env.REDIS_PORT || "6379"),
-};
-
-/**
- * Trade Execution Worker
- * Consumes signals and places orders via backend with Static IP binding
- */
 export const initTradeExecutionWorker = () => {
-    try {
-        const worker = new Worker(
-            "trade-execution",
-            async (job) => {
-                const { userId, signalId, orderData } = job.data;
-                log.info(`[TradeWorker] Processing trade for user ${userId}, signal ${signalId}`);
+    const worker = new Worker(
+        "trade-execution",
+        async (job) => {
+            const { userId, signalId, clientOrderId, clientCode, orderData, correlationId } = job.data;
+            const logger = log.child({ correlationId, clientOrderId, userId });
+            const broker = orderData.broker || "ANGELONE";
 
-                const user = await User.findById(userId);
-                if (!user) throw new Error("User not found");
-
-                try {
-                    // Place order via server-side OrderService (now unblocked)
-                    const resp = await placeOrderForClient(userId, user.client_key!, {
-                        ...orderData,
-                        strategyId: user.lot_multipliers?.get(orderData.strategy) || orderData.strategy // Example mapping
-                    });
-
-                    const orderId = resp?.data?.orderid || resp?.data?.data?.orderid || `SIG-${Date.now()}`;
-
-                    // Log Audit Trail
-                    await SignalExecutionResult.create({
-                        signalId,
-                        userId,
-                        broker: user.broker || "ANGELONE",
-                        orderId: orderId,
-                        status: "SUCCESS",
-                        executedAt: new Date(),
-                        ipAddress: process.env.PUBLIC_IP || "SERVER_STATIC_IP"
-                    });
-
-                    log.info(`[TradeWorker] SUCCESS: Order ${orderId} placed for ${user.user_name}`);
-
-                } catch (err: any) {
-                    log.error(`[TradeWorker] FAILED for ${user.user_name}:`, err.message);
-                    
-                    await SignalExecutionResult.create({
-                        signalId,
-                        userId,
-                        broker: user.broker || "ANGELONE",
-                        status: "FAILED",
-                        errorMessage: err.message,
-                        executedAt: new Date(),
-                        ipAddress: process.env.PUBLIC_IP || "SERVER_STATIC_IP"
-                    });
-
-                    throw err; // Trigger BullMQ retry
-                }
-            },
-            { 
-                connection, 
-                lockDuration: 30000,
-                limiter: {
-                    max: 9, // AngelOne 9 orders/sec limit
-                    duration: 1000
-                }
+            // 🛡️ 1. CIRCUIT BREAKER CHECK (Granular: ORDER API)
+            if (!(await CircuitBreakerService.isAvailable(broker, "ORDER"))) {
+                throw new Error("CIRCUIT_BREAKER_OPEN:ORDER");
             }
-        );
 
-        worker.on("completed", (job) => log.debug(`[TradeWorker] Job ${job.id} done`));
-        worker.on("failed", (job, err) => log.error(`[TradeWorker] Job ${job?.id} failed:`, err));
+            try {
+                // 🛡️ 2. FETCH DB STATE
+                const execution = await SignalExecutionResult.findOne({ clientOrderId });
+                if (execution?.status === "SUCCESS") return;
 
-        log.info("[TradeWorker] Trade Execution Worker started (Rate Limit: 9 OPS)");
-    } catch (err) {
-        log.error("[TradeWorker] Critical failure starting worker:", err);
-    }
+                // 🛡️ 3. BROKER CRASH SAFETY CHECK (Check if order already exists at broker)
+                // This handles cases where worker crashed AFTER broker call but BEFORE DB update.
+                try {
+                    const existingOrder = await fetchBrokerOrder(userId, clientCode, clientOrderId);
+                    if (existingOrder && (existingOrder.status === "COMPLETE" || existingOrder.status === "OPEN")) {
+                        logger.warn("Order already exists at broker. Synchronizing state instead of re-trading.");
+                        await SignalExecutionResult.updateOne(
+                            { clientOrderId },
+                            { status: "SUCCESS", orderId: existingOrder.orderid, executedAt: new Date() }
+                        );
+                        return;
+                    }
+                } catch (err) {
+                    // Ignore "Order Not Found" errors from broker, proceed to place order
+                    logger.debug("Order not found at broker, proceeding with fresh placement.");
+                }
+
+                // 🛡️ 4. EXECUTE BROKER ORDER
+                const resp = await placeOrderForClient(userId, clientCode, {
+                    ...orderData,
+                    clientOrderId
+                });
+
+                const orderId = resp?.data?.orderid || resp?.data?.data?.orderid;
+                
+                // 🛡️ 5. LOG BROKER RESPONSE (For User Transparency)
+                const { BrokerResponse } = await import("../models/BrokerResponse");
+                const isRealSuccess = !!orderId && (resp.status === 200 || resp.ok === true);
+
+                await BrokerResponse.create({
+                    userId,
+                    clientcode: clientCode || "UNKNOWN",
+                    tradingsymbol: orderData.tradingsymbol,
+                    orderid: orderId || "REJECTED",
+                    action: "PLACE_ORDER",
+                    status: isRealSuccess ? "SUCCESS" : "REJECTED",
+                    message: isRealSuccess ? "Order placed successfully" : (resp?.message || resp?.data?.message || "Order rejected by broker"),
+                    brokerError: !isRealSuccess ? (resp?.data || resp) : undefined
+                });
+
+                if (!isRealSuccess) throw new Error(resp?.message || resp?.data?.message || "Order failed at broker");
+
+                // 🛡️ 6. COMMIT SUCCESS
+                await SignalExecutionResult.updateOne(
+                    { clientOrderId },
+                    { status: "SUCCESS", orderId, executedAt: new Date() }
+                );
+
+                await CircuitBreakerService.recordSuccess(broker, "ORDER");
+                logger.info(`Trade success: ${orderId}`);
+
+            } catch (err: any) {
+                logger.error(`Execution failed: ${err.message}`);
+                
+                // 🛡️ LOG FAILURE TO BROKER RESPONSE
+                try {
+                    const { BrokerResponse } = await import("../models/BrokerResponse");
+                    await BrokerResponse.create({
+                        userId,
+                        clientcode: clientCode || "UNKNOWN",
+                        tradingsymbol: orderData?.tradingsymbol || "UNKNOWN",
+                        orderid: "REJECTED",
+                        action: "PLACE_ORDER",
+                        status: "REJECTED",
+                        message: err.message || "Order rejected by broker",
+                        brokerError: { error: err.message }
+                    });
+                } catch (logErr) { /* Ignore logging errors */ }
+
+                if (job.attemptsMade >= 3) {
+                    await AlertService.trigger("TRADE_MAX_RETRIES", `Trade for user ${userId} failed after ${job.attemptsMade} attempts. Error: ${err.message}`, "CRITICAL");
+                }
+
+                throw err;
+            }
+        },
+        {
+            connection: redisConnection,
+            concurrency: 5,
+            limiter: { max: 9, duration: 1000 },
+        }
+    );
 };
-
-export const tradeQueue = new Queue("trade-execution", { connection });

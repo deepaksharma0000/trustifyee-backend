@@ -187,12 +187,18 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       quantity: orderPayload.quantity,
       strategy: targetStrategy,
       signalType: req.body.signalType || "ENTRY",
+      executionMode: "SERVER" // 🔥 Inform frontend to skip local execution
     });
+
+    // 🚀 NEW: Trigger Server-Side Execution Engine (Queue + Outbox)
+    const { SignalBroadcastService } = await import("../services/SignalBroadcastService");
+    const broadcastResult = await SignalBroadcastService.broadcast(signal?._id.toString());
 
     return res.json({ 
       ok: true, 
-      message: `Broadcast signal generated for Strategy: ${targetStrategy}. Pushed to all active users.`, 
-      signalId: signal?._id 
+      message: `Broadcast initiated for ${broadcastResult.totalUsers} users.`, 
+      signalId: signal?._id,
+      ...broadcastResult
     });
   } catch (err: any) {
     log.error("place-all signal error", err.message || err);

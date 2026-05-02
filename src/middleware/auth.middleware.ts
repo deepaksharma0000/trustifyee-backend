@@ -12,11 +12,8 @@ async function resetLoginState(type: 'admin' | 'user', token: string, secret: st
         // Decode without verification to get user_id from expired token
         const decoded = jwt.decode(token) as JwtPayload | null;
         if (decoded?.user_id) {
-            if (type === 'user') {
-                await model.updateOne({ _id: decoded.user_id }, { is_login: false, is_online: false });
-            } else {
-                await model.updateOne({ _id: decoded.user_id }, { is_login: false });
-            }
+            // Only reset is_login flag, keep is_online status to prevent UI flickering on token refresh
+            await model.updateOne({ _id: decoded.user_id }, { is_login: false });
         }
     } catch (_e) {
         // Silent — best effort only

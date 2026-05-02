@@ -4,7 +4,7 @@ import { config } from "../config";
 import log from "../utils/logger";
 import { getATMStrike } from "../utils/optionUtils";
 import { getLiveIndexLtp, getLastIndexLtp } from "./MarketDataService";
-import { DataFeedService } from "./DataFeedService";
+import { dataFeedService } from "./DataFeedService";
 
 function formatIstDate(date: Date) {
   return moment(date).tz("Asia/Kolkata").format("YYYY-MM-DD");
@@ -154,16 +154,18 @@ export async function getOptionChain(
     strike: { $in: strikeSet }
   })
     .sort({ expiry: 1 })
-    .select("tradingsymbol strike optiontype expiry symboltoken")
+    .select("tradingsymbol strike optiontype expiry symboltoken exchange")
     .lean();
 
   // 🚀 [FORCE DEBUG]
   log.info(`[LTP_FLOW_TRIGGERED] Fetching chain for ${symbol}...`);
 
-  const symbolsToFetch = options.map((o: any) => o.tradingsymbol);
-  
-  // 🔥 [STRICT] Force resolution via searchScrip for every symbol
-  const ltpMap = await DataFeedService.getLTPBySymbols({ "NFO": symbolsToFetch });
+  // 🔥 [STRICT] Fetch real-time LTP for the entire chain via DataFeedService
+  const ltpMap = await dataFeedService.getBulkLtp(options.map((o: any) => ({
+    exchange: o.exchange,
+    tradingsymbol: o.tradingsymbol,
+    symboltoken: o.symboltoken
+  })));
 
   // Map results back
   const optionsWithLtp = options.map((opt: any) => ({

@@ -67,8 +67,9 @@ export const config = {
 
 // --- STARTUP VALIDATION ---
 export const validateConfig = () => {
-  if (config.executionMode !== "USER_ONLY") {
-    throw new Error("FATAL: EXECUTION_MODE must be set to USER_ONLY for compliance.");
+  const allowedModes = ["USER_ONLY", "SERVER_AUTO"];
+  if (!allowedModes.includes(config.executionMode)) {
+    throw new Error(`FATAL: EXECUTION_MODE must be one of ${allowedModes.join(", ")}`);
   }
   if (!config.encryptionKey) {
     throw new Error("FATAL: ENCRYPTION_SECRET is missing from environment variables.");

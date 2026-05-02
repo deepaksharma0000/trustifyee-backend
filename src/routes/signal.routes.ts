@@ -1,6 +1,6 @@
 import express from 'express';
-import { getAllSignals, getActiveSignals } from '../controllers/SignalController';
-import { executeSignal, broadcastSignal, recordExecutionResult } from '../controllers/SignalComplianceController';
+import { getAllSignals, getActiveSignals, queueExecution, getExecutionStatus, broadcastSignal } from '../controllers/SignalController';
+import { executeSignal, recordExecutionResult } from '../controllers/SignalComplianceController';
 import { auth, adminAuth } from '../middleware/auth.middleware';
 import { SignalService } from '../services/SignalService';
 
@@ -8,7 +8,11 @@ const router = express.Router();
 
 router.get('/all', adminAuth, getAllSignals);
 router.get('/active', auth, getActiveSignals);
-router.post('/execute', auth, executeSignal);
+router.get('/execution-status/:signalId', auth, getExecutionStatus);
+router.post('/execute', auth, executeSignal); // Keep legacy blocked route
+router.post('/queue-execution', auth, queueExecution);
+
+
 router.post('/broadcast', auth, adminAuth, broadcastSignal);
 router.post('/execution-events', auth, recordExecutionResult);
 

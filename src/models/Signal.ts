@@ -14,6 +14,7 @@ export interface ISignal extends Document {
     strategy?: string;
     adminOrderId?: string;
     signalType: "ENTRY" | "EXIT";
+    executionMode: "SERVER" | "CLIENT";
     createdAt: Date;
     updatedAt: Date;
 }
@@ -29,6 +30,7 @@ const SignalSchema = new Schema<ISignal>(
         expiry: { type: Date },
         price: { type: Number, required: true },
         quantity: { type: Number, required: true },
+        executionMode: { type: String, enum: ["SERVER", "CLIENT"], default: "CLIENT" },
         status: { type: String, enum: ["ACTIVE", "EXECUTION_IN_PROGRESS", "CLOSED", "PARTIAL", "FAILED", "EXPIRED"], default: "ACTIVE" },
         strategy: { type: String },
         adminOrderId: { type: String },

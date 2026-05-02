@@ -329,19 +329,21 @@ export async function getMultipleInstrumentsLtp(payload: Record<string, string[]
                 const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
                 const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));
                 
-                if (resp && resp.status === 200 && resp.data) {
-                    const fetched = Array.isArray(resp.data) ? resp.data : (resp.data.fetched || []);
+                if (resp && resp.status === 200 && resp.data && resp.data.data) {
+                    const angelData = resp.data.data;
+                    const fetched = Array.isArray(angelData) ? angelData : (angelData.fetched || []);
+                    
                     fetched.forEach((item: any) => {
                         const ltp = Number(item.ltp || 0);
                         const lastPrice = Number(item.lastPrice || 0);
                         const close = Number(item.close || 0);
                         
                         const finalLtp = ltp || lastPrice || close || 0;
-                        if (finalLtp > 0) {
-                            results[item.symbolToken] = finalLtp;
-                            ltpCache.set(`${item.exchange}:${item.symbolToken}`, { ltp: finalLtp, ts: now });
-                        } else {
-                            log.error(`[BATCH_ZERO_LTP] Token ${item.symbolToken} is 0. Raw: ${JSON.stringify(item)}`);
+                        const token = item.symbolToken || item.symboltoken; // Handle both casings from broker
+
+                        if (finalLtp > 0 && token) {
+                            results[token.toLowerCase()] = finalLtp;
+                            ltpCache.set(`${item.exchange}:${token}`, { ltp: finalLtp, ts: now });
                         }
                     });
                 }

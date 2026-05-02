@@ -24,7 +24,7 @@ export interface IUser extends Document {
     broker_connected: boolean;
     is_online: boolean;
     is_star: boolean;
-    lot_multipliers?: Record<string, number>; // { 'NIFTY': 2, 'BANKNIFTY': 1 }
+    lot_multipliers?: Map<string, number>; // { 'NIFTY': 2, 'BANKNIFTY': 1 }
     trading_paused: boolean;
     consecutive_failures: number;
     broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
@@ -63,14 +63,12 @@ const UserSchema: Schema = new Schema({
     lot_multipliers: { type: Map, of: Number, default: {} },
     trading_paused: { type: Boolean, default: false },
     consecutive_failures: { type: Number, default: 0 },
-    broker_totp_secret: { type: String }, // [NEW] Added for automated TOTP generation
-    broker_password: { type: String }, // [NEW] Added for automated session re-sync
+    broker_totp_secret: { type: String, select: false }, // [SECURE] Hidden by default
+    broker_password: { type: String, select: false }, // [SECURE] Hidden by default
     outgoing_ip: { type: String }, // Static IPv4 assigned to this user
     strategy_id_map: { type: Map, of: String, default: {} },
     execution_node_id: { type: String }, // Docker container ID or Node name
     dedicated_ip_enabled: { type: Boolean, default: false } // Whether user has a dedicated IP environment
- // Mapping internal strategy names to unique broker Strategy IDs
-
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);

@@ -40,6 +40,7 @@ import aliceAuthRoutes from "./routes/aliceAuth";
 import aliceOrderRoutes from "./routes/aliceOrders";
 import aliceInstrumentsRoutes from "./routes/aliceInstruments";
 import { syncPendingOrders } from "./jobs/orderSync.job";
+import marketStatusRoutes from "./routes/marketStatus.routes";
 
 import log from "./utils/logger";
 import cors from "cors";
@@ -105,21 +106,10 @@ async function start() {
 
     // 💹 Initialize dedicated Data Feed Layer
     const { dataFeedService } = require("./services/DataFeedService");
-    try {
-      await dataFeedService.init();
-    } catch (e: any) {
-      log.warn(`[DATA_FEED] Initialization failed, will retry on use: ${e.message}`);
-    }
+    // [FIX] dataFeedService.init is not a function, removing call.
 
     // FIX #8: Recover any AlgoRuns that were "running" before last restart
     await recoverRunningRuns();
-
-    // ----------------------------------------------------------------------
-    // ⚡ FORCED FULL SYNC (Required for production accuracy)
-    // ----------------------------------------------------------------------
-    log.info("🔄 Initiating Forced Instrument Sync (Deleting old + Fresh master)...");
-    await syncAllOptionInstruments();
-    log.info("✅ AngelOne Options Sync complete.");
 
     // Upstox Initial Sync (Optional/Non-critical)
     try {
@@ -159,13 +149,21 @@ async function start() {
     app.use("/api/pnl", pnlRoutes);
     app.use("/api/webhook", webhookRoutes);
 
-    // [NEW] Market Status
-    const marketStatusRoutes = require("./routes/marketStatus.routes").default;
-    app.use("/api/market", marketStatusRoutes);
+    // 🛡️ INITIALIZE PRODUCTION BACKGROUND TASKS
+    const { OutboxService } = require("./services/OutboxService");
+    const { MonitoringService } = require("./services/MonitoringService");
+    
+    // Process Outbox every 2 seconds
+    setInterval(() => OutboxService.processPending(), 2000);
+    
+    // Log Metrics every 1 minute
+    setInterval(() => MonitoringService.logSystemMetrics(), 60000);
 
     setInterval(() => {
       syncPendingOrders();
     }, 5000);
+
+    app.use("/api/market", marketStatusRoutes);
 
     // Upstox
     app.use("/api/upstox/auth", upstoxAuthRoutes);
@@ -200,9 +198,19 @@ async function start() {
     startMarketStream(server);  // LTP stream on /ws/market
     startSignalStream(server);  // FIX #1 — Signal push on /ws/signals
 
-    server.listen(config.port, () =>
-      log.info(`📡 Server listening on port ${config.port}`)
-    );
+    server.listen(config.port, async () => {
+      log.info(`📡 Server listening on port ${config.port}`);
+
+      // ⚡ [BACKGROUND] FORCED FULL SYNC (Required for production accuracy)
+      // Running after listen so health check and login work immediately
+      try {
+        log.info("🔄 [Background] Initiating Forced Instrument Sync...");
+        await syncAllOptionInstruments();
+        log.info("✅ [Background] AngelOne Options Sync complete.");
+      } catch (err: any) {
+        log.error("❌ [Background] Instrument Sync Failed:", err.message);
+      }
+    });
 
   } catch (err: any) {
     log.error("❌ Critical Failure during startup:", err);

@@ -27,6 +27,7 @@ export class SignalService {
     strategy?: string;
     adminOrderId?: string;
     signalType: "ENTRY" | "EXIT";
+    executionMode?: "SERVER" | "CLIENT"; // [NEW] Distinguish execution source
   }) {
     try {
       // ── FIX #7: Dedup check — prevent creating identical signal twice in 60s ──
@@ -72,6 +73,7 @@ export class SignalService {
           quantity: signal.quantity,
           strategy: signal.strategy,
           signalType: signal.signalType,
+          executionMode: signal.executionMode || 'CLIENT', // Default to client if not specified
           createdAt: (signal as any).createdAt,
         },
       });

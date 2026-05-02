@@ -32,15 +32,8 @@ export class ProfileValidationService {
 
             if (profile && profile.status === 200) {
                 // Check for exchange permission
-                // Robust check for F&O permissions
-                const exchanges = (profile.data?.exchanges || []).map((e: string) => e.toUpperCase().trim());
-                const fnoSegments = ["NFO", "NSE_FO", "BFO", "BSE_FO", "MCX_FO", "CDE_FO"];
-                const hasFno = exchanges.some(e => fnoSegments.includes(e));
-
-                if (!hasFno) {
-                    log.warn(`Segment Check Failed for ${clientcode}. Found: [${exchanges.join(",")}] but F&O segments missing.`);
-                    return { status: false, message: "NFO (Options) permission missing in broker profile" };
-                }
+                // [DEPRECATED] Internal segment check removed. Letting broker handle segment validation directly.
+                // profileCache.set(cacheKey, { data: profile.data, timestamp: Date.now() });
 
                 // Cache it
                 profileCache.set(cacheKey, { data: profile.data, timestamp: Date.now() });

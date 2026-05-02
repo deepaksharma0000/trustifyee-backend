@@ -34,35 +34,62 @@ async function startAgent() {
     const worker = new Worker(
         `trade-execution:${userId}`, // Dedicated queue per user
         async (job) => {
-            log.info(`[ExecutionAgent] Executing signal ${job.data.signalId} for user ${userId}`);
+            const { signalId, clientCode, orderData } = job.data;
+            log.info(`[ExecutionAgent] Executing signal ${signalId} | Symbol: ${orderData.tradingsymbol} | Token: ${orderData.symboltoken}`);
 
             try {
-                // The OrderService will use user.outgoing_ip (staticIp) for binding
-                const resp = await placeOrderForClient(userId, job.data.clientCode, {
-                    ...job.data.orderData,
-                    outgoingIp: staticIp // Force binding to the assigned static IP
+                // 🛡️ Pre-Execution Status Update
+                await SignalExecutionResult.findOneAndUpdate(
+                    { signalId, userId },
+                    { status: "QUEUED", executedAt: new Date() },
+                    { upsert: true }
+                );
+
+                // Place order with forced IP binding
+                const resp = await placeOrderForClient(userId, clientCode, {
+                    ...orderData,
+                    outgoingIp: staticIp 
                 });
 
-                await SignalExecutionResult.create({
-                    signalId: job.data.signalId,
-                    userId,
-                    broker: "ANGELONE",
-                    status: "SUCCESS",
-                    orderId: resp?.data?.orderid || "SIG-NODE-001",
-                    ipAddress: staticIp,
-                    nodeId: process.env.HOSTNAME // Docker container ID
-                });
+                const orderId = resp?.data?.orderid || resp?.data?.data?.orderid || "SIG-NODE-001";
+
+                // ✅ SUCCESS Update
+                await SignalExecutionResult.findOneAndUpdate(
+                    { signalId, userId },
+                    { 
+                        status: "SUCCESS", 
+                        orderId, 
+                        ipAddress: staticIp,
+                        brokerResponse: resp?.data,
+                        executedAt: new Date()
+                    }
+                );
+
+                log.info(`[ExecutionAgent] SUCCESS: Order ${orderId} placed for user ${userId}`);
 
             } catch (err: any) {
                 log.error(`[ExecutionAgent] Order Failed: ${err.message}`);
-                throw err;
+
+                // ❌ FAILURE Update
+                await SignalExecutionResult.findOneAndUpdate(
+                    { signalId, userId },
+                    { 
+                        status: "FAILED", 
+                        errorMessage: err.message,
+                        ipAddress: staticIp,
+                        executedAt: new Date()
+                    }
+                );
+
+                throw err; // Trigger BullMQ retry
             }
         },
         { 
             connection,
-            concurrency: 1 // Strict isolation: process one order at a time per user node
+            concurrency: 1 
         }
     );
+
 
     worker.on("failed", (job, err) => {
         log.error(`[ExecutionAgent] Job ${job?.id} failed:`, err);

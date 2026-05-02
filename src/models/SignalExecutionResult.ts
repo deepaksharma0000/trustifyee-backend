@@ -5,9 +5,11 @@ export interface ISignalExecutionResult extends Document {
     userId: Types.ObjectId;
     broker: string;
     orderId?: string;
-    status: "SUCCESS" | "FAILED";
+    status: "PENDING" | "QUEUED" | "SUCCESS" | "FAILED";
     errorMessage?: string;
     executedAt: Date;
+    correlationId?: string;
+
     source?: "USER_DEVICE" | "BACKEND_BLOCKED";
     orderType?: "LIMIT";
     strategyId?: string;
@@ -21,9 +23,12 @@ const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
         userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
         broker: { type: String, required: true },
         orderId: { type: String },
-        status: { type: String, enum: ["SUCCESS", "FAILED"], required: true },
+        clientOrderId: { type: String, required: true, unique: true },
+        status: { type: String, enum: ["PENDING", "QUEUED", "SUCCESS", "FAILED"], required: true },
+
         errorMessage: { type: String },
         executedAt: { type: Date, default: Date.now },
+        correlationId: { type: String },
         source: { type: String, enum: ["USER_DEVICE", "BACKEND_BLOCKED"] },
         orderType: { type: String, enum: ["LIMIT"] },
         strategyId: { type: String },

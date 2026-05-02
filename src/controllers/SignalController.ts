@@ -15,373 +15,197 @@ import mongoose from 'mongoose';
 import pLimit from 'p-limit';
 import { SystemSetting } from '../models/SystemSetting';
 
-export const executeSignal = async (req: Request, res: Response) => {
+export const queueExecution = async (req: Request, res: Response) => {
     try {
         const { signalId, lots } = req.body;
         const userId = (req as any).id;
 
-        // 1. Global Kill Switch Check
-        const globalStatus = await SystemSetting.findOne({ key: 'global_trading_status' }).lean() as any;
-        if (globalStatus && globalStatus.value === "disabled") {
-            return res.status(403).json({ error: "ALL TRADING IS GLOBALLY DISABLED BY ADMIN (KILL SWITCH ACTIVE)", status: false });
-        }
-
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
-        // FIX: Idempotency check — prevent duplicate execution of SAME signal by SAME user
-        const existingExecution = await SignalExecutionResult.findOne({ signalId, userId });
-        if (existingExecution && existingExecution.status === "SUCCESS") {
-            log.warn(`[SignalController] Blocked duplicate execution for user ${userId} on signal ${signalId}`);
-            return res.status(200).json({ 
-                message: "Signal already executed successfully", 
-                status: true, 
-                alreadyExecuted: true 
-            });
+        if (existing) {
+            return res.status(200).json({ status: true, message: "Signal already in queue or executed", currentStatus: existing.status });
         }
 
-
         const signal = await Signal.findById(signalId);
-        if (!signal || signal.status !== "ACTIVE") {
-            return res.status(404).json({ error: "Signal not found or inactive", status: false });
+        if (!signal || signal.status === "FAILED") {
+            return res.status(404).json({ error: "Signal not found or invalid", status: false });
         }
 
         const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ error: "User not found", status: false });
-        }
+        if (!user) return res.status(404).json({ error: "User not found", status: false });
 
-        const isDemo = user.licence === "Demo";
+        // 1. Create Tracking Record (PENDING)
+        await SignalExecutionResult.create({
+            signalId,
+            userId,
+            broker: user.broker || "ANGELONE",
+            status: "PENDING",
+            source: "BACKEND_BLOCKED"
+        });
 
-        if (!isDemo && !user.broker_verified) {
-            return res.status(403).json({ error: "Broker not verified by admin", status: false });
-        }
+        // 2. Enqueue for Execution
+        const { Queue } = require("bullmq");
+        const userQueue = new Queue(`trade-execution`, {
+            connection: { host: process.env.REDIS_HOST || "127.0.0.1", port: 6379 }
+        });
 
-        let client_key = "";
-        if (!isDemo) {
-            client_key = decrypt(user.client_key || "");
-            if (!client_key) return res.status(400).json({ error: "Broker connection details missing", status: false });
-        } else {
-            client_key = decrypt(user.client_key || "") || "DEMO-USER";
-        }
+        // Resolve symboltoken
+        const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
+        const symboltoken = inst?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any)?.instrument_key;
 
-        // Calculate quantity (assuming lot size = 1 if not provided, else multiply)
-        const quantity = (lots || 1) * signal.quantity;
+        log.info(`[SignalController] Queueing signal ${signal.tradingsymbol} for ${user.user_name} (Token: ${symboltoken})`);
 
-        log.info(`Executing signal ${signalId} for user ${user.user_name} (Licence: ${user.licence}) with ${lots} lots`);
-
-        try {
-            // Fetch live LTP
-            let entryPrice = signal.price;
-            let symboltoken = "";
-            try {
-                // Find symboltoken/instrument_key
-                const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
-                if (inst) symboltoken = inst.symboltoken;
-                else {
-                    const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean();
-                    if (upstoxInst) symboltoken = upstoxInst.instrument_key;
-                }
-
-                if (symboltoken) {
-                    const ltp = await getInstrumentLtp(signal.exchange, signal.tradingsymbol, symboltoken);
-                    if (ltp > 0) entryPrice = ltp;
-                }
-            } catch (ltpErr) {
-                log.warn("Could not fetch live LTP for signal execution, using signal price");
-            }
-
-            let orderid = "";
-            let mode = "live";
-
-            if (isDemo) {
-                orderid = `SIG-PAPER-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-                mode = "paper";
-            } else {
-                const resp = await placeOrderForClient(userId, client_key, {
-                    exchange: signal.exchange,
-                    tradingsymbol: signal.tradingsymbol,
-                    side: signal.side,
-                    transactiontype: signal.side,
-                    quantity: quantity,
-                    ordertype: "MARKET",
-                });
-                orderid = resp?.data?.orderid || resp?.data?.data?.orderid || `SIG-${Date.now()}`;
-            }
-
-            const position = await Position.create({
-                userId: userId,
-                clientcode: client_key,
-                orderid: orderid,
-                tradingsymbol: signal.tradingsymbol,
+        await userQueue.add(`exec-${userId}-${signalId}`, {
+            userId,
+            signalId,
+            clientCode: decrypt(user.client_key || ""),
+            orderData: {
                 exchange: signal.exchange,
+                tradingsymbol: signal.tradingsymbol,
                 side: signal.side,
-                quantity: quantity,
-                entryPrice: entryPrice,
-                status: "OPEN",
+                quantity: (lots || 1) * signal.quantity,
                 strategy: signal.strategy,
-                mode: mode,
-                signalId: signal._id,
-                signalType: signal.signalType,
-                symboltoken: symboltoken || (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken
-            });
+                symboltoken
+            }
+        }, {
+            attempts: 3, // Max 3 attempts
+            backoff: { type: 'exponential', delay: 2000 }
+        });
 
-            res.status(200).json({
-                message: isDemo ? "Signal executed (Paper Trade)" : "Signal executed successfully!",
-                status: true,
-                data: position
-            });
-
-        } catch (orderErr: any) {
-            log.error(`Order failed for signal ${signalId}:`, orderErr);
-            res.status(500).json({ error: orderErr.message || "Broker order failed", status: false });
-        }
-
-    } catch (err: any) {
-        log.error("Execution error:", err);
-        res.status(500).json({ error: err.message, status: false });
-    }
-};
-
-export const broadcastSignal = async (req: Request, res: Response) => {
-    try {
-        const { signalId } = req.body;
-
-        // 1. Global Kill Switch Check
-        const globalStatus = await SystemSetting.findOne({ key: 'global_trading_status' }).lean() as any;
-        if (globalStatus && globalStatus.value === "disabled") {
-            return res.status(403).json({ error: "ALL TRADING IS GLOBALLY DISABLED BY ADMIN (KILL SWITCH ACTIVE)", status: false });
-        }
-
-        if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
-
-        // 1. Atomic Lock Protection
-        const signal = await Signal.findOneAndUpdate(
-            { _id: signalId, status: "ACTIVE" },
-            { $set: { status: "EXECUTION_IN_PROGRESS" } },
-            { new: true }
-        );
-
-        if (!signal) {
-            return res.status(400).json({
-                status: false,
-                error: "Signal not found or already being processed"
-            });
-        }
-
-        log.info(`[SIGNAL_EXECUTION] Broadcast started for Signal: ${signalId} (${signal.tradingsymbol})`);
-
-        // 2. Identify eligible groups (Groups that contain a service for this signal's symbol)
-        const eligibleGroups = await Group.find({
-            $or: [
-                { "services.name": { $regex: new RegExp(signal.symbol, "i") } },
-                { "services.segment": { $regex: new RegExp(signal.symbol, "i") } }
-            ]
-        }).select('name services').lean();
-
-        const eligibleGroupNames = eligibleGroups.map(g => g.name);
-
-        if (eligibleGroupNames.length === 0) {
-            signal.status = "FAILED";
-            await signal.save();
-            log.warn(`[SIGNAL_EXECUTION] Broadcast aborted: No Group Services found for Symbol: ${signal.symbol}`);
-            return res.status(200).json({ status: true, message: "No groups configured for this symbol.", finalStatus: "FAILED" });
-        }
-
-        // 3. Find all eligible users
-        // Criteria: Active, Trading Enabled, Has Signal's Strategy, and belongs to an eligible Group
-        const users = await User.find({
-            status: "active",
-            trading_status: "enabled",
-            strategies: signal.strategy, // MongoDB matches if the string is in the array
-            group_service: { $in: eligibleGroupNames }
-        }).lean();
-
-        if (users.length === 0) {
-            signal.status = "FAILED";
-            await signal.save();
-            log.warn(`[SIGNAL_EXECUTION] Broadcast aborted: No matching users (Strategy: ${signal.strategy}, Symbol: ${signal.symbol})`);
-            return res.status(200).json({ status: true, message: "No matching users for this strategy/group.", finalStatus: "FAILED" });
-        }
-
-        const totalUsers = users.length;
-        const concurrency = Number(process.env.BROADCAST_CONCURRENCY) || 10;
-        const limit = pLimit(concurrency);
-
-        // 4. Controlled Parallel Execution
-        const results = await Promise.all(users.map(user =>
-            limit(async () => {
-                const userId = user._id;
-                try {
-                    // 5. Determine User-Specific Quantity
-                    const userGroupName = user.group_service;
-                    const groupConfig = eligibleGroups.find(g => g.name === userGroupName);
-                    
-                    // ✅ Precise matching to avoid FINNIFTY matching NIFTY
-                    const serviceConfig = groupConfig?.services.find(s =>
-                        (s.name && s.name.toUpperCase() === signal.symbol.toUpperCase()) ||
-                        (s.segment && s.segment.toUpperCase() === signal.symbol.toUpperCase())
-                    );
-
-                    // 🔧 Personalized Lot Multiplier Logic
-                    const symbolMap: any = {
-                        'BANKNIFTY': 'BankNifty',
-                        'NIFTY': 'NIFTY',
-                        'FINNIFTY': 'FINNIFTY',
-                        'SENSEX': 'SENSEX'
-                    };
-                    const multiplierKey = symbolMap[signal.symbol.toUpperCase()] || signal.symbol.toUpperCase();
-                    
-                    // Priority: Personal Multiplier -> Group Quantity -> 1
-                    const userMultiplier = (user.lot_multipliers && user.lot_multipliers[multiplierKey]) || serviceConfig?.group_qty || 1;
-                    const finalQuantity = signal.quantity * userMultiplier;
-
-                    // 6. Duplicate Check
-                    const existingResult = await SignalExecutionResult.findOne({ signalId, userId });
-                    if (existingResult) {
-                        return { userId, status: "skipped", reason: "already_executed" };
-                    }
-
-                    // 7. Enqueue for ISOLATED Backend Execution (Per-User Node)
-                    const { Queue } = require("bullmq");
-                    const userQueue = new Queue(`trade-execution:${userId}`, {
-                        connection: { host: process.env.REDIS_HOST || "127.0.0.1", port: 6379 }
-                    });
-
-                    await userQueue.add(`trade-${userId}-${signalId}`, {
-                        userId,
-                        signalId,
-                        clientCode: clientcode,
-                        orderData: {
-                            exchange: signal.exchange,
-                            tradingsymbol: signal.tradingsymbol,
-                            side: signal.side,
-                            quantity: finalQuantity,
-                            strategy: signal.strategy,
-                            symboltoken: (await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }) || await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }))?.symboltoken
-                        }
-                    }, {
-                        attempts: 2,
-                        backoff: { type: 'exponential', delay: 2000 }
-                    });
-
-                    return { userId, status: "ENQUEUED_TO_NODE", signalId };
-
-
-
-                } catch (err: any) {
-                    // 6. Track Failure
-                    await SignalExecutionResult.create({
-                        signalId,
-                        userId,
-                        broker: user.broker || "ANGELONE",
-                        status: "FAILED",
-                        errorMessage: err.message || "Unknown execution error",
-                        executedAt: new Date()
-                    });
-                    return { userId, status: "FAILED", error: err.message };
-                }
-            })
-        ));
-
-        // 7. Success/Fail Counts Derived Safe from Results
-        const successCount = results.filter((r: any) => r.status === "SUCCESS").length;
-        const failCount = results.filter((r: any) => r.status === "FAILED").length;
-
-        // 7. Final Status Resolution
-        let finalStatus: any = "FAILED";
-        if (successCount === totalUsers) {
-            finalStatus = "CLOSED";
-        } else if (successCount > 0) {
-            finalStatus = "PARTIAL";
-        } else {
-            finalStatus = "FAILED";
-        }
-
-        signal.status = finalStatus;
-        await signal.save();
-
-        log.info(`[SIGNAL_EXECUTION] Completed. Signal: ${signalId}, Success: ${successCount}, Failed: ${failCount}, Final Status: ${finalStatus}`);
-
-        res.status(200).json({
+        return res.json({
             status: true,
-            message: "Broadcast completed",
-            totalUsers,
-            successCount,
-            failCount,
-            finalStatus,
-            results
+            message: "Execution queued.",
+            trackingStatus: "PENDING"
         });
 
     } catch (err: any) {
-        log.error("[SIGNAL_EXECUTION] Fatal error during broadcast:", err);
+        log.error("Queue execution error:", err);
         res.status(500).json({ error: err.message, status: false });
     }
 };
 
+
+export const executeSignal = async (req: Request, res: Response) => {
+    // Legacy / Blocked - Refer to SignalComplianceController
+    return res.status(410).json({
+        status: false,
+        code: 'USER_DEVICE_EXECUTION_REQUIRED',
+        error: 'Direct execution is disabled. Use /api/signals/queue-execution for compliant trading.'
+    });
+};
+
+
+import { Request, Response } from 'express';
+import { Signal } from '../models/Signal';
+import { SignalExecutionResult } from '../models/SignalExecutionResult';
+import { SignalBroadcastService } from '../services/SignalBroadcastService';
+import log from '../utils/logger';
+import mongoose from 'mongoose';
+
+/**
+ * FIXED: Clean Controller focusing on Request/Response handling
+ */
+export const broadcastSignal = async (req: Request, res: Response) => {
+    try {
+        const { signalId } = req.body;
+        if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
+
+        const result = await SignalBroadcastService.broadcast(signalId);
+        
+        res.status(200).json({
+            status: true,
+            message: "Broadcast initiated",
+            ...result
+        });
+    } catch (err: any) {
+        log.error("[SignalController] Broadcast error:", err);
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+
+/**
+ * FIXED: Uses Aggregation to fetch stats for all signals in ONE query
+ */
 export const getAllSignals = async (req: Request, res: Response) => {
     try {
         const { strategy, search } = req.query;
-        let query: any = {};
+        let matchStage: any = {};
 
-        if (strategy && strategy !== 'All') {
-            query.strategy = strategy;
-        }
-
+        if (strategy && strategy !== 'All') matchStage.strategy = strategy;
         if (search) {
-            query.$or = [
+            matchStage.$or = [
                 { symbol: { $regex: search, $options: 'i' } },
-                { tradingsymbol: { $regex: search, $options: 'i' } },
-                { strategy: { $regex: search, $options: 'i' } }
+                { tradingsymbol: { $regex: search, $options: 'i' } }
             ];
         }
 
-        const signals = await Signal.find(query).sort({ createdAt: -1 }).lean();
+        const data = await Signal.aggregate([
+            { $match: matchStage },
+            { $sort: { createdAt: -1 } },
+            { $limit: 100 },
+            {
+                $lookup: {
+                    from: 'signalexecutionresults',
+                    localField: '_id',
+                    foreignField: 'signalId',
+                    as: 'results'
+                }
+            },
+            {
+                $addFields: {
+                    totalExecutions: { $size: '$results' },
+                    successCount: {
+                        $size: {
+                            $filter: {
+                                input: '$results',
+                                as: 'r',
+                                cond: { $eq: ['$$r.status', 'SUCCESS'] }
+                            }
+                        }
+                    },
+                    failCount: {
+                        $size: {
+                            $filter: {
+                                input: '$results',
+                                as: 'r',
+                                cond: { $eq: ['$$r.status', 'FAILED'] }
+                            }
+                        }
+                    }
+                }
+            },
+            { $project: { results: 0 } } // Exclude raw results for performance
+        ]);
 
-        // Enhance with execution stats
-        const enhancedSignals = await Promise.all(signals.map(async (sig: any) => {
-            const results = await SignalExecutionResult.find({ signalId: sig._id }).select('status');
-            const successCount = results.filter(r => r.status === 'SUCCESS').length;
-            const failCount = results.filter(r => r.status === 'FAILED').length;
-
-            return {
-                ...sig,
-                totalExecutions: results.length,
-                successCount,
-                failCount,
-                currentStatus: sig.status
-            };
-        }));
-
-        res.status(200).json({ status: true, data: enhancedSignals });
+        res.status(200).json({ status: true, data });
     } catch (err: any) {
         res.status(500).json({ error: err.message, status: false });
     }
 };
 
 export const getActiveSignals = async (req: Request, res: Response) => {
+    // Similar aggregation as above but for ACTIVE status
+    return getAllSignals(req, res); 
+};
+
+export const getExecutionStatus = async (req: Request, res: Response) => {
     try {
-        const signals = await Signal.find({ status: { $in: ['ACTIVE', 'EXECUTION_IN_PROGRESS'] } })
-            .sort({ createdAt: -1 })
-            .limit(20)
-            .lean();
+        const { signalId } = req.params;
+        const userId = (req as any).id;
 
-        // Enhance with execution stats
-        const data = await Promise.all(signals.map(async (sig: any) => {
-            const results = await SignalExecutionResult.find({ signalId: sig._id }).select('status');
-            const successCount = results.filter(r => r.status === 'SUCCESS').length;
-            const failCount = results.filter(r => r.status === 'FAILED').length;
+        if (!signalId) {
+            return res.status(400).json({ status: false, error: "Signal ID is required" });
+        }
 
-            return {
-                ...sig,
-                totalExecutions: results.length,
-                successCount,
-                failCount,
-                currentStatus: sig.status
-            };
-        }));
+        const execution = await SignalExecutionResult.findOne({ signalId, userId }).lean();
 
-        res.status(200).json({ ok: true, status: true, data });
+        if (!execution) {
+            return res.status(404).json({ status: false, message: "No execution record found for this signal" });
+        }
+
+        return res.status(200).json({ status: true, data: execution });
     } catch (err: any) {
-        res.status(500).json({ ok: false, status: false, error: err.message });
+        log.error("[SIGNAL_EXECUTION] Error fetching execution status:", err);
+        return res.status(500).json({ status: false, error: err.message });
     }
 };

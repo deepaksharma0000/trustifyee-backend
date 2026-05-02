@@ -142,10 +142,6 @@ router.post('/generate-session', auth, async (req: any, res) => {
             return res.status(500).json({ status: false, error: "Broker response missing JWT token" });
         }
 
-        // 🚀 SESSION INJECTION: Pass the active session to DataFeedService immediately
-        const { DataFeedService } = await import("../services/DataFeedService");
-        DataFeedService.setSession(jwtToken, decryptedApiKey);
-
         // Step 8: Save tokens to DB
         await AngelTokensModel.findOneAndUpdate(
             { userId, clientcode: client_code },
