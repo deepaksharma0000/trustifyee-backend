@@ -8,7 +8,7 @@ import { Position } from "../models/Position.model";
 import { dataFeedService } from "./DataFeedService";
 import { SignalBroadcastService } from "./SignalBroadcastService";
 import log from "../utils/logger";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { AlgoTrade } from "../models/AlgoTrade";
 import {
     startRun as startRunLegacy,
@@ -26,7 +26,7 @@ export const initAlgoRiskWorker = () => {
     const worker = new Worker(
         "risk-management",
         async (job) => {
-            const correlationId = uuidv4();
+            const correlationId = randomUUID();
             const runningRuns = await AlgoRun.find({ status: "running" }).lean();
             
             for (const run of runningRuns) {

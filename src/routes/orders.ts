@@ -12,7 +12,6 @@ import { Position } from "../models/Position.model";
 import InstrumentModel from "../models/Instrument";
 import { Group } from "../models/GroupServices";
 import { getOptionChain } from "../services/NiftyOptionService";
-import { v4 as uuidv4 } from "uuid";
 import { decrypt, encrypt } from "../utils/encryption";
 import AngelTokensModel from "../models/AngelTokens";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";

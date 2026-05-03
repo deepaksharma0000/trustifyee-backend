@@ -5,11 +5,11 @@ import { Signal } from "../models/Signal";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
 import { TradeOutbox } from "../models/TradeOutbox";
 import log from "../utils/logger";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 import { decrypt } from "../utils/encryption";
 
 export class SignalBroadcastService {
-    static async broadcast(signalId: string, correlationId: string = uuidv4()) {
+    static async broadcast(signalId: string, correlationId: string = randomUUID()) {
         const logger = log.child({ correlationId, signalId });
         
         // 🛡️ Check if MongoDB is running as a Replica Set (required for Transactions)
