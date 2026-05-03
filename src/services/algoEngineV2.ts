@@ -9,6 +9,15 @@ import { dataFeedService } from "./DataFeedService";
 import { SignalBroadcastService } from "./SignalBroadcastService";
 import log from "../utils/logger";
 import { v4 as uuidv4 } from "uuid";
+import { AlgoTrade } from "../models/AlgoTrade";
+import {
+    startRun as startRunLegacy,
+    stopRun as stopRunLegacy,
+    getStatus as getStatusLegacy,
+    getRuns as getRunsLegacy,
+    getTrades as getTradesLegacy,
+    getSummary as getSummaryLegacy,
+} from "./algoEngine.DEPRECATED";
 
 /**
  * FIXED: Remove setInterval. Use BullMQ Repeatable Jobs.
@@ -36,7 +45,7 @@ export const initAlgoRiskWorker = () => {
                 }
             }
         },
-        { connection: redisConnection }
+        { connection: redisConnection as any }
     );
 
     // Schedule the repeatable job (runs every 30 seconds)
@@ -93,4 +102,20 @@ export async function recoverRunningRuns() {
         repeat: { every: 30000 },
         jobId: "risk-check-loop" // Static ID prevents duplicates
     });
+}
+
+export const startRun = startRunLegacy;
+export const stopRun = stopRunLegacy;
+export const getStatus = getStatusLegacy;
+export const getRuns = getRunsLegacy;
+export const getSummary = getSummaryLegacy;
+
+export async function getTrades(runId: string, limit = 200, userId?: string) {
+    if (userId) {
+        return AlgoTrade.find({ runId, userId: String(userId) })
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .lean();
+    }
+    return getTradesLegacy(runId, limit);
 }

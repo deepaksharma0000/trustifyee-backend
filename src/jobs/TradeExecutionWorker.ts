@@ -102,7 +102,7 @@ export const initTradeExecutionWorker = () => {
             }
         },
         {
-            connection: redisConnection,
+            connection: redisConnection as any,
             concurrency: 5,
             limiter: { max: 9, duration: 1000 },
         }

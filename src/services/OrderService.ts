@@ -290,3 +290,17 @@ export async function getOrderStatusForClient(
 
   throw new Error("No active session for this user");
 }
+
+export async function fetchBrokerOrder(
+  userId: string | unknown,
+  clientcode: string,
+  clientOrderId: string
+) {
+  try {
+    const resp = await getOrderStatusForClient(userId, clientcode, clientOrderId);
+    if (!resp?.status || !resp.data) return null;
+    return resp.data;
+  } catch {
+    return null;
+  }
+}

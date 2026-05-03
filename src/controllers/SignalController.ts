@@ -1,19 +1,12 @@
 import { Request, Response } from 'express';
 import User from '../models/User';
-import { Group } from '../models/GroupServices';
-import { Position } from '../models/Position.model';
-import { placeOrderForClient } from '../services/OrderService';
-import log from '../utils/logger';
-import { decrypt } from '../utils/encryption';
-import AngelTokensModel from '../models/AngelTokens';
-import { getInstrumentLtp } from '../services/MarketDataService';
 import InstrumentModel from '../models/Instrument';
 import UpstoxInstrumentModel from '../models/UpstoxInstrument';
-import { SignalExecutionResult } from '../models/SignalExecutionResult';
 import { Signal } from '../models/Signal';
-import mongoose from 'mongoose';
-import pLimit from 'p-limit';
-import { SystemSetting } from '../models/SystemSetting';
+import { SignalExecutionResult } from '../models/SignalExecutionResult';
+import { SignalBroadcastService } from '../services/SignalBroadcastService';
+import { decrypt } from '../utils/encryption';
+import log from '../utils/logger';
 
 export const queueExecution = async (req: Request, res: Response) => {
     try {
@@ -22,8 +15,18 @@ export const queueExecution = async (req: Request, res: Response) => {
 
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
+        const existing = await SignalExecutionResult.findOne({
+            signalId,
+            userId,
+            status: { $in: ["PENDING", "QUEUED", "SUCCESS"] }
+        }).lean();
+
         if (existing) {
-            return res.status(200).json({ status: true, message: "Signal already in queue or executed", currentStatus: existing.status });
+            return res.status(200).json({
+                status: true,
+                message: "Signal already in queue or executed",
+                currentStatus: existing.status
+            });
         }
 
         const signal = await Signal.findById(signalId);
@@ -34,73 +37,80 @@ export const queueExecution = async (req: Request, res: Response) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ error: "User not found", status: false });
 
-        // 1. Create Tracking Record (PENDING)
+        const suffix = Date.now().toString().slice(-6);
+        const clientOrderId = `SIG-${String(signalId).slice(-4)}-${String(userId).slice(-4)}-${suffix}`;
+        const correlationId = `${signalId}-${userId}-${Date.now()}`;
+
         await SignalExecutionResult.create({
             signalId,
             userId,
+            clientOrderId,
             broker: user.broker || "ANGELONE",
             status: "PENDING",
             source: "BACKEND_BLOCKED"
         });
 
-        // 2. Enqueue for Execution
-        const { Queue } = require("bullmq");
-        const userQueue = new Queue(`trade-execution`, {
-            connection: { host: process.env.REDIS_HOST || "127.0.0.1", port: 6379 }
-        });
-
-        // Resolve symboltoken
-        const inst = await InstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol, exchange: signal.exchange }).lean();
-        const symboltoken = inst?.symboltoken || (await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any)?.instrument_key;
-
-        log.info(`[SignalController] Queueing signal ${signal.tradingsymbol} for ${user.user_name} (Token: ${symboltoken})`);
-
-        await userQueue.add(`exec-${userId}-${signalId}`, {
-            userId,
-            signalId,
-            clientCode: decrypt(user.client_key || ""),
-            orderData: {
-                exchange: signal.exchange,
-                tradingsymbol: signal.tradingsymbol,
-                side: signal.side,
-                quantity: (lots || 1) * signal.quantity,
-                strategy: signal.strategy,
-                symboltoken
+        const { Queue } = await import("bullmq");
+        const userQueue = new Queue("trade-execution", {
+            connection: {
+                host: process.env.REDIS_HOST || "127.0.0.1",
+                port: Number(process.env.REDIS_PORT || 6379)
             }
-        }, {
-            attempts: 3, // Max 3 attempts
-            backoff: { type: 'exponential', delay: 2000 }
         });
+
+        const inst = await InstrumentModel.findOne({
+            tradingsymbol: signal.tradingsymbol,
+            exchange: signal.exchange
+        }).lean();
+        const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
+        const symboltoken = inst?.symboltoken || upstoxInst?.instrument_key;
+
+        log.info(`[SignalController] Queueing signal ${signal.tradingsymbol} for ${user.user_name} (Token: ${symboltoken || "N/A"})`);
+
+        await userQueue.add(
+            `exec-${clientOrderId}`,
+            {
+                userId,
+                signalId,
+                clientOrderId,
+                correlationId,
+                clientCode: decrypt(user.client_key || ""),
+                orderData: {
+                    exchange: signal.exchange,
+                    tradingsymbol: signal.tradingsymbol,
+                    side: signal.side,
+                    quantity: (Number(lots) || 1) * signal.quantity,
+                    strategy: signal.strategy || "Manual",
+                    symboltoken,
+                    broker: user.broker || "ANGELONE"
+                }
+            },
+            {
+                attempts: 3,
+                backoff: { type: "exponential", delay: 2000 }
+            }
+        );
+
+        await userQueue.close();
 
         return res.json({
             status: true,
             message: "Execution queued.",
             trackingStatus: "PENDING"
         });
-
     } catch (err: any) {
         log.error("Queue execution error:", err);
-        res.status(500).json({ error: err.message, status: false });
+        return res.status(500).json({ error: err.message, status: false });
     }
 };
 
-
-export const executeSignal = async (req: Request, res: Response) => {
-    // Legacy / Blocked - Refer to SignalComplianceController
+export const executeSignal = async (_req: Request, res: Response) => {
     return res.status(410).json({
         status: false,
-        code: 'USER_DEVICE_EXECUTION_REQUIRED',
-        error: 'Direct execution is disabled. Use /api/signals/queue-execution for compliant trading.'
+        code: "USER_DEVICE_EXECUTION_REQUIRED",
+        error: "Direct execution is disabled. Use /api/signals/queue-execution for compliant trading."
     });
 };
-
-
-import { Request, Response } from 'express';
-import { Signal } from '../models/Signal';
-import { SignalExecutionResult } from '../models/SignalExecutionResult';
-import { SignalBroadcastService } from '../services/SignalBroadcastService';
-import log from '../utils/logger';
-import mongoose from 'mongoose';
 
 /**
  * FIXED: Clean Controller focusing on Request/Response handling

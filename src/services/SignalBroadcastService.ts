@@ -13,8 +13,10 @@ export class SignalBroadcastService {
         const logger = log.child({ correlationId, signalId });
         
         // 🛡️ Check if MongoDB is running as a Replica Set (required for Transactions)
-        const isReplicaSet = mongoose.connection.getClient().topology?.type?.includes('ReplicaSet') || 
-                            mongoose.connection.getClient().topology?.constructor.name === 'ReplicaSet';
+        const mongoClient = mongoose.connection.getClient() as any;
+        const topoType = String(mongoClient?.topology?.description?.type || mongoClient?.topology?.type || "");
+        const topoName = String(mongoClient?.topology?.constructor?.name || "");
+        const isReplicaSet = topoType.includes("ReplicaSet") || topoName.includes("ReplicaSet");
 
         if (!isReplicaSet) {
             log.warn("[DB] Standalone MongoDB detected. Running broadcast WITHOUT transaction.");

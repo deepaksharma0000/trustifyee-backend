@@ -5,6 +5,7 @@ export interface ISignalExecutionResult extends Document {
     userId: Types.ObjectId;
     broker: string;
     orderId?: string;
+    clientOrderId?: string;
     status: "PENDING" | "QUEUED" | "SUCCESS" | "FAILED";
     errorMessage?: string;
     executedAt: Date;
@@ -23,7 +24,7 @@ const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
         userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
         broker: { type: String, required: true },
         orderId: { type: String },
-        clientOrderId: { type: String, required: true, unique: true },
+        clientOrderId: { type: String, unique: true, sparse: true, index: true },
         status: { type: String, enum: ["PENDING", "QUEUED", "SUCCESS", "FAILED"], required: true },
 
         errorMessage: { type: String },

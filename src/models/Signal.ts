@@ -5,6 +5,7 @@ export interface ISignal extends Document {
     exchange: string;
     side: "BUY" | "SELL";
     tradingsymbol: string;
+    symboltoken?: string;
     strike?: number;
     optiontype?: "CE" | "PE";
     expiry?: Date;
@@ -13,6 +14,7 @@ export interface ISignal extends Document {
     status: "ACTIVE" | "EXECUTION_IN_PROGRESS" | "CLOSED" | "PARTIAL" | "FAILED" | "EXPIRED";
     strategy?: string;
     adminOrderId?: string;
+    totalExecutions?: number;
     signalType: "ENTRY" | "EXIT";
     executionMode: "SERVER" | "CLIENT";
     createdAt: Date;
@@ -25,6 +27,7 @@ const SignalSchema = new Schema<ISignal>(
         exchange: { type: String, required: true },
         side: { type: String, enum: ["BUY", "SELL"], required: true },
         tradingsymbol: { type: String, required: true },
+        symboltoken: { type: String },
         strike: { type: Number },
         optiontype: { type: String, enum: ["CE", "PE"] },
         expiry: { type: Date },
@@ -34,6 +37,7 @@ const SignalSchema = new Schema<ISignal>(
         status: { type: String, enum: ["ACTIVE", "EXECUTION_IN_PROGRESS", "CLOSED", "PARTIAL", "FAILED", "EXPIRED"], default: "ACTIVE" },
         strategy: { type: String },
         adminOrderId: { type: String },
+        totalExecutions: { type: Number, default: 0 },
         signalType: { type: String, enum: ["ENTRY", "EXIT"], default: "ENTRY" },
     },
     { timestamps: true }
