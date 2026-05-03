@@ -276,7 +276,7 @@ export class AliceBlueAdapter {
       responseType: "arraybuffer"
     });
 
-    const contentType = (resp.headers["content-type"] || "").toLowerCase();
+    const contentType = String(resp.headers["content-type"] ?? "").toLowerCase();
     const buffer: Buffer = Buffer.from(resp.data);
 
     // 1) Agar HTML aaya -> URL galat hai
