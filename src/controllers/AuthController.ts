@@ -132,10 +132,16 @@ export const loginAdmin = async (req: Request, res: Response) => {
         const adminObj = admin.toObject() as any;
         delete adminObj.password;
 
+        const maskedAdmin = {
+            ...adminObj,
+            client_key: maskKey(admin.client_key || ""),
+            api_key: maskKey(admin.api_key || "")
+        };
+
         res.status(200).json({
             message: "Login successful!",
-            data: adminObj,
-            user: adminObj, // For frontend compatibility
+            data: maskedAdmin,
+            user: maskedAdmin, // For frontend compatibility
             accessToken, // For frontend compatibility
             status: true,
             access: { token: accessToken, issued_at: new Date() },

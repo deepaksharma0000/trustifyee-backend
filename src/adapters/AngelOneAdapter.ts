@@ -65,7 +65,8 @@ export class AngelOneAdapter {
     const decApiKey = safeDecrypt(this.apiKey, "angel_adapter_headers");
     if (!decApiKey) throw new Error("Invalid decryption key. Access Denied.");
 
-    const headers: Record<string, string> = {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
         'Accept': 'application/json',
         'X-UserType': 'USER',
         'X-SourceID': 'WEB',
@@ -86,7 +87,8 @@ export class AngelOneAdapter {
 
   // ------------ LOGIN (Trading APIs - Password Based) ------------
   async generateSession(credentials: { clientcode: string; password: string; totp: string; totp_secret?: string }) {
-    const path = "/rest/auth/angelbroking/user/v1/loginByPassword";
+    // 🚀 UPGRADED TO v2 ENDPOINT (More stable for current SmartAPI accounts)
+    const path = "/rest/auth/angelbroking/user/v2/loginByPassword";
     const fullUrl = `${this.forcedBaseUrl}${path}`;
     
     // 🛡️ Automated TOTP Generation

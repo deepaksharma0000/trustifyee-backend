@@ -121,9 +121,17 @@ router.post('/generate-session', auth, async (req: any, res) => {
             
             // Detailed debug log for the full response object if it's not success
             log.debug(`[AUTH_DEBUG] Full Broker Error Response: ${JSON.stringify(loginResp.data || {})}`);
+
+            let hint = "Please check: 1) Client Code & Password correct? 2) TOTP valid? 3) API Key valid & IP whitelisted?";
+            if (brokerMsg.includes("Invalid Login Credentials")) {
+                hint = "HINT: Most likely your TOTP is invalid or Server Time is out of sync. Please sync your server clock!";
+            } else if (brokerMsg.includes("Invalid session")) {
+                hint = "HINT: Your API Key may be invalid or your IP is not whitelisted in AngelOne dashboard.";
+            }
+
             return res.status(401).json({
                 status: false,
-                error: `Broker Error: ${brokerMsg}. Please check: 1) Client Code correct? 2) Password correct? 3) TOTP valid?`
+                error: `Broker Error: ${brokerMsg}. ${hint}`
             });
         }
 
