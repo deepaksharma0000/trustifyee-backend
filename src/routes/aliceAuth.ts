@@ -100,7 +100,9 @@ router.get("/auth/callback", async (req, res) => {
           broker: "AliceBlue",
           broker_connected: true,
           broker_verified: true,
-          is_online: true
+          is_online: true,
+          trading_paused: false, // [FIX] Reset circuit breaker
+          consecutive_failures: 0 // [FIX] Reset failure count
         }
       );
     }

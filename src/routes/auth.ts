@@ -137,6 +137,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
         clientcode,
         jwtToken: encrypt(jwtToken),
         refreshToken: refreshToken ? encrypt(refreshToken) : undefined,
+        apiKey: encrypt(apiKey), // [FIX] Added to ensure worker can execute orders
         feedToken: feedToken ? encrypt(feedToken) : undefined,
         expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000)
       },
@@ -145,6 +146,9 @@ router.post("/angel/login", auth, async (req: any, res) => {
 
     if (req.user) {
       req.user.broker_connected = true;
+      // [FIX] Reset circuit breaker on successful login
+      req.user.trading_paused = false;
+      req.user.consecutive_failures = 0;
       await req.user.save();
     }
 

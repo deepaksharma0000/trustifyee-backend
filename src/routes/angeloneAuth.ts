@@ -176,6 +176,8 @@ router.post('/generate-session', auth, async (req: any, res) => {
         const updatePayload: any = {
             broker_connected: true,
             broker_verified: true,
+            trading_paused: false, // [FIX] Reset circuit breaker
+            consecutive_failures: 0, // [FIX] Reset failure count
             client_key: encrypt(client_code),
             broker: 'AngelOne'
         };
