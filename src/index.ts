@@ -6,6 +6,7 @@ import mongoose from "mongoose";
 import { config } from "./config";
 import InstrumentModel from "./models/Instrument";
 import authRoutes from "./routes/auth";
+import User from "./models/User";
 import orderRoutes from "./routes/orders";
 import positionRoutes from "./routes/position.routes";
 import { syncAllOptionInstruments, forceFixLotSizes } from "./services/InstrumentService";
@@ -101,9 +102,6 @@ async function start() {
     // Start Watchdog
     startPositionWatchdog();
 
-    // Start Auto Exit Worker
-    initAutoExitWorker();
-
     // 💹 Initialize dedicated Data Feed Layer
     const { dataFeedService } = require("./services/DataFeedService");
     // [FIX] dataFeedService.init is not a function, removing call.
@@ -113,19 +111,44 @@ async function start() {
 
     // Upstox Initial Sync (Optional/Non-critical)
     try {
-      log.info("Syncing Upstox Option Chain...");
-      const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
-      log.info("✅ Upstox Options Sync success");
+      const upstoxUser = await User.findOne({
+          broker: { $regex: /^upstox$/i }, // Case-insensitive
+          status: 'active',
+          broker_connected: true
+      }).lean();
+
+      if (!upstoxUser) {
+          log.info('[Upstox Sync] No active Upstox users found. Skipping sync.');
+      } else {
+          log.info("Syncing Upstox Option Chain...");
+          const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
+          log.info("✅ Upstox Options Sync success");
+      }
     } catch (err: any) {
       log.warn(`⚠️ Upstox Options Sync skipped/failed: ${err.message}`);
     }
 
     const app = express();
-    const allowedOrigins = config.corsOrigins.length > 0
-      ? config.corsOrigins
-      : ["http://localhost:8080", "http://localhost:3000", "https://your-production-domain.com"];
+    app.use(cors({
+        origin: (origin, callback) => {
+            const allowed = [
+                ...(config.corsOrigins || []),
+                "http://localhost:8080",
+                "http://localhost:3000",
+                config.frontendUrl
+            ].filter(Boolean);
 
-    app.use(cors({ origin: allowedOrigins, credentials: true }));
+            if (!origin || allowed.includes(origin)) {
+                callback(null, true);
+            } else {
+                log.warn(`[CORS] Blocked origin: ${origin}`);
+                callback(new Error(`CORS: Origin ${origin} not allowed`));
+            }
+        },
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "x-access-token", "x-user-id", "x-correlation-id"]
+    }));
 
     app.use(bodyParser.json());
 
@@ -191,12 +214,31 @@ async function start() {
     app.use("/api/tickets", ticketRoutes);
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
-    // FIX: Health check endpoint
-    app.get("/health", (_req, res) => res.json({ status: "ok", ts: new Date().toISOString() }));
+    
+    // FIX: Comprehensive Health check endpoint
+    app.get("/health", (req, res) => {
+        res.json({
+            status: 'ok',
+            timestamp: new Date().toISOString(),
+            mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+            env: config.nodeEnv,
+            executionMode: config.executionMode,
+            version: process.env.npm_package_version || '1.0.0'
+        });
+    });
 
     const server = http.createServer(app);
     startMarketStream(server);  // LTP stream on /ws/market
     startSignalStream(server);  // FIX #1 — Signal push on /ws/signals
+
+    server.on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+            log.error(`❌ Port ${config.port} is already in use. Kill the process and restart.`);
+            process.exit(1);
+        } else {
+            throw err;
+        }
+    });
 
     server.listen(config.port, async () => {
       log.info(`📡 Server listening on port ${config.port}`);

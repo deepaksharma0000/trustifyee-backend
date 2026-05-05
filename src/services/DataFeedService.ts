@@ -1,13 +1,30 @@
 // src/services/DataFeedService.ts
+import axios, { AxiosInstance } from "axios";
+import https from "https";
 import redis from "../utils/redis";
 import { getInstrumentLtp, getMultipleInstrumentsLtp } from "./MarketDataService";
 import log from "../utils/logger";
+import { config } from "../config";
 
 export class DataFeedService {
     private static instance: DataFeedService;
     private readonly TTL = 5; // 5 seconds cache for LTP
+    private client: AxiosInstance;
 
-    private constructor() {}
+    private constructor() {
+        // 🛡️ FIX 4: Dedicated Agent with Static IP binding for Data Feed
+        const feedAgent = new https.Agent({
+            family: 4,
+            keepAlive: true,
+            localAddress: config.publicIp || undefined
+        });
+
+        this.client = axios.create({
+            baseURL: config.angelBaseUrl || "https://apiconnect.angelone.in",
+            httpsAgent: feedAgent,
+            timeout: 30000
+        });
+    }
 
     public static getInstance(): DataFeedService {
         if (!DataFeedService.instance) {
@@ -25,9 +42,6 @@ export class DataFeedService {
         
         for (const [exchange, symbols] of Object.entries(symbolGroups)) {
             await Promise.all(symbols.map(async (symbol) => {
-                // Note: getCachedLtp requires symboltoken which we don't have here.
-                // We'll fallback to a simplified version or assume cachedLtp can work with symbol only if we modify it.
-                // For now, let's use the instance method but we need tokens.
                 results[symbol] = await instance.getCachedLtp(exchange, symbol, ""); 
             }));
         }
@@ -44,7 +58,6 @@ export class DataFeedService {
             const cachedValue = await redis.get(cacheKey);
             if (cachedValue) return parseFloat(cachedValue);
 
-            // If no token provided, we can't fetch fresh from broker here safely without more lookups
             if (!symboltoken) return 0;
 
             const ltp = await getInstrumentLtp(exchange, tradingsymbol, symboltoken);
@@ -61,9 +74,7 @@ export class DataFeedService {
     async getBulkLtp(instruments: { exchange: string; tradingsymbol: string; symboltoken: string }[]): Promise<Record<string, number>> {
         const results: Record<string, number> = {};
         const missingByExch: Record<string, string[]> = {};
-        const now = Date.now();
 
-        // 1. Try Cache First
         for (const ins of instruments) {
             const cacheKey = `LTP:${ins.exchange}:${ins.tradingsymbol}`;
             const cachedValue = await redis.get(cacheKey);
@@ -71,24 +82,20 @@ export class DataFeedService {
             if (cachedValue) {
                 results[ins.tradingsymbol] = parseFloat(cachedValue);
             } else if (ins.symboltoken) {
-                // Prepare for batch fetch
                 if (!missingByExch[ins.exchange]) missingByExch[ins.exchange] = [];
                 missingByExch[ins.exchange].push(ins.symboltoken);
             }
         }
 
-        // 2. Batch Fetch Missing
         if (Object.keys(missingByExch).length > 0) {
             try {
                 const batchResults = await getMultipleInstrumentsLtp(missingByExch);
                 
-                // Map batch results back to tradingsymbols
                 for (const ins of instruments) {
                     if (batchResults[ins.symboltoken]) {
                         const ltp = batchResults[ins.symboltoken];
                         results[ins.tradingsymbol] = ltp;
                         
-                        // Cache it for next time
                         const cacheKey = `LTP:${ins.exchange}:${ins.tradingsymbol}`;
                         await redis.setex(cacheKey, this.TTL, ltp.toString());
                     }

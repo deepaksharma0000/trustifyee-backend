@@ -6,7 +6,11 @@ import log from "../utils/logger";
 import { encrypt } from "../utils/encryption";
 
 const router = express.Router();
-const adapter = new UpstoxAdapter();
+let _adapter: UpstoxAdapter | null = null;
+function getAdapter() {
+  if (!_adapter) _adapter = new UpstoxAdapter();
+  return _adapter;
+}
 
 /**
  * GET /api/upstox/auth/url
@@ -14,7 +18,7 @@ const adapter = new UpstoxAdapter();
  */
 router.get("/url", (req, res) => {
   const state = req.query.state?.toString() || "state-" + Date.now();
-  const url = adapter.getAuthUrl(state);
+  const url = getAdapter().getAuthUrl(state);
 
   log.debug("Generated Upstox auth URL for state:", state);
 
@@ -42,7 +46,7 @@ router.get("/callback", async (req, res) => {
   }
 
   try {
-    const tokenResp = await adapter.exchangeCodeForToken(code);
+    const tokenResp = await getAdapter().exchangeCodeForToken(code);
 
     // Calculate token expiry (usually 1 day for Upstox)
     const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
@@ -114,7 +118,7 @@ router.post("/refresh", async (req, res) => {
     }
 
     // Refresh the token
-    const tokenResp = await adapter.refreshAccessToken(existingToken.refreshToken);
+    const tokenResp = await getAdapter().refreshAccessToken(existingToken.refreshToken);
 
     // Update in database
     const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
@@ -171,7 +175,7 @@ router.get("/profile", async (req, res) => {
       });
     }
 
-    const profile = await adapter.getUserProfile(tokenDoc.accessToken);
+    const profile = await getAdapter().getUserProfile(tokenDoc.accessToken);
 
     return res.json({
       ok: true,
@@ -213,7 +217,7 @@ router.get("/status", async (req, res) => {
     }
 
     // Validate token
-    const validation = await adapter.validateToken(tokenDoc.accessToken);
+    const validation = await getAdapter().validateToken(tokenDoc.accessToken);
 
     return res.json({
       ok: true,

@@ -73,7 +73,7 @@ async function runRiskCycle(run: any, correlationId: string) {
             
             // Trigger Exit via Broadcast Service (Transaction safe)
             const signal = await createExitSignal(p, ltp);
-            await SignalBroadcastService.broadcast(String(signal._id), correlationId);
+            await SignalBroadcastService.broadcast(String(signal._id));
         }
     }
 }

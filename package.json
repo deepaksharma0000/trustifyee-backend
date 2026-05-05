@@ -4,7 +4,8 @@
   "description": "Angel One (SmartAPI) adapter + simple order API - TypeScript",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "kill-port": "npx kill-port 4000",
+    "dev": "npx kill-port 4000 && ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc -p .",
     "start": "node dist/index.js",
     "lint": "eslint . --ext .ts"

@@ -5,6 +5,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { config } from "../config";
 import log from "../utils/logger";
+import { getUpstoxAdapter } from "../utils/upstox";
 import { encrypt, decrypt } from "../utils/encryption";
 
 type QuoteRequestItem = {
@@ -183,7 +184,7 @@ export function startMarketStream(server: any) {
 
           // Handle Upstox (keeping it simple for now as it's secondary)
           if (upstoxItems.length > 0 && upstoxToken) {
-            const upstoxAdapter = new UpstoxAdapter();
+            const upstoxAdapter = getUpstoxAdapter();
             for (const item of upstoxItems) {
               try {
                 const resp = await upstoxAdapter.getLtp(upstoxToken, item.symboltoken);

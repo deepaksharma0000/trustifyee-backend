@@ -5,6 +5,7 @@ import { placeOrderForClient, fetchBrokerOrder } from "../services/OrderService"
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
 import { CircuitBreakerService } from "../services/CircuitBreakerService";
 import { AlertService } from "../services/AlertService";
+import User from "../models/User";
 import log from "../utils/logger";
 
 export const initTradeExecutionWorker = () => {
@@ -13,7 +14,13 @@ export const initTradeExecutionWorker = () => {
         async (job) => {
             const { userId, signalId, clientOrderId, clientCode, orderData, correlationId } = job.data;
             const logger = log.child({ correlationId, clientOrderId, userId });
-            const broker = orderData.broker || "ANGELONE";
+            
+            // 🛡️ FIX 1: Fetch user from MongoDB with sensitive fields
+            const userDoc = await User.findById(userId).select('+outgoing_ip +broker_password +broker_totp_secret').lean();
+            if (!userDoc) throw new Error(`User ${userId} not found`);
+
+            const outgoingIp = userDoc.outgoing_ip || undefined;
+            const broker = orderData.broker || userDoc.broker || "ANGELONE";
 
             // 🛡️ 1. CIRCUIT BREAKER CHECK (Granular: ORDER API)
             if (!(await CircuitBreakerService.isAvailable(broker, "ORDER"))) {
@@ -26,7 +33,6 @@ export const initTradeExecutionWorker = () => {
                 if (execution?.status === "SUCCESS") return;
 
                 // 🛡️ 3. BROKER CRASH SAFETY CHECK (Check if order already exists at broker)
-                // This handles cases where worker crashed AFTER broker call but BEFORE DB update.
                 try {
                     const existingOrder = await fetchBrokerOrder(userId, clientCode, clientOrderId);
                     if (existingOrder && (existingOrder.status === "COMPLETE" || existingOrder.status === "OPEN")) {
@@ -38,21 +44,31 @@ export const initTradeExecutionWorker = () => {
                         return;
                     }
                 } catch (err) {
-                    // Ignore "Order Not Found" errors from broker, proceed to place order
                     logger.debug("Order not found at broker, proceeding with fresh placement.");
                 }
 
-                // 🛡️ 4. EXECUTE BROKER ORDER
+                // 🛡️ 4. EXECUTE BROKER ORDER (Pass outgoingIp)
                 const resp = await placeOrderForClient(userId, clientCode, {
                     ...orderData,
-                    clientOrderId
+                    clientOrderId,
+                    outgoingIp // ← ADDED AS PER FIX 1
                 });
 
                 const orderId = resp?.data?.orderid || resp?.data?.data?.orderid;
                 
                 // 🛡️ 5. LOG BROKER RESPONSE (For User Transparency)
                 const { BrokerResponse } = await import("../models/BrokerResponse");
-                const isRealSuccess = !!orderId && (resp.status === 200 || resp.ok === true);
+
+                // 🛡️ FIX 4: STRICTER SUCCESS VALIDATION
+                const brokerMessage = resp?.data?.message || resp?.message || "";
+                const isRejectedMessage = brokerMessage.toLowerCase().includes("reject") ||
+                    brokerMessage.toLowerCase().includes("failed") ||
+                    brokerMessage.toLowerCase().includes("error") ||
+                    brokerMessage.toLowerCase().includes("invalid");
+                
+                const isRealSuccess = !!orderId && 
+                    (resp.status === 200 || resp.ok === true) && 
+                    !isRejectedMessage;
 
                 await BrokerResponse.create({
                     userId,
@@ -61,11 +77,11 @@ export const initTradeExecutionWorker = () => {
                     orderid: orderId || "REJECTED",
                     action: "PLACE_ORDER",
                     status: isRealSuccess ? "SUCCESS" : "REJECTED",
-                    message: isRealSuccess ? "Order placed successfully" : (resp?.message || resp?.data?.message || "Order rejected by broker"),
+                    message: isRealSuccess ? "Order placed successfully" : (brokerMessage || "Order rejected by broker"),
                     brokerError: !isRealSuccess ? (resp?.data || resp) : undefined
                 });
 
-                if (!isRealSuccess) throw new Error(resp?.message || resp?.data?.message || "Order failed at broker");
+                if (!isRealSuccess) throw new Error(brokerMessage || "Order failed at broker");
 
                 // 🛡️ 6. COMMIT SUCCESS
                 await SignalExecutionResult.updateOne(

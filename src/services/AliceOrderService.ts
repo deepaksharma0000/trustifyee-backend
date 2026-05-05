@@ -19,6 +19,7 @@ export type AlicePlaceOrderInput = {
   duration?: string;
   symboltoken?: string;
   triggerPrice?: number;
+  outgoingIp?: string; // [NEW]
 };
 
 async function findAliceSymbol(
@@ -91,13 +92,11 @@ export async function placeAliceOrderForClient(
   }
 
   // 🚀 [ROBUST SYMBOL RESOLUTION]
-  // In a multi-broker system, the incoming symboltoken is likely from AngelOne.
-  // We MUST resolve the correct Alice Blue token from our own instrument database.
   const symbol = await findAliceSymbol(orderInput.exchange, orderInput.tradingsymbol);
   
-  log.debug("Alice Matched Symbol (Alice DB):", symbol);
-
-  log.debug("Alice Matched Symbol (Alice DB):", symbol);
+  // 🛡️ [IP BINDING]
+  // Create a fresh adapter instance if outgoingIp is provided
+  const activeAdapter = orderInput.outgoingIp ? new AliceBlueAdapter(orderInput.outgoingIp) : adapter;
 
   const rawTxType = orderInput.transactiontype || orderInput.side;
   const txType = rawTxType?.toString().toUpperCase();
@@ -124,7 +123,7 @@ export async function placeAliceOrderForClient(
   log.debug("Alice placeOrder payload:", payload);
 
   try {
-    const resp = await adapter.placeOrder(tokens.sessionId, payload);
+    const resp = await activeAdapter.placeOrder(tokens.sessionId, payload);
     return resp;
   } catch (err: any) {
     log.error("placeAliceOrderForClient failed:", err.message || err);

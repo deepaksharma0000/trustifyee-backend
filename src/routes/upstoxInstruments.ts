@@ -6,7 +6,11 @@ import UpstoxInstrumentModel from "../models/UpstoxInstrument";
 import log from "../utils/logger";
 
 const router = express.Router();
-const adapter = new UpstoxAdapter();
+let _adapter: UpstoxAdapter | null = null;
+function getAdapter() {
+  if (!_adapter) _adapter = new UpstoxAdapter();
+  return _adapter;
+}
 
 /**
  * Helper - get access token for user
@@ -60,7 +64,7 @@ router.post("/sync-option", async (req, res) => {
     const accessToken = await getAccessToken(userId);
 
     // fetch from Upstox
-    const rawResp = await adapter.fetchOptionContract(accessToken, instrument_key);
+    const rawResp = await getAdapter().fetchOptionContract(accessToken, instrument_key);
     const data = rawResp?.data?.data || rawResp?.data || rawResp;
 
 
@@ -225,7 +229,7 @@ router.get("/fetch-from-upstox", async (req, res) => {
     const params: any = {};
     if (q) params.q = q;
 
-    const resp = await adapter.searchInstruments(accessToken, params);
+    const resp = await getAdapter().searchInstruments(accessToken, params);
 
     const instruments = Array.isArray(resp) ? resp : resp?.data ?? resp?.instruments ?? [];
 
@@ -294,7 +298,7 @@ router.get("/:instrumentToken", async (req, res) => {
 
     const accessToken = await getAccessToken(userId);
     // Adapter call - adjust endpoint name if your Upstox API differs
-    const resp = await adapter.getInstrumentInfo(accessToken, instrumentToken);
+    const resp = await getAdapter().getInstrumentInfo(accessToken, instrumentToken);
 
     const payload = {
       instrument_token: instrumentToken,

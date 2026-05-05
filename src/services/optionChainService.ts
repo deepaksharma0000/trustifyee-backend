@@ -62,35 +62,30 @@ export function groupByExpiry(
  * Pick nearest or next expiry
  */
 export function pickExpiry(
-  chain: IUpstoxInstrument[],
-  mode: "NEAREST" | "NEXT" = "NEAREST"
+    chain: IUpstoxInstrument[],
+    mode: "NEAREST" | "NEXT" = "NEAREST"
 ): { expiry: string; instruments: IUpstoxInstrument[] } | null {
-  const byExpiry = groupByExpiry(chain);
-  const nowIst = moment().tz("Asia/Kolkata");
-  const todayStr = nowIst.format("YYYY-MM-DD");
-  const isPastMarketClose = nowIst.hours() > 15 || (nowIst.hours() === 15 && nowIst.minutes() >= 30);
+    const nowIst = moment().tz("Asia/Kolkata");
+    const todayStr = nowIst.format("YYYY-MM-DD");
 
-  const expiries = Object.keys(byExpiry)
-    .filter((k) => k !== "NO_EXPIRY")
-    .sort();
+    // Get unique expiry dates, filter out past expiries
+    const expiries = [...new Set(chain.map(i => {
+        if (!i.expiry) return null;
+        return moment(i.expiry).tz("Asia/Kolkata").format("YYYY-MM-DD");
+    }))]
+        .filter((e): e is string => !!e && e >= todayStr)
+        .sort();
 
-  if (expiries.length === 0) return null;
+    if (expiries.length === 0) return null;
 
-  const validExpiries = expiries.filter((d) => {
-    if (d < todayStr) return false;
-    if (d === todayStr && isPastMarketClose) return false;
-    return true;
-  });
+    const selectedExpiry = mode === "NEAREST"
+        ? expiries[0]
+        : expiries[1] || expiries[0];
 
-  if (validExpiries.length === 0) return null;
-
-  if (mode === "NEAREST") {
-    const exp = validExpiries[0];
-    return { expiry: exp, instruments: byExpiry[exp] };
-  } else {
-    const exp = validExpiries[Math.min(1, validExpiries.length - 1)];
-    return { expiry: exp, instruments: byExpiry[exp] };
-  }
+    return {
+        expiry: selectedExpiry,
+        instruments: chain.filter(i => i.expiry && moment(i.expiry).tz("Asia/Kolkata").format("YYYY-MM-DD") === selectedExpiry)
+    };
 }
 
 

@@ -32,24 +32,39 @@ export class UpstoxAdapter {
   private redirectUri: string;
   private apiKey: string;
   private client: AxiosInstance;
+  private outgoingIp?: string;
 
-  constructor() {
+  constructor(outgoingIp?: string) {
     this.clientId = config.upstoxClientId;
     this.clientSecret = config.upstoxApiSecret;
     this.redirectUri = config.upstoxRedirectUri;
     this.apiKey = config.upstoxApiKey;
+    this.outgoingIp = outgoingIp;
+
+    const { ipv4Agent } = require("../utils/httpAgent");
+    const https = require("https");
+
+    const agentOptions: any = {
+      keepAlive: true,
+      family: 4,
+      timeout: 15000
+    };
+
+    if (this.outgoingIp) {
+      agentOptions.localAddress = this.outgoingIp;
+    }
 
     this.client = axios.create({
       baseURL: "https://api.upstox.com/v2",
       timeout: 15000,
+      httpsAgent: this.outgoingIp ? new https.Agent(agentOptions) : ipv4Agent
     });
-    // Add debug logging to verify configuration
 
     log.debug("UpstoxAdapter initialized:", {
       clientId: this.clientId ? "***" + this.clientId.slice(-4) : "MISSING",
-      redirectUri: this.redirectUri
+      redirectUri: this.redirectUri,
+      outgoingIp: this.outgoingIp || 'DEFAULT'
     });
-
   }
 
 

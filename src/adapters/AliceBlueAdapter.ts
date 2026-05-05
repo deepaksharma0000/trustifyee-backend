@@ -12,6 +12,7 @@ export class AliceBlueAdapter {
   private client: AxiosInstance;
   private placeOrderPath: string;
   private orderStatusPath: string;
+  private outgoingIp?: string;
 
   // NEW: auth (vendor) config
   private appCode: string;
@@ -19,14 +20,28 @@ export class AliceBlueAdapter {
   private authBaseUrl: string;
   private getUserDetailsPath: string;
 
-  constructor() {
+  constructor(outgoingIp?: string) {
     this.clientId = config.aliceClientId;
-    this.apiKey = ""; // config.aliceApiKey;  // agar ab apiKey nahi chahiye to blank rakho
+    this.apiKey = ""; 
+    this.outgoingIp = outgoingIp;
 
-    // ye client pure tumhare existing order APIs ke liye hai
-    this.client = axios.create({
-      baseURL: config.aliceOrderBaseUrl, // https://a3.aliceblueonline.com/
+    const { ipv4Agent } = require("../utils/httpAgent");
+    const https = require("https");
+
+    const agentOptions: any = {
+      keepAlive: true,
+      family: 4,
       timeout: 15000
+    };
+
+    if (this.outgoingIp) {
+      agentOptions.localAddress = this.outgoingIp;
+    }
+
+    this.client = axios.create({
+      baseURL: config.aliceOrderBaseUrl, 
+      timeout: 15000,
+      httpsAgent: this.outgoingIp ? new https.Agent(agentOptions) : ipv4Agent
     });
 
     this.placeOrderPath = config.alicePlaceOrderPath;
@@ -38,8 +53,6 @@ export class AliceBlueAdapter {
     this.authBaseUrl = config.aliceAuthBaseUrl;
     this.getUserDetailsPath = config.aliceGetUserDetailsPath;
 
-    // 🚀 Robust path resolution: Use V1 standard if not provided in env
-    // Many issues come from the "/od/" part being incorrect for some versions.
     if (!this.placeOrderPath) this.placeOrderPath = "/open-api/v1/orders/place";
     if (!this.orderStatusPath) this.orderStatusPath = "/open-api/v1/orders/book";
     if (!this.getUserDetailsPath) this.getUserDetailsPath = "/open-api/v1/vendor/getUserDetails";

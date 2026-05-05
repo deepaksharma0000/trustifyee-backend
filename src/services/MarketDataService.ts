@@ -9,7 +9,11 @@ import { decrypt, ensureEncrypted, encrypt } from "../utils/encryption";
 // Removed global adapters to enforce per-user keys
 // const adapter = new AngelOneAdapter();
 // const upstoxAdapter = new UpstoxAdapter();
-const upstoxAdapter = new UpstoxAdapter(); // Keep Upstox as it's separate for now
+let _upstoxAdapter: UpstoxAdapter | null = null;
+function getUpstoxAdapter() {
+    if (!_upstoxAdapter) _upstoxAdapter = new UpstoxAdapter();
+    return _upstoxAdapter;
+}
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
 const CACHE_MS = 1500; // 1.5s for real-time feel
 let cooldownUntil = 0;
@@ -180,7 +184,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
             };
             const upstoxKey = upstoxMap[indexName];
             if (upstoxKey) {
-                const apiResp = await upstoxAdapter.getLtp(upstoxDoc.accessToken, upstoxKey);
+                const apiResp = await getUpstoxAdapter().getLtp(upstoxDoc.accessToken, upstoxKey);
                 const data = apiResp?.data || {};
                 let entry = data[upstoxKey as keyof typeof data];
                 if (!entry) {
@@ -232,7 +236,7 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
         if (isUpstox) {
             const upstoxDoc = await UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean();
             if (upstoxDoc?.accessToken) {
-                const apiResp = await upstoxAdapter.getLtp(upstoxDoc.accessToken, symboltoken);
+                const apiResp = await getUpstoxAdapter().getLtp(upstoxDoc.accessToken, symboltoken);
                 const data = apiResp?.data || {};
                 let entry = data[symboltoken as keyof typeof data];
                 if (!entry) {

@@ -5,7 +5,11 @@ import log from "../utils/logger";
 import { auth, adminOnly } from "../middleware/auth.middleware";
 
 const router = express.Router();
-const adapter = new UpstoxAdapter();
+let _adapter: UpstoxAdapter | null = null;
+function getAdapter() {
+  if (!_adapter) _adapter = new UpstoxAdapter();
+  return _adapter;
+}
 
 async function getAccessToken(userId: string) {
   const doc = await UpstoxTokensModel.findOne({ userId }).exec();
@@ -50,12 +54,12 @@ router.post("/place-option", auth, adminOnly, async (req, res) => {
         is_amo,
         tag
       };
-      const resp = await adapter.placeOrder(accessToken, orderPayload);
+      const resp = await getAdapter().placeOrder(accessToken, orderPayload);
       return res.json({ ok: true, usedProvidedToken: true, orderPayload, upstox: resp });
     }
 
     // Fetch contract/option chain
-    const rawResp = await adapter.fetchOptionContract(accessToken, instrument_key);
+    const rawResp = await getAdapter().fetchOptionContract(accessToken, instrument_key);
     const data = rawResp?.data ?? rawResp;
 
     log.debug("place-option rawResp length/case", { instrument_key, hasData: !!data });
@@ -162,7 +166,7 @@ router.post("/place-option", auth, adminOnly, async (req, res) => {
       tag
     };
 
-    const resp = await adapter.placeOrder(accessToken, orderPayload);
+    const resp = await getAdapter().placeOrder(accessToken, orderPayload);
 
     return res.json({
       ok: true,

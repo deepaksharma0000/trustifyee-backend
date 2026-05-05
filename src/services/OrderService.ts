@@ -124,7 +124,34 @@ export async function placeOrderForClient(
   }
 
   // 🚀 [BROKER ROUTING]
-  // If user is AliceBlue, delegate to AliceOrderService
+  const currentIp = orderInput.outgoingIp || user!?.outgoing_ip;
+
+  // 1. [UPSTOX]
+  if (user!.broker === "Upstox") {
+      try {
+          const { placeOptionOrder } = await import("./orderServices");
+          const upstoxTokens = await UpstoxTokensModel.findOne({ userId });
+          if (!upstoxTokens?.accessToken) throw new Error("No active Upstox session");
+
+          const upstoxResp = await placeOptionOrder(
+              orderInput.symboltoken || "",
+              orderInput.quantity, // lots logic happens inside orderServices
+              orderInput.side,
+              orderInput.ordertype || "MARKET",
+              orderInput.price,
+              decrypt(upstoxTokens.accessToken),
+              currentIp // [FIX 2] Pass IP
+          );
+
+          log.info(`PLACE_ORDER_UPSTOX_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
+          return { status: true, data: upstoxResp };
+      } catch (err: any) {
+          log.error(`UPSTOX_ORDER_FAILURE: ${clientcode} - ${err.message}`);
+          throw err;
+      }
+  }
+
+  // 2. [ALICEBLUE]
   if (user!.broker === "AliceBlue") {
     try {
       const { placeAliceOrderForClient } = await import("./AliceOrderService");
@@ -138,6 +165,7 @@ export async function placeOrderForClient(
         price: orderInput.price,
         symboltoken: orderInput.symboltoken,
         triggerPrice: orderInput.triggerPrice,
+        outgoingIp: currentIp // [FIX 2] Pass IP
       });
 
       if (aliceResp && (aliceResp.status === "Ok" || aliceResp.stat === "Ok")) {
@@ -184,6 +212,7 @@ export async function placeOrderForClient(
           throw new Error("Invalid session. Please login to your broker again.");
       }
 
+      // 🚀 [FIX 2] Pass outgoingIp to AngelOneAdapter
       const dynamicAdapter = new AngelOneAdapter(userApiKey, orderInput.outgoingIp || user!?.outgoing_ip);
 
 

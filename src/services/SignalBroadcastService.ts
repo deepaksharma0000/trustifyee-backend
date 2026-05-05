@@ -5,50 +5,52 @@ import { Signal } from "../models/Signal";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
 import { TradeOutbox } from "../models/TradeOutbox";
 import log from "../utils/logger";
-import { randomUUID } from "crypto";
 import { decrypt } from "../utils/encryption";
+import { v4 as uuidv4 } from 'uuid';
 
 export class SignalBroadcastService {
-    static async broadcast(signalId: string, correlationId: string = randomUUID()) {
-        const logger = log.child({ correlationId, signalId });
-        
-        // 🛡️ Check if MongoDB is running as a Replica Set (required for Transactions)
+    
+    // 🛡️ CRITICAL FIX 2: Restore broadcast() entry point
+    static async broadcast(signalId: string) {
+        const signal = await Signal.findById(signalId).lean();
+        if (!signal) throw new Error("Signal not found");
+        return await this.executeBroadcast(signal);
+    }
+
+    // 🛡️ CRITICAL FIX 3: Replica Set warning and Transaction Guard
+    static async executeBroadcast(signal: any) {
         const mongoClient = mongoose.connection.getClient() as any;
         const topoType = String(mongoClient?.topology?.description?.type || mongoClient?.topology?.type || "");
         const topoName = String(mongoClient?.topology?.constructor?.name || "");
         const isReplicaSet = topoType.includes("ReplicaSet") || topoName.includes("ReplicaSet");
 
         if (!isReplicaSet) {
-            log.warn("[DB] Standalone MongoDB detected. Running broadcast WITHOUT transaction.");
-            return await this.executeBroadcast(signalId, correlationId, undefined, logger);
+            log.warn("[DB] Standalone MongoDB — running without transaction.");
+            return await this._runBroadcast(signal, undefined);
         }
 
         const session = await mongoose.startSession();
         try {
-            let result;
+            let result: any;
             await session.withTransaction(async () => {
-                result = await this.executeBroadcast(signalId, correlationId, session, logger);
+                result = await this._runBroadcast(signal, session);
             });
-            logger.info("Broadcast Outbox records created successfully");
             return result;
         } catch (err: any) {
-            log.error("[SignalBroadcastService] Transaction failed:", err.message);
+            log.error("[SignalBroadcastService] Broadcast transaction failed:", err.message);
             throw err;
         } finally {
             session.endSession();
         }
     }
 
-    private static async executeBroadcast(signalId: string, correlationId: string, session: any, logger: any) {
-        const signal = await Signal.findById(signalId).session(session);
-        if (!signal) throw new Error("Signal not found");
-
-        // 🚀 Fetch users matching the signal strategy (Case-Insensitive)
+    private static async _runBroadcast(signal: any, session: any) {
+        const signalId = signal._id || (signal as any).signalId;
         const targetStrategy = signal.strategy || "Manual";
-        
-        // Build a flexible regex for strategy matching
-        const strategyRegex = new RegExp(`^${targetStrategy}$`, "i");
+        const correlationId = uuidv4();
 
+        // 🚀 Fetch users matching the signal strategy
+        const strategyRegex = new RegExp(`^${targetStrategy}$`, "i");
         const strategyQuery = targetStrategy === "Manual"
             ? { $or: [{ strategies: "Manual" }, { strategies: { $size: 0 } }, { strategies: { $exists: false } }] }
             : { strategies: { $in: [strategyRegex, targetStrategy] } };
@@ -57,35 +59,36 @@ export class SignalBroadcastService {
             status: "active", 
             trading_status: "enabled",
             ...strategyQuery
-        }).session(session).lean();
+        }).select('+outgoing_ip').session(session).lean();
 
         if (users.length === 0) {
-            log.warn(`[SignalBroadcastService] No active users found matching strategy: ${targetStrategy}`);
-            signal.status = "EXECUTION_IN_PROGRESS";
-            signal.totalExecutions = 0;
-            await signal.save({ session });
+            log.warn(`[SignalBroadcastService] No users for strategy: ${targetStrategy}`);
+            await Signal.updateOne({ _id: signalId }, { 
+                status: "EXECUTION_IN_PROGRESS", 
+                totalExecutions: 0 
+            }, { session });
             return { totalUsers: 0, livePlaced: 0, demoPlaced: 0, executions: [] };
         }
 
-        // Update signal status and target count
-        signal.status = "EXECUTION_IN_PROGRESS";
-        signal.totalExecutions = users.length;
-        await signal.save({ session });
+        // Update signal status
+        await Signal.updateOne({ _id: signalId }, { 
+            status: "EXECUTION_IN_PROGRESS", 
+            totalExecutions: users.length 
+        }, { session });
 
         const executions: any[] = [];
         let liveCount = 0;
         let demoCount = 0;
 
         for (const user of users) {
-            // 🛡️ UNIQUE ID: SignalID + UserID + Timestamp (prevents collision)
             const ts = Date.now().toString().slice(-4);
-            const clientOrderId = `SIG-${signalId.toString().slice(-4)}-${user._id.toString().slice(-4)}-${ts}`;
+            const clientOrderId = `AUTO-${signalId.toString().slice(-4)}-${user._id.toString().slice(-4)}-${ts}`;
             
             const userLicence = String(user.licence || "Live").toLowerCase();
             const isLive = userLicence === "live";
 
             try {
-                // 🛡️ 2. RECORD EXECUTION INTENT
+                // 🛡️ CRITICAL FIX 2: RECORD EXECUTION INTENT (Inside loop)
                 await SignalExecutionResult.create([{
                     signalId,
                     userId: user._id,
@@ -95,7 +98,7 @@ export class SignalBroadcastService {
                     correlationId,
                 }], { session });
 
-                // 🛡️ 3. WRITE TO OUTBOX
+                // 🛡️ WRITE TO OUTBOX
                 await TradeOutbox.create([{
                     correlationId,
                     payload: {
@@ -103,6 +106,7 @@ export class SignalBroadcastService {
                         signalId,
                         clientOrderId,
                         clientCode: user.client_key ? decrypt(user.client_key) : "",
+                        outgoingIp: user.outgoing_ip || "",
                         orderData: {
                             exchange: signal.exchange || "NFO",
                             tradingsymbol: signal.tradingsymbol,
@@ -121,18 +125,12 @@ export class SignalBroadcastService {
                 executions.push({
                     userName: user.user_name || user.email,
                     licence: user.licence || "Live",
-                    online: user.is_online || false,
-                    broker: user.broker || "ANGELONE",
-                    status: "QUEUED",
-                    message: "Order queued"
+                    status: "QUEUED"
                 });
                 
             } catch (err: any) {
                 executions.push({
                     userName: user.user_name || user.email,
-                    licence: user.licence || "Live",
-                    online: user.is_online || false,
-                    broker: user.broker || "ANGELONE",
                     status: "FAILED",
                     message: err.message
                 });

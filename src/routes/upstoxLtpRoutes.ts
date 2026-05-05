@@ -3,7 +3,11 @@ import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 
 const router = Router();
-const adapter = new UpstoxAdapter();
+let _adapter: UpstoxAdapter | null = null;
+function getAdapter() {
+  if (!_adapter) _adapter = new UpstoxAdapter();
+  return _adapter;
+}
 
 async function getAccessToken(userId: string) {
   const doc = await UpstoxTokensModel.findOne({ userId }).exec();
@@ -37,7 +41,7 @@ router.get("/index-ltp", async (req, res) => {
 
     const accessToken = await getAccessToken(String(userId));
 
-    const apiResp = await adapter.getLtp(accessToken, key);
+    const apiResp = await getAdapter().getLtp(accessToken, key);
     const data = apiResp?.data || {};
     let entry = data[key as keyof typeof data];
     if (!entry) {

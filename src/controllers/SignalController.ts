@@ -4,9 +4,11 @@ import InstrumentModel from '../models/Instrument';
 import UpstoxInstrumentModel from '../models/UpstoxInstrument';
 import { Signal } from '../models/Signal';
 import { SignalExecutionResult } from '../models/SignalExecutionResult';
-import { SignalBroadcastService } from '../services/SignalBroadcastService';
+import { tradeQueue } from '../utils/tradeQueue';
 import { decrypt } from '../utils/encryption';
+import { SignalBroadcastService } from '../services/SignalBroadcastService';
 import log from '../utils/logger';
+import { v4 as uuidv4 } from 'uuid';
 
 export const queueExecution = async (req: Request, res: Response) => {
     try {
@@ -15,87 +17,81 @@ export const queueExecution = async (req: Request, res: Response) => {
 
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
+        // Block only if already SUCCESS
         const existing = await SignalExecutionResult.findOne({
-            signalId,
-            userId,
-            status: { $in: ["PENDING", "QUEUED", "SUCCESS"] }
+            signalId, userId, status: "SUCCESS"
         }).lean();
-
         if (existing) {
             return res.status(200).json({
                 status: true,
-                message: "Signal already in queue or executed",
-                currentStatus: existing.status
+                message: "Signal already executed successfully",
+                currentStatus: "SUCCESS"
             });
         }
+
+        // Reset stuck PENDING older than 2 mins
+        await SignalExecutionResult.updateMany(
+            { signalId, userId, status: "PENDING",
+              createdAt: { $lt: new Date(Date.now() - 2 * 60 * 1000) } },
+            { $set: { status: "FAILED", error: "Auto-reset: stuck PENDING" } }
+        );
 
         const signal = await Signal.findById(signalId);
         if (!signal || signal.status === "FAILED") {
             return res.status(404).json({ error: "Signal not found or invalid", status: false });
         }
 
-        const user = await User.findById(userId);
+        const user = await User.findById(userId)
+            .select('+outgoing_ip +broker_password +broker_totp_secret')
+            .lean();
         if (!user) return res.status(404).json({ error: "User not found", status: false });
 
-        const suffix = Date.now().toString().slice(-6);
-        const clientOrderId = `SIG-${String(signalId).slice(-4)}-${String(userId).slice(-4)}-${suffix}`;
-        const correlationId = `${signalId}-${userId}-${Date.now()}`;
-
-        await SignalExecutionResult.create({
-            signalId,
-            userId,
-            clientOrderId,
-            broker: user.broker || "ANGELONE",
-            status: "PENDING",
-            source: "BACKEND_BLOCKED"
-        });
-
-        const { Queue } = await import("bullmq");
-        const userQueue = new Queue("trade-execution", {
-            connection: {
-                host: process.env.REDIS_HOST || "127.0.0.1",
-                port: Number(process.env.REDIS_PORT || 6379)
-            }
-        });
-
+        // Resolve instrument token
         const inst = await InstrumentModel.findOne({
             tradingsymbol: signal.tradingsymbol,
             exchange: signal.exchange
         }).lean();
-        const upstoxInst = await UpstoxInstrumentModel.findOne({ tradingsymbol: signal.tradingsymbol }).lean() as any;
+        const upstoxInst = await UpstoxInstrumentModel.findOne({
+            tradingsymbol: signal.tradingsymbol
+        }).lean() as any;
         const symboltoken = inst?.symboltoken || upstoxInst?.instrument_key;
 
-        log.info(`[SignalController] Queueing signal ${signal.tradingsymbol} for ${user.user_name} (Token: ${symboltoken || "N/A"})`);
+        const clientOrderId = `USER-${uuidv4()}`;
+        const correlationId = uuidv4();
 
-        await userQueue.add(
-            `exec-${clientOrderId}`,
-            {
-                userId,
-                signalId,
-                clientOrderId,
-                correlationId,
-                clientCode: decrypt(user.client_key || ""),
-                orderData: {
-                    exchange: signal.exchange,
-                    tradingsymbol: signal.tradingsymbol,
-                    side: signal.side,
-                    quantity: (Number(lots) || 1) * signal.quantity,
-                    strategy: signal.strategy || "Manual",
-                    symboltoken,
-                    broker: user.broker || "ANGELONE"
-                }
-            },
-            {
-                attempts: 3,
-                backoff: { type: "exponential", delay: 2000 }
+        await SignalExecutionResult.create({
+            signalId, userId, clientOrderId,
+            broker: user.broker || "ANGELONE",
+            status: "PENDING",
+            correlationId,
+            source: "USER_QUEUE"
+        });
+
+        await tradeQueue.add(`exec-${clientOrderId}`, {
+            userId,
+            signalId,
+            clientOrderId,
+            correlationId,
+            clientCode: decrypt(user.client_key || ""),
+            orderData: {
+                exchange: signal.exchange,
+                tradingsymbol: signal.tradingsymbol,
+                side: signal.side,
+                quantity: (Number(lots) || 1) * signal.quantity,
+                strategy: signal.strategy || "Manual",
+                symboltoken,
+                broker: user.broker || "ANGELONE",
+                outgoingIp: user.outgoing_ip || undefined
             }
-        );
-
-        await userQueue.close();
+        }, {
+            attempts: 3,
+            backoff: { type: "exponential", delay: 2000 }
+        });
 
         return res.json({
             status: true,
             message: "Execution queued.",
+            clientOrderId,
             trackingStatus: "PENDING"
         });
     } catch (err: any) {
@@ -112,110 +108,43 @@ export const executeSignal = async (_req: Request, res: Response) => {
     });
 };
 
-/**
- * FIXED: Clean Controller focusing on Request/Response handling
- */
 export const broadcastSignal = async (req: Request, res: Response) => {
     try {
         const { signalId } = req.body;
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
-
         const result = await SignalBroadcastService.broadcast(signalId);
-        
-        res.status(200).json({
-            status: true,
-            message: "Broadcast initiated",
-            ...result
-        });
+        res.status(200).json({ status: true, message: "Broadcast initiated", ...result });
     } catch (err: any) {
         log.error("[SignalController] Broadcast error:", err);
         res.status(500).json({ error: err.message, status: false });
     }
 };
-
-/**
- * FIXED: Uses Aggregation to fetch stats for all signals in ONE query
- */
 export const getAllSignals = async (req: Request, res: Response) => {
     try {
-        const { strategy, search } = req.query;
-        let matchStage: any = {};
-
-        if (strategy && strategy !== 'All') matchStage.strategy = strategy;
-        if (search) {
-            matchStage.$or = [
-                { symbol: { $regex: search, $options: 'i' } },
-                { tradingsymbol: { $regex: search, $options: 'i' } }
-            ];
-        }
-
-        const data = await Signal.aggregate([
-            { $match: matchStage },
-            { $sort: { createdAt: -1 } },
-            { $limit: 100 },
-            {
-                $lookup: {
-                    from: 'signalexecutionresults',
-                    localField: '_id',
-                    foreignField: 'signalId',
-                    as: 'results'
-                }
-            },
-            {
-                $addFields: {
-                    totalExecutions: { $size: '$results' },
-                    successCount: {
-                        $size: {
-                            $filter: {
-                                input: '$results',
-                                as: 'r',
-                                cond: { $eq: ['$$r.status', 'SUCCESS'] }
-                            }
-                        }
-                    },
-                    failCount: {
-                        $size: {
-                            $filter: {
-                                input: '$results',
-                                as: 'r',
-                                cond: { $eq: ['$$r.status', 'FAILED'] }
-                            }
-                        }
-                    }
-                }
-            },
-            { $project: { results: 0 } } // Exclude raw results for performance
-        ]);
-
-        res.status(200).json({ status: true, data });
+        const signals = await Signal.find().sort({ createdAt: -1 }).limit(100);
+        res.json({ status: true, data: signals });
     } catch (err: any) {
-        res.status(500).json({ error: err.message, status: false });
+        res.status(500).json({ status: false, error: err.message });
     }
 };
 
 export const getActiveSignals = async (req: Request, res: Response) => {
-    // Similar aggregation as above but for ACTIVE status
-    return getAllSignals(req, res); 
+    try {
+        const signals = await Signal.find({ status: "ACTIVE" }).sort({ createdAt: -1 });
+        res.json({ status: true, data: signals });
+    } catch (err: any) {
+        res.status(500).json({ status: false, error: err.message });
+    }
 };
 
 export const getExecutionStatus = async (req: Request, res: Response) => {
     try {
         const { signalId } = req.params;
         const userId = (req as any).id;
-
-        if (!signalId) {
-            return res.status(400).json({ status: false, error: "Signal ID is required" });
-        }
-
-        const execution = await SignalExecutionResult.findOne({ signalId, userId }).lean();
-
-        if (!execution) {
-            return res.status(404).json({ status: false, message: "No execution record found for this signal" });
-        }
-
-        return res.status(200).json({ status: true, data: execution });
+        const result = await SignalExecutionResult.findOne({ signalId, userId }).lean();
+        if (!result) return res.json({ status: true, data: { status: "PENDING" } });
+        res.json({ status: true, data: result });
     } catch (err: any) {
-        log.error("[SIGNAL_EXECUTION] Error fetching execution status:", err);
-        return res.status(500).json({ status: false, error: err.message });
+        res.status(500).json({ status: false, error: err.message });
     }
 };

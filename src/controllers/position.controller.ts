@@ -4,6 +4,7 @@ import { placeOrderForClient, getOrderStatusForClient } from "../services/OrderS
 import AngelTokensModel from "../models/AngelTokens";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import log from "../utils/logger";
+import { getUpstoxAdapter } from "../utils/upstox";
 import { PlaceOrderInput } from "../services/OrderService";
 
 export const getOpenPositions = async (req: Request, res: Response) => {
@@ -77,7 +78,7 @@ export const getOpenPositions = async (req: Request, res: Response) => {
       ]);
 
       const angelAdapter = new AngelOneAdapter();
-      const upstoxAdapter = new UpstoxAdapter();
+      const upstoxAdapter = getUpstoxAdapter();
 
       positionsWithLtp = await Promise.all(positions.map(async (p: any) => {
         try {
