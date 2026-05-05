@@ -44,6 +44,13 @@ export class AngelOneAdapter {
       log.info(`[ADAPTER_BIND] Using manual outgoing IP: ${this.outgoingIp}`);
     }
 
+    const isIPv4 = (ip: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+
+    if (this.outgoingIp && !isIPv4(this.outgoingIp)) {
+        log.error(`[ADAPTER] IPv6 detected and BLOCKED: ${this.outgoingIp}. Using config.publicIp.`);
+        this.outgoingIp = config.publicIp || undefined;
+    }
+
     this.client = axios.create({
       baseURL: this.forcedBaseUrl,
       timeout: 60000,
@@ -87,8 +94,8 @@ export class AngelOneAdapter {
 
   // ------------ LOGIN (Trading APIs - Password Based) ------------
   async generateSession(credentials: { clientcode: string; password: string; totp: string; totp_secret?: string }) {
-    // 🚀 UPGRADED TO v2 ENDPOINT (More stable for current SmartAPI accounts)
-    const path = "/rest/auth/angelbroking/user/v2/loginByPassword";
+    // 🚀 RESTORED TO v1 ENDPOINT (v2 is being blocked by WAF/Firewall)
+    const path = "/rest/auth/angelbroking/user/v1/loginByPassword";
     const fullUrl = `${this.forcedBaseUrl}${path}`;
     
     // 🛡️ Automated TOTP Generation
@@ -112,6 +119,7 @@ export class AngelOneAdapter {
     };
 
     log.info(`[LOGIN_REQUEST] LOGIN_URL: ${fullUrl} | Account: ${credentials.clientcode}`);
+    log.info(`[LOGIN_DEBUG] Payload being sent: clientcode=${credentials.clientcode}, apikey=${this.apiKey?.slice(0,4)}****, totp=${finalTotp}`);
     
     try {
       const resp = await this.client.post(path, payload, {
@@ -119,6 +127,7 @@ export class AngelOneAdapter {
       });
       return resp;
     } catch (err: any) {
+      log.error(`[LOGIN_RAW_ERROR] Full Response: ${JSON.stringify(err?.response?.data || { message: err.message, stack: err.stack })}`);
       log.error("Login session failed", err?.response?.data || err.message);
       throw err;
     }

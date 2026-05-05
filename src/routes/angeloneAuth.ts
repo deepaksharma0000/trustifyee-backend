@@ -102,11 +102,14 @@ router.post('/generate-session', auth, async (req: any, res) => {
             return res.status(400).json({ status: false, error: 'TOTP or TOTP Secret is required. Enter current 6-digit TOTP or your TOTP secret key.' });
         }
 
-        log.info(`[BROKER_AUTH] Generating session: ${userType}=${userId}, client=${client_code}, apiKeySource=${keySource}`);
-        
-        // FIX: Ensure adapter always uses server's static IP if no dedicated IP assigned
-        const outgoingIp = profile.outgoing_ip || config.publicIp;
-        log.info(`[BROKER_AUTH] Using outgoing IP: ${outgoingIp} for client: ${client_code}`);
+        // FIX: Force IPv4 validation and fallback
+        const isValidIPv4 = (ip?: string): boolean => 
+            !!ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+
+        const rawIp = profile.outgoing_ip || config.publicIp;
+        const outgoingIp = isValidIPv4(rawIp) ? rawIp : config.publicIp;
+
+        log.info(`[BROKER_AUTH] Final IP: ${outgoingIp} (raw was: ${rawIp})`);
 
         // Step 7: Call AngelOne API
         const adapter = new AngelOneAdapter(decryptedApiKey, outgoingIp);

@@ -98,8 +98,13 @@ router.post("/angel/login", auth, async (req: any, res) => {
     const apiKey = req.body.api_key || (user ? decrypt(user.api_key || "") : "");
     if (!apiKey) return res.status(400).json({ ok: false, error: "API Key missing. Please provide it." });
 
-    const outgoingIp = (user as any)?.outgoing_ip || config.publicIp;
-    log.info(`[BROKER_AUTH] Using outgoing IP: ${outgoingIp} for client: ${clientcode}`);
+    const isValidIPv4 = (ip?: string): boolean => 
+        !!ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+
+    const rawIp = (user as any)?.outgoing_ip || config.publicIp;
+    const outgoingIp = isValidIPv4(rawIp) ? rawIp : config.publicIp;
+
+    log.info(`[BROKER_AUTH] Final IP: ${outgoingIp} (raw was: ${rawIp})`);
     const adapter = new AngelOneAdapter(apiKey, outgoingIp);
 
     // Call Angel One API

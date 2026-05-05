@@ -59,40 +59,31 @@ import { initTradeExecutionWorker } from "./jobs/TradeExecutionWorker";
 initAutoExitWorker();
 initTradeExecutionWorker();
 
+import { getPublicIp } from "./utils/ipService";
+
 async function updatePublicIp() {
   try {
-    const [ipv4, ipv6] = await Promise.all([
-      axios.get("https://ipv4.icanhazip.com").then(r => r.data.trim()).catch(() => null),
-      axios.get("https://ipv6.icanhazip.com").then(r => r.data.trim()).catch(() => null)
-    ]);
-
-    // Prioritize IPv6 if available (since many users whitelist IPv6 range)
-    const ip = ipv6 || ipv4;
+    const ip = getPublicIp();
     (config as any).publicIp = ip;
-    log.info(`🌍 Current Public IP updated: ${ip} (v6: ${ipv6 || 'none'}, v4: ${ipv4 || 'none'})`);
+
   } catch (err: any) {
-    log.warn(`⚠️ Failed to fetch public IP: ${err.message}`);
+    log.warn(`⚠️ Failed to set public IP: ${err.message}`);
   }
 }
 
 async function start() {
   try {
-    log.info("🚀 Starting server...");
-    
-    // [ISSUE 1 FIX] Ensure ENCRYPTION_SECRET is present and length >= 32
+
     const { validateConfig } = require("./config");
     validateConfig();
 
     await updatePublicIp();
     setInterval(updatePublicIp, 5 * 60 * 1000); // Update every 5 mins
 
-    log.info(`Connecting to MongoDB at: ${config.mongoUri}`);
     await mongoose.connect(config.mongoUri);
-    log.info("✅ Connected to MongoDB");
 
     // Additional guard check
     if (!config.encryptionKey || config.encryptionKey.length < 32) {
-      log.error("❌ CRITICAL: ENCRYPTION_SECRET is missing or too short in .env! Encryption will fail or be insecure.");
       if (config.nodeEnv === 'production') process.exit(1);
     }
 
@@ -104,60 +95,48 @@ async function start() {
 
     // 💹 Initialize dedicated Data Feed Layer
     const { dataFeedService } = require("./services/DataFeedService");
-    // [FIX] dataFeedService.init is not a function, removing call.
-
-    // FIX #8: Recover any AlgoRuns that were "running" before last restart
     await recoverRunningRuns();
 
-    // Upstox Initial Sync (Optional/Non-critical)
     try {
       const upstoxUser = await User.findOne({
-          broker: { $regex: /^upstox$/i }, // Case-insensitive
-          status: 'active',
-          broker_connected: true
+        broker: { $regex: /^upstox$/i }, // Case-insensitive
+        status: 'active',
+        broker_connected: true
       }).lean();
 
       if (!upstoxUser) {
-          log.info('[Upstox Sync] No active Upstox users found. Skipping sync.');
       } else {
-          log.info("Syncing Upstox Option Chain...");
-          const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
-          log.info("✅ Upstox Options Sync success");
+        const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
       }
     } catch (err: any) {
-      log.warn(`⚠️ Upstox Options Sync skipped/failed: ${err.message}`);
+
     }
 
     const app = express();
     app.use(cors({
-        origin: (origin, callback) => {
-            const allowed = [
-                ...(config.corsOrigins || []),
-                "http://localhost:8080",
-                "http://localhost:3000",
-                config.frontendUrl
-            ].filter(Boolean);
+      origin: (origin, callback) => {
+        const allowed = [
+          ...(config.corsOrigins || []),
+          "http://localhost:8080",
+          "http://localhost:3000",
+          config.frontendUrl
+        ].filter(Boolean);
 
-            if (!origin || allowed.includes(origin)) {
-                callback(null, true);
-            } else {
-                log.warn(`[CORS] Blocked origin: ${origin}`);
-                callback(new Error(`CORS: Origin ${origin} not allowed`));
-            }
-        },
-        credentials: true,
-        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "x-access-token", "x-user-id", "x-correlation-id"]
+        if (!origin || allowed.includes(origin)) {
+          callback(null, true);
+        } else {
+          log.warn(`[CORS] Blocked origin: ${origin}`);
+          callback(new Error(`CORS: Origin ${origin} not allowed`));
+        }
+      },
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "x-access-token", "x-user-id", "x-correlation-id"]
     }));
 
     app.use(bodyParser.json());
-
-    // Angel One - Old syncs removed to favor the optimized one above
-
-    // Static
     app.use("/uploads", express.static("uploads"));
 
-    // App Routes
     app.use("/api", appAuthRoutes);
     app.use("/api", adminRoutes);
     app.use("/api", userRoutes);
@@ -172,14 +151,11 @@ async function start() {
     app.use("/api/pnl", pnlRoutes);
     app.use("/api/webhook", webhookRoutes);
 
-    // 🛡️ INITIALIZE PRODUCTION BACKGROUND TASKS
     const { OutboxService } = require("./services/OutboxService");
     const { MonitoringService } = require("./services/MonitoringService");
-    
-    // Process Outbox every 2 seconds
+
     setInterval(() => OutboxService.processPending(), 2000);
-    
-    // Log Metrics every 1 minute
+
     setInterval(() => MonitoringService.logSystemMetrics(), 60000);
 
     setInterval(() => {
@@ -188,7 +164,6 @@ async function start() {
 
     app.use("/api/market", marketStatusRoutes);
 
-    // Upstox
     app.use("/api/upstox/auth", upstoxAuthRoutes);
     app.use("/api/upstox/orders", upstoxOrder);
     app.use("/api/upstox", upstoxOrderRoutes);
@@ -196,7 +171,6 @@ async function start() {
     app.use("/api/upstox", upstoxAlgoOrderRoutes);
     app.use("/api/upstox/ltp", upstoxLtpRoutes);
 
-    // Algo engine
     app.use("/api/algo", algoRoutes);
     app.use("/api/strategy", strategyHelperRoutes);
     app.use("/api/alice", aliceAuthRoutes);
@@ -214,17 +188,17 @@ async function start() {
     app.use("/api/tickets", ticketRoutes);
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
-    
+
     // FIX: Comprehensive Health check endpoint
     app.get("/health", (req, res) => {
-        res.json({
-            status: 'ok',
-            timestamp: new Date().toISOString(),
-            mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-            env: config.nodeEnv,
-            executionMode: config.executionMode,
-            version: process.env.npm_package_version || '1.0.0'
-        });
+      res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+        env: config.nodeEnv,
+        executionMode: config.executionMode,
+        version: process.env.npm_package_version || '1.0.0'
+      });
     });
 
     const server = http.createServer(app);
@@ -232,30 +206,23 @@ async function start() {
     startSignalStream(server);  // FIX #1 — Signal push on /ws/signals
 
     server.on('error', (err: any) => {
-        if (err.code === 'EADDRINUSE') {
-            log.error(`❌ Port ${config.port} is already in use. Kill the process and restart.`);
-            process.exit(1);
-        } else {
-            throw err;
-        }
+      if (err.code === 'EADDRINUSE') {
+        log.error(`❌ Port ${config.port} is already in use. Kill the process and restart.`);
+        process.exit(1);
+      } else {
+        throw err;
+      }
     });
 
     server.listen(config.port, async () => {
-      log.info(`📡 Server listening on port ${config.port}`);
 
-      // ⚡ [BACKGROUND] FORCED FULL SYNC (Required for production accuracy)
-      // Running after listen so health check and login work immediately
       try {
-        log.info("🔄 [Background] Initiating Forced Instrument Sync...");
         await syncAllOptionInstruments();
-        log.info("✅ [Background] AngelOne Options Sync complete.");
       } catch (err: any) {
-        log.error("❌ [Background] Instrument Sync Failed:", err.message);
       }
     });
 
   } catch (err: any) {
-    log.error("❌ Critical Failure during startup:", err);
     process.exit(1);
   }
 }
