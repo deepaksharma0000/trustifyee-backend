@@ -97,7 +97,9 @@ router.post("/angel/login", auth, async (req: any, res) => {
     const apiKey = req.body.api_key || (user ? decrypt(user.api_key || "") : "");
     if (!apiKey) return res.status(400).json({ ok: false, error: "API Key missing. Please provide it." });
 
-    const adapter = new AngelOneAdapter(apiKey, (user as any)?.outgoing_ip);
+    const outgoingIp = (user as any)?.outgoing_ip || config.publicIp;
+    log.info(`[BROKER_AUTH] Using outgoing IP: ${outgoingIp} for client: ${clientcode}`);
+    const adapter = new AngelOneAdapter(apiKey, outgoingIp);
 
     // Call Angel One API
     const resp: AngelSessionResp = await adapter.generateSession({ clientcode, password, totp });
