@@ -64,6 +64,7 @@ export const config = {
   dataPassword: process.env.DATA_PASSWORD || "",
   dataTotpSecret: process.env.DATA_TOTP_SECRET || "",
   agentSecret: process.env.AGENT_SECRET || "default_agent_secret",
+  circuitBreakerThreshold: process.env.CIRCUIT_BREAKER_THRESHOLD ? Number(process.env.CIRCUIT_BREAKER_THRESHOLD) : 100,
 };
 
 // --- STARTUP VALIDATION ---
