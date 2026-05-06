@@ -18,15 +18,17 @@ export class AngelOneAdapter {
   private apiKey: string;
   private client: AxiosInstance;
   private outgoingIp?: string;
+  private agentUrl?: string;
   private tokenPath: string = "/rest/auth/angelbroking/jwt/v1/generateTokens";
   private refreshTokenPath: string = "/rest/auth/angelbroking/jwt/v1/refreshToken";
 
   // Force official production URL to avoid 405/proxy issues
   private forcedBaseUrl: string = "https://apiconnect.angelone.in";
 
-  constructor(apiKey?: string, outgoingIp?: string, isDataAccount: boolean = false) {
+  constructor(apiKey?: string, outgoingIp?: string, isDataAccount: boolean = false, agentUrl?: string) {
     this.apiKey = apiKey || "";
     this.outgoingIp = outgoingIp;
+    this.agentUrl = agentUrl;
 
     if (!this.apiKey) {
       log.error("AngelOneAdapter: API key missing.");
@@ -52,21 +54,22 @@ export class AngelOneAdapter {
     }
 
     // 🛡️ SEBI COMPLIANCE: If outgoingIp is intended but missing/empty, DO NOT use ipv4Agent (server IP)
-    // For trading accounts, we must have a localAddress.
+    // For trading accounts, we must have a localAddress OR an agentUrl.
     const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
+    const hasAgent = this.agentUrl && String(this.agentUrl).trim() !== "";
     
-    if (!isIpValid && !isDataAccount) {
-        log.error(`[ADAPTER_BIND_ERROR] Trading session for API Key ${this.apiKey?.slice(0,5)} requires a valid static IP. Blocking.`);
+    if (!isIpValid && !isDataAccount && !hasAgent) {
+        log.error(`[ADAPTER_BIND_ERROR] Trading session for API Key ${this.apiKey?.slice(0,5)} requires a valid static IP or VPS Agent. Blocking.`);
         throw new Error("User static IP not registered. Please contact admin.");
     }
 
     this.client = axios.create({
       baseURL: this.forcedBaseUrl,
       timeout: 60000,
-      httpsAgent: isIpValid ? new https.Agent(agentOptions) : ipv4Agent
+      httpsAgent: (isIpValid && !hasAgent) ? new https.Agent(agentOptions) : ipv4Agent
     });
 
-    log.info(`[DATA_ACCOUNT_USED] Adapter initialized | Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | IP: ${this.outgoingIp || (isDataAccount ? 'SYSTEM_DEFAULT' : 'BLOCKED')}`);
+    log.info(`[ADAPTER_INIT] Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | IP: ${this.outgoingIp || 'DEFAULT'} | Agent: ${this.agentUrl || 'NONE'}`);
 
     // Allow ENV override for token paths
     if (config.genPath) this.tokenPath = config.genPath;
@@ -255,5 +258,32 @@ export class AngelOneAdapter {
     const path = "/rest/secure/angelbroking/order/v1/searchScrip";
     const body = { exchange, searchtext };
     return await this.authPost(token, path, body);
+  }
+
+  // ------------ VPS AGENT ROUTING ------------
+  async placeOrder(jwtToken: string, payload: any) {
+    if (this.agentUrl) {
+        const { safeDecrypt } = require("../utils/encryption");
+        const decApiKey = safeDecrypt(this.apiKey, "agent_routing");
+        
+        const agentPayload = {
+            secret: config.agentSecret,
+            jwtToken: decrypt(jwtToken, "agent_routing_jwt"),
+            apiKey: decApiKey,
+            orderPayload: payload
+        };
+
+        log.info(`[AGENT_ROUTING] Routing order for ${payload.tradingsymbol} to ${this.agentUrl}`);
+        try {
+            const resp = await axios.post(`${this.agentUrl}/place-order`, agentPayload, { timeout: 15000 });
+            return resp;
+        } catch (err: any) {
+            log.error(`[AGENT_ERROR] Failed to route to agent ${this.agentUrl}: ${err.message}`);
+            throw err;
+        }
+    }
+
+    // Direct route (default)
+    return await this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
   }
 }

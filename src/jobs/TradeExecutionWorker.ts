@@ -12,18 +12,19 @@ export const initTradeExecutionWorker = () => {
     const worker = new Worker(
         "trade-execution",
         async (job) => {
-            const { userId, signalId, clientOrderId, clientCode, orderData, correlationId, outgoingIp: jobOutgoingIp } = job.data;
+            const { userId, signalId, clientOrderId, clientCode, orderData, correlationId, outgoingIp: jobOutgoingIp, agentUrl: jobAgentUrl } = job.data;
             const logger = log.child({ correlationId, clientOrderId, userId });
             
             // 🛡️ 1. Fetch user from MongoDB with sensitive fields
-            const userDoc = await User.findById(userId).select('+outgoing_ip +broker_password +broker_totp_secret').lean();
+            const userDoc = await User.findById(userId).select('+outgoing_ip +agent_url +broker_password +broker_totp_secret').lean();
             if (!userDoc) throw new Error(`User ${userId} not found`);
 
             // 🛡️ 2. SEBI COMPLIANCE: Static IP Guard
-            // Every user must trade via their registered static IP. No fallback to server IP.
+            // Every user must trade via their registered static IP or VPS Agent. No fallback to server IP.
             const outgoingIp = (jobOutgoingIp && String(jobOutgoingIp).trim() !== "") ? jobOutgoingIp : (userDoc.outgoing_ip || "");
+            const agentUrl = (jobAgentUrl && String(jobAgentUrl).trim() !== "") ? jobAgentUrl : ((userDoc as any).agent_url || "");
             
-            if (!outgoingIp || String(outgoingIp).trim() === "") {
+            if ((!outgoingIp || String(outgoingIp).trim() === "") && (!agentUrl || String(agentUrl).trim() === "")) {
                 const ipError = "User static IP not registered. Please contact admin.";
                 logger.error(`[SEBI_VIOLATION] Trade BLOCKED for ${userDoc.user_name || userDoc.email}: ${ipError}`);
                 
@@ -73,7 +74,8 @@ export const initTradeExecutionWorker = () => {
                 const resp = await placeOrderForClient(userId, clientCode, {
                     ...orderData,
                     clientOrderId,
-                    outgoingIp // ← ADDED AS PER FIX 1
+                    outgoingIp,
+                    agentUrl
                 });
 
                 const orderId = resp?.data?.orderid || resp?.data?.data?.orderid;

@@ -63,6 +63,7 @@ export const config = {
   dataApiKey: process.env.DATA_API_KEY || "",
   dataPassword: process.env.DATA_PASSWORD || "",
   dataTotpSecret: process.env.DATA_TOTP_SECRET || "",
+  agentSecret: process.env.AGENT_SECRET || "default_agent_secret",
 };
 
 // --- STARTUP VALIDATION ---

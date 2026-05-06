@@ -30,6 +30,7 @@ export interface IUser extends Document {
     broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
     broker_password?: string; // [NEW] Added for automated session re-sync
     outgoing_ip?: string; // Binding IP for requests
+    agent_url?: string; // [NEW] VPS Agent URL for isolated routing
     strategy_id_map?: Map<string, string>; // { 'Alpha': 'STRAT_001', 'IronCondor': 'STRAT_002' }
 
     created_at: Date;
@@ -66,6 +67,7 @@ const UserSchema: Schema = new Schema({
     broker_totp_secret: { type: String, select: false }, // [SECURE] Hidden by default
     broker_password: { type: String, select: false }, // [SECURE] Hidden by default
     outgoing_ip: { type: String }, // Static IPv4 assigned to this user
+    agent_url: { type: String }, // URL of the VPS agent (e.g. http://ip:3001)
     strategy_id_map: { type: Map, of: String, default: {} },
     execution_node_id: { type: String }, // Docker container ID or Node name
     dedicated_ip_enabled: { type: Boolean, default: false } // Whether user has a dedicated IP environment

@@ -28,6 +28,7 @@ export type PlaceOrderInput = {
   symboltoken?: string;
   triggerPrice?: number;
   outgoingIp?: string; // [NEW] Override for isolated nodes
+  agentUrl?: string; // [NEW] VPS Agent URL
   // For dynamic sizing
 
   isDynamicQty?: boolean;
@@ -237,8 +238,13 @@ export async function placeOrderForClient(
           throw new Error("Invalid session. Please login to your broker again.");
       }
 
-      // 🚀 [FIX 2] Pass outgoingIp to AngelOneAdapter
-      const dynamicAdapter = new AngelOneAdapter(userApiKey, orderInput.outgoingIp || user!?.outgoing_ip);
+      // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
+      const dynamicAdapter = new AngelOneAdapter(
+          userApiKey, 
+          orderInput.outgoingIp || user!?.outgoing_ip, 
+          false, 
+          orderInput.agentUrl || (user as any)?.agent_url
+      );
 
 
       // 3. Place Order
@@ -258,10 +264,9 @@ export async function placeOrderForClient(
         stoploss: "0"
       };
 
-      // Use dynamic adapter instance with the correct API key
-      const resp = await dynamicAdapter.authPost(
+      // Use dynamic adapter instance with the correct API key and optional agent
+      const resp = await dynamicAdapter.placeOrder(
         decJwtToken,
-        "/rest/secure/angelbroking/order/v1/placeOrder",
         payload
       );
 
