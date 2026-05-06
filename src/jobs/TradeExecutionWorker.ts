@@ -12,17 +12,39 @@ export const initTradeExecutionWorker = () => {
     const worker = new Worker(
         "trade-execution",
         async (job) => {
-            const { userId, signalId, clientOrderId, clientCode, orderData, correlationId } = job.data;
+            const { userId, signalId, clientOrderId, clientCode, orderData, correlationId, outgoingIp: jobOutgoingIp } = job.data;
             const logger = log.child({ correlationId, clientOrderId, userId });
             
-            // 🛡️ FIX 1: Fetch user from MongoDB with sensitive fields
+            // 🛡️ 1. Fetch user from MongoDB with sensitive fields
             const userDoc = await User.findById(userId).select('+outgoing_ip +broker_password +broker_totp_secret').lean();
             if (!userDoc) throw new Error(`User ${userId} not found`);
 
-            const outgoingIp = userDoc.outgoing_ip || undefined;
+            // 🛡️ 2. SEBI COMPLIANCE: Static IP Guard
+            // Every user must trade via their registered static IP. No fallback to server IP.
+            const outgoingIp = (jobOutgoingIp && String(jobOutgoingIp).trim() !== "") ? jobOutgoingIp : (userDoc.outgoing_ip || "");
+            
+            if (!outgoingIp || String(outgoingIp).trim() === "") {
+                const ipError = "User static IP not registered. Please contact admin.";
+                logger.error(`[SEBI_VIOLATION] Trade BLOCKED for ${userDoc.user_name || userDoc.email}: ${ipError}`);
+                
+                // Record failure in DB before throwing
+                const { BrokerResponse } = await import("../models/BrokerResponse");
+                await BrokerResponse.create({
+                    userId,
+                    clientcode: clientCode || "UNKNOWN",
+                    tradingsymbol: orderData?.tradingsymbol || "UNKNOWN",
+                    orderid: "BLOCKED_IP",
+                    action: "PLACE_ORDER",
+                    status: "REJECTED",
+                    message: ipError
+                });
+
+                throw new Error(ipError);
+            }
+
             const broker = orderData.broker || userDoc.broker || "ANGELONE";
 
-            // 🛡️ 1. CIRCUIT BREAKER CHECK (Granular: ORDER API)
+            // 🛡️ 3. CIRCUIT BREAKER CHECK (Granular: ORDER API)
             if (!(await CircuitBreakerService.isAvailable(broker, "ORDER"))) {
                 throw new Error("CIRCUIT_BREAKER_OPEN:ORDER");
             }
@@ -34,7 +56,7 @@ export const initTradeExecutionWorker = () => {
 
                 // 🛡️ 3. BROKER CRASH SAFETY CHECK (Check if order already exists at broker)
                 try {
-                    const existingOrder = await fetchBrokerOrder(userId, clientCode, clientOrderId);
+                    const existingOrder = await fetchBrokerOrder(userId, clientCode, clientOrderId, outgoingIp);
                     if (existingOrder && (existingOrder.status === "COMPLETE" || existingOrder.status === "OPEN")) {
                         logger.warn("Order already exists at broker. Synchronizing state instead of re-trading.");
                         await SignalExecutionResult.updateOne(

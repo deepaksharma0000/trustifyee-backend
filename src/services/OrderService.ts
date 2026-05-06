@@ -102,6 +102,13 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
       log.warn(`MARGIN_CHECK_SKIP: Placing order for ${clientcode} without margin sufficiency check (broker data missing).`);
   }
 
+  // 5. SEBI COMPLIANCE: Static IP Guard
+  const outgoingIp = orderInput.outgoingIp;
+  if (!outgoingIp || String(outgoingIp).trim() === "") {
+      log.error(`[SEBI_VIOLATION] Trade blocked for ${clientcode}: User static IP not registered.`);
+      return { status: false, message: "User static IP not registered. Please contact admin." };
+  }
+
   return { status: true, message: "" };
 }
 
@@ -139,6 +146,10 @@ export async function placeOrderForClient(
 
   // 🚀 [BROKER ROUTING]
   const currentIp = orderInput.outgoingIp || user!?.outgoing_ip;
+  if (!currentIp || String(currentIp).trim() === "") {
+      log.error(`[SEBI_VIOLATION] ${clientcode} - User static IP missing. Execution halted.`);
+      return { status: false, message: "User static IP not registered. Please contact admin." };
+  }
 
   // 1. [UPSTOX]
   if (user!.broker === "Upstox") {
@@ -351,13 +362,14 @@ export async function getOrderStatusForClient(
   userId: string | unknown,
   clientcode: string,
   orderId: string,
+  outgoingIp?: string,
   symbolMatch?: string // Optional: Find by symbol if orderId is synthetic
 ) {
   const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
   if (angelTokens?.jwtToken) {
     if (!angelTokens.apiKey) throw new Error("User API Key missing in session");
     const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_status_check`);
-    const dynamicAdapter = new AngelOneAdapter(userApiKey);
+    const dynamicAdapter = new AngelOneAdapter(userApiKey, outgoingIp);
     const orderBookResp = await dynamicAdapter.getOrderBook(angelTokens.jwtToken);
     if (orderBookResp && orderBookResp.status === 200 && Array.isArray(orderBookResp.data)) {
       // 1. Try exact Match
@@ -380,7 +392,7 @@ export async function getOrderStatusForClient(
     if (!orderId.startsWith("BROKER-")) {
         // Reuse dynamicAdapter created above (it's in scope if we refactor slightly, but for now just use the one we have or create new)
         const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_single_status_check`);
-        const lookupAdapter = new AngelOneAdapter(userApiKey);
+        const lookupAdapter = new AngelOneAdapter(userApiKey, outgoingIp);
         return await lookupAdapter.getOrderStatus(angelTokens.jwtToken, orderId);
     }
     
@@ -400,10 +412,11 @@ export async function getOrderStatusForClient(
 export async function fetchBrokerOrder(
   userId: string | unknown,
   clientcode: string,
-  clientOrderId: string
+  clientOrderId: string,
+  outgoingIp?: string
 ) {
   try {
-    const resp = await getOrderStatusForClient(userId, clientcode, clientOrderId);
+    const resp = await getOrderStatusForClient(userId, clientcode, clientOrderId, outgoingIp);
     if (!resp?.status || !resp.data) return null;
     return resp.data;
   } catch {

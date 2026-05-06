@@ -59,7 +59,7 @@ export class SignalBroadcastService {
             status: "active", 
             trading_status: "enabled",
             ...strategyQuery
-        }).select('+outgoing_ip').session(session).lean();
+        }).select('user_name email client_key licence broker outgoing_ip').session(session).lean();
 
         if (users.length === 0) {
             log.warn(`[SignalBroadcastService] No users for strategy: ${targetStrategy}`);
@@ -98,6 +98,30 @@ export class SignalBroadcastService {
                     correlationId,
                 }], { session });
 
+                // 🛡️ SEBI COMPLIANCE: Static IP Guard
+                const outgoingIp = user.outgoing_ip;
+                if (!outgoingIp || String(outgoingIp).trim() === "") {
+                    const ipError = "User static IP not registered. Please contact admin.";
+                    log.error(`[SEBI_VIOLATION] ${user.user_name || user.email} - IP missing. Blocking broadcast.`);
+                    
+                    await SignalExecutionResult.create([{
+                        signalId,
+                        userId: user._id,
+                        clientOrderId,
+                        broker: user.broker || "ANGELONE",
+                        status: "FAILED",
+                        message: ipError,
+                        correlationId,
+                    }], { session });
+
+                    executions.push({
+                        userName: user.user_name || user.email,
+                        status: "FAILED",
+                        message: ipError
+                    });
+                    continue;
+                }
+
                 // 🛡️ WRITE TO OUTBOX
                 await TradeOutbox.create([{
                     correlationId,
@@ -106,7 +130,7 @@ export class SignalBroadcastService {
                         signalId,
                         clientOrderId,
                         clientCode: user.client_key ? decrypt(user.client_key) : "",
-                        outgoingIp: user.outgoing_ip || "",
+                        outgoingIp: outgoingIp,
                         orderData: {
                             exchange: signal.exchange || "NFO",
                             tradingsymbol: signal.tradingsymbol,

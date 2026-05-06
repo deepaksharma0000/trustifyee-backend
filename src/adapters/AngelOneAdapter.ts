@@ -47,17 +47,26 @@ export class AngelOneAdapter {
     const isIPv4 = (ip: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
 
     if (this.outgoingIp && !isIPv4(this.outgoingIp)) {
-        log.error(`[ADAPTER] IPv6 detected and BLOCKED: ${this.outgoingIp}. Using config.publicIp.`);
-        this.outgoingIp = config.publicIp || undefined;
+        log.error(`[ADAPTER_BIND_ERROR] Invalid IPv4 format: ${this.outgoingIp}. Blocking trade.`);
+        this.outgoingIp = undefined; // Force invalidation
+    }
+
+    // 🛡️ SEBI COMPLIANCE: If outgoingIp is intended but missing/empty, DO NOT use ipv4Agent (server IP)
+    // For trading accounts, we must have a localAddress.
+    const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
+    
+    if (!isIpValid && !isDataAccount) {
+        log.error(`[ADAPTER_BIND_ERROR] Trading session for API Key ${this.apiKey?.slice(0,5)} requires a valid static IP. Blocking.`);
+        throw new Error("User static IP not registered. Please contact admin.");
     }
 
     this.client = axios.create({
       baseURL: this.forcedBaseUrl,
       timeout: 60000,
-      httpsAgent: this.outgoingIp ? new https.Agent(agentOptions) : ipv4Agent
+      httpsAgent: isIpValid ? new https.Agent(agentOptions) : ipv4Agent
     });
 
-    log.info(`[DATA_ACCOUNT_USED] Adapter initialized | Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | IP: ${this.outgoingIp || 'SYSTEM_DEFAULT'}`);
+    log.info(`[DATA_ACCOUNT_USED] Adapter initialized | Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | IP: ${this.outgoingIp || (isDataAccount ? 'SYSTEM_DEFAULT' : 'BLOCKED')}`);
 
     // Allow ENV override for token paths
     if (config.genPath) this.tokenPath = config.genPath;
