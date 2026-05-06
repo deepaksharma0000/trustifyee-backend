@@ -166,7 +166,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
                 jwtToken: encrypt(jwtToken),
                 refreshToken: encrypt(refreshToken),
                 feedToken: encrypt(feedToken),
-                apiKey: encrypt(decryptedApiKey),
+                apiKey: decryptedApiKey.startsWith('enc::') ? decryptedApiKey : encrypt(decryptedApiKey), // [FIX] Prevent double encryption
                 expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
             },
             { upsert: true, new: true }
@@ -187,7 +187,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
             updatePayload.broker_password = encrypt(req.body.password);
         }
         if (req.body.api_key) {
-            updatePayload.api_key = encrypt(req.body.api_key);
+            updatePayload.api_key = req.body.api_key.startsWith('enc::') ? req.body.api_key : encrypt(req.body.api_key);
         }
         // FIX #4: Encrypt TOTP secret before persisting to DB
         if (req.body.totp_secret) {

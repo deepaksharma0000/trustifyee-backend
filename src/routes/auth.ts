@@ -137,7 +137,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
         clientcode,
         jwtToken: encrypt(jwtToken),
         refreshToken: refreshToken ? encrypt(refreshToken) : undefined,
-        apiKey: encrypt(apiKey), // [FIX] Added to ensure worker can execute orders
+        apiKey: apiKey.startsWith('enc::') ? apiKey : encrypt(apiKey), // [FIX] Prevent double encryption
         feedToken: feedToken ? encrypt(feedToken) : undefined,
         expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000)
       },

@@ -203,7 +203,7 @@ export async function placeOrderForClient(
       const decJwtToken = await ensureEncrypted(angelTokens, 'jwtToken', `user_${userId}_order`);
       const userApiKey = await ensureEncrypted(angelTokens, 'apiKey', `user_${userId}_order_placement`);
       
-      if (!userApiKey || userApiKey.length < 10) {
+      if (!userApiKey || userApiKey.length < 5) {
           log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid API Key for ${clientcode}`);
           throw new Error("Invalid or missing API key. Please update your broker settings.");
       }
