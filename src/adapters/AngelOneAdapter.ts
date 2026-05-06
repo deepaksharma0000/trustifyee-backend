@@ -94,6 +94,12 @@ export class AngelOneAdapter {
 
   // ------------ LOGIN (Trading APIs - Password Based) ------------
   async generateSession(credentials: { clientcode: string; password: string; totp: string; totp_secret?: string }) {
+    const { clientcode, password, totp, totp_secret } = credentials;
+    
+    // 🛡️ [DIAGNOSTIC LOG] - Show what's being sent (masked)
+    const maskedPsw = password ? (password.substring(0, 2) + "****") : "MISSING";
+    log.info(`[LOGIN_ATTEMPT] Client: ${clientcode}, MPIN: ${maskedPsw}, TOTP_PROVIDED: ${!!totp || !!totp_secret}`);
+
     // 🚀 RESTORED TO v1 ENDPOINT (v2 is being blocked by WAF/Firewall)
     const path = "/rest/auth/angelbroking/user/v1/loginByPassword";
     const fullUrl = `${this.forcedBaseUrl}${path}`;
@@ -127,8 +133,27 @@ export class AngelOneAdapter {
       });
       return resp;
     } catch (err: any) {
-      log.error(`[LOGIN_RAW_ERROR] Full Response: ${JSON.stringify(err?.response?.data || { message: err.message, stack: err.stack })}`);
-      log.error("Login session failed", err?.response?.data || err.message);
+      const errorData = err?.response?.data || {};
+      const errorMessage = String(errorData.message || errorData.emsg || err.message || "").toUpperCase();
+      
+      log.error(`[LOGIN_RAW_ERROR] Full Response: ${JSON.stringify(errorData)}`);
+
+      // 🛡️ [MPIN GUARD] - If MPIN is invalid, do NOT retry. Throw fatal error to stop loop.
+      // Error code AB1008 and message "INVALID MPIN" are critical triggers.
+      const isInvalidMPIN = errorMessage.includes("INVALID MPIN") || 
+                            errorMessage.includes("INVALID PASSWORD") || 
+                            errorData.errorcode === "AB1008" ||
+                            errorMessage.includes("MAXIMUM ATTEMPTS");
+
+      if (isInvalidMPIN) {
+          log.error(`[FATAL_LOGIN_ERROR] ${errorMessage} for ${credentials.clientcode}. Stopping all auto-login attempts to prevent account lock.`);
+          const fatalError = new Error("INVALID_MPIN_FATAL");
+          (fatalError as any).isFatal = true;
+          (fatalError as any).brokerCode = errorData.errorcode;
+          throw fatalError;
+      }
+
+      log.error(`[LOGIN_FAILED] Attempt failed for ${credentials.clientcode}: ${errorMessage}`);
       throw err;
     }
   }

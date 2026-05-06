@@ -37,9 +37,20 @@ export type PlaceOrderInput = {
 /**
  * Robust Pre-Trade Validation Wrapper
  */
-async function runPreTradeValidation(userId: string, clientcode: string, orderInput: PlaceOrderInput) {
+async function runPreTradeValidation(userId: string, clientcode: string, orderInput: PlaceOrderInput, retryCount = 0): Promise<{ status: boolean; data?: any; message: string }> {
   // 1. Profile Validation (Includes NFO permission check)
-  const profileRes = await ProfileValidationService.validateUserSession(userId, clientcode);
+  let profileRes = await ProfileValidationService.validateUserSession(userId, clientcode);
+  
+  // 🔄 [ISSUE 1 FIX] - Handle Token Expiry during validation
+  if (!profileRes.status && (profileRes.message.toLowerCase().includes("invalid token") || profileRes.message.includes("AG8001")) && retryCount < 1) {
+      log.info(`[OrderService] Token expired during validation for ${clientcode}. Attempting refresh...`);
+      const refreshed = await attemptTokenRefresh(userId, clientcode, orderInput.outgoingIp);
+      if (refreshed) {
+          log.info(`[OrderService] Validation retry after refresh for ${clientcode}`);
+          return runPreTradeValidation(userId, clientcode, orderInput, retryCount + 1);
+      }
+  }
+
   if (!profileRes.status) return profileRes;
 
   // 2. Risk Management (Margin Check)
@@ -119,9 +130,12 @@ export async function placeOrderForClient(
   }
 
   if (user!.trading_paused) {
-      log.warn(`TRADE_BLOCKED: Trading is paused for ${user!.user_name} due to consecutive failures.`);
+      log.warn(`TRADE_BLOCKED: Trading is paused for ${user!.user_name} due to ${user!.consecutive_failures} consecutive failures. Status: TRADING_PAUSED_BY_SYSTEM`);
       return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
   }
+
+  log.debug(`[OrderService] Attempting order for ${clientcode}. Current Failures: ${user!.consecutive_failures || 0}`);
+
 
   // 🚀 [BROKER ROUTING]
   const currentIp = orderInput.outgoingIp || user!?.outgoing_ip;
@@ -242,8 +256,12 @@ export async function placeOrderForClient(
 
       // Reset failures on success
       if (resp && resp.status === 200) {
-          user!.consecutive_failures = 0;
-          await user!.save();
+          // [ISSUE 2 FIX] Atomic reset in DB + In-memory update
+          await User.updateOne({ _id: userId }, { $set: { consecutive_failures: 0, trading_paused: false } });
+          if (user) {
+              user.consecutive_failures = 0;
+              user.trading_paused = false;
+          }
           log.info(`PLACE_ORDER_BROKER_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
           return resp;
       } else {
@@ -253,21 +271,80 @@ export async function placeOrderForClient(
   } catch (err: any) {
       log.error(`ORDER_FAILURE [Attempt ${retryCount + 1}]: ${clientcode} - ${err.message}`);
 
-      // Retry Logic (Only for Angel One)
-      if (retryCount < 1) { 
+      // 🛡️ [FATAL ERROR GUARD]
+      if (err.message === "INVALID_MPIN_FATAL" || err.isFatal) {
+          log.error(`[ORDER_FATAL] Stopping execution for ${clientcode} due to invalid MPIN/credentials.`);
+          user!.trading_paused = true; // Block further attempts
+          await user!.save();
+          return { status: false, message: "INVALID_CREDENTIALS_PERMANENT" };
+      }
+
+      // 🔄 [AUTO-REFRESH TOKEN LOGIC]
+      const isInvalidToken = err.message.toLowerCase().includes("invalid token") || err.message.includes("AG8001");
+      
+      if (isInvalidToken && retryCount < 1) {
+          log.info(`[OrderService] Token expired for ${clientcode}. Attempting auto-refresh...`);
+          const refreshed = await attemptTokenRefresh(userId, clientcode, orderInput.outgoingIp || user!?.outgoing_ip);
+          if (refreshed) {
+              log.info(`[OrderService] Token refreshed successfully for ${clientcode}. Retrying order...`);
+              return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
+          }
+      }
+
+      // Generic Retry Logic (Only for Angel One)
+      if (retryCount < 1 && !isInvalidToken) { 
           return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
       }
 
-      // Circuit Breaker logic
-      user!.consecutive_failures = (user!.consecutive_failures || 0) + 1;
-      if (user!.consecutive_failures >= 3) {
-          user!.trading_paused = true;
-          log.error(`CIRCUIT_BREAKER_TRIGGERED: Pausing trading for ${user!.user_name}`);
+      // 🛡️ [CIRCUIT BREAKER] - Use atomic increment to avoid race conditions
+      const updatedUser = await User.findOneAndUpdate(
+          { _id: userId },
+          { $inc: { consecutive_failures: 1 } },
+          { new: true }
+      );
+
+      if (updatedUser && updatedUser.consecutive_failures >= 3) {
+          await User.updateOne({ _id: userId }, { $set: { trading_paused: true } });
+          log.error(`CIRCUIT_BREAKER_TRIGGERED: Pausing trading for ${user!.user_name} (Total Failures: ${updatedUser.consecutive_failures})`);
       }
-      await user!.save();
 
       return { status: false, message: err.message };
   }
+}
+
+/**
+ * 🔄 Helper to attempt token refresh
+ */
+async function attemptTokenRefresh(userId: string, clientcode: string, outgoingIp?: string): Promise<boolean> {
+    try {
+        const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
+        if (!angelTokens?.refreshToken) return false;
+
+        const sessionApiKey = await ensureEncrypted(angelTokens, 'apiKey', `order_refresh_api_${clientcode}`);
+        const decRefreshToken = await ensureEncrypted(angelTokens, 'refreshToken', `order_refresh_rt_${clientcode}`);
+        
+        const dynamicAdapter = new AngelOneAdapter(sessionApiKey, outgoingIp);
+        const refreshResp = await dynamicAdapter.generateTokensUsingRefresh(decRefreshToken);
+        
+        if (refreshResp && refreshResp.status === 200 && refreshResp.data) {
+            const tokensData = refreshResp.data;
+            const newJwt = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
+            const newFeed = tokensData.feedToken || tokensData.websocketToken;
+            
+            await AngelTokensModel.findOneAndUpdate(
+                { userId, clientcode },
+                { 
+                    jwtToken: encrypt(newJwt), 
+                    feedToken: newFeed ? encrypt(newFeed) : undefined 
+                }
+            );
+            return true;
+        }
+        return false;
+    } catch (err: any) {
+        log.error(`[OrderService] Token refresh attempt failed for ${clientcode}: ${err.message}`);
+        return false;
+    }
 }
 
 export async function getOrderStatusForClient(
