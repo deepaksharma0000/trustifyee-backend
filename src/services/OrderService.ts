@@ -205,7 +205,7 @@ export async function placeOrderForClient(
     } catch (err: any) {
       log.error(`ALICE_ORDER_FAILURE: ${clientcode} - ${err.message}`);
       user!.consecutive_failures = (user!.consecutive_failures || 0) + 1;
-      if (user!.consecutive_failures >= 3) {
+      if (user!.consecutive_failures >= config.circuitBreakerThreshold) {
         user!.trading_paused = true;
       }
       await user!.save();
@@ -319,7 +319,7 @@ export async function placeOrderForClient(
           { new: true }
       );
 
-      if (updatedUser && updatedUser.consecutive_failures >= 3) {
+      if (updatedUser && updatedUser.consecutive_failures >= config.circuitBreakerThreshold) {
           await User.updateOne({ _id: userId }, { $set: { trading_paused: true } });
           log.error(`CIRCUIT_BREAKER_TRIGGERED: Pausing trading for ${user!.user_name} (Total Failures: ${updatedUser.consecutive_failures})`);
       }

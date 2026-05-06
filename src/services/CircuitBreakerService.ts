@@ -2,11 +2,12 @@
 import redis from "../utils/redis";
 import log from "../utils/logger";
 import { AlertService } from "./AlertService";
+import { config } from "../config";
 
 export type CB_RESOURCE = "ORDER" | "LTP" | "AUTH";
 
 export class CircuitBreakerService {
-    private static THRESHOLD = 5;
+    private static THRESHOLD = config.circuitBreakerThreshold;
     private static RESET_TIMEOUT = 30;
 
     static async recordFailure(broker: string, resource: CB_RESOURCE) {
