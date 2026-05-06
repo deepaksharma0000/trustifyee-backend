@@ -37,35 +37,13 @@ export class AngelOneAdapter {
       throw new Error("API key missing. Access Denied.");
     }
 
-    const agentOptions: any = {
-      keepAlive: true,
-      family: 4, // 🚀 FORCE IPv4
-      timeout: 60000
-    };
-
-    if (this.outgoingIp) {
-      agentOptions.localAddress = this.outgoingIp;
-      log.info(`[ADAPTER_BIND] Using manual outgoing IP: ${this.outgoingIp}`);
-    }
-
-    const isIPv4 = (ip: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
-
-    if (this.outgoingIp && !isIPv4(this.outgoingIp)) {
-        log.error(`[ADAPTER_BIND_ERROR] Invalid IPv4 format: ${this.outgoingIp}. Blocking trade.`);
-        this.outgoingIp = undefined; // Force invalidation
-    }
-
-    // 🛡️ [REMOVED FROM CONSTRUCTOR] Strict IP validation now happens in placeOrder
-    const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
-    const hasAgent = this.agentUrl && String(this.agentUrl).trim() !== "";
-
     this.client = axios.create({
       baseURL: this.forcedBaseUrl,
       timeout: 60000,
-      httpsAgent: (isIpValid && !hasAgent) ? new https.Agent(agentOptions) : ipv4Agent
+      httpsAgent: ipv4Agent
     });
 
-    log.info(`[ADAPTER_INIT] Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | IP: ${this.outgoingIp || 'DEFAULT'} | Agent: ${this.agentUrl || 'NONE'}`);
+    log.info(`[ADAPTER_INIT] Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | Server IP: ${config.publicIp} | Agent: ${this.agentUrl || 'NONE'}`);
 
     // Allow ENV override for token paths
     if (config.genPath) this.tokenPath = config.genPath;
@@ -104,15 +82,8 @@ export class AngelOneAdapter {
   async generateSession(credentials: { clientcode: string; password: string; totp: string; totp_secret?: string }) {
     const { clientcode, password, totp, totp_secret } = credentials;
     
-    // 🛡️ SEBI COMPLIANCE: Only enforce for non-data accounts
-    const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
-    const hasAgent = this.agentUrl && String(this.agentUrl).trim() !== "";
-
-    if (!isIpValid && !hasAgent && !this.isDataAccount) {
-        log.error(`[LOGIN_ERROR] Login for ${clientcode} requires a valid static IP or VPS Agent. Blocking.`);
-        throw new Error("User static IP not registered. Please contact admin.");
-    }
-
+    // 🛡️ [LOGIN_GUARD_REMOVED] Login always from server IP to avoid EADDRNOTAVAIL
+    
     // 🛡️ [DIAGNOSTIC LOG] - Show what's being sent (masked)
     const maskedPsw = password ? (password.substring(0, 2) + "****") : "MISSING";
     log.info(`[LOGIN_ATTEMPT] Client: ${clientcode}, MPIN: ${maskedPsw}, TOTP_PROVIDED: ${!!totp || !!totp_secret}`);
@@ -297,7 +268,24 @@ export class AngelOneAdapter {
         }
     }
 
-    // Direct route (default)
+    // 🛡️ [IP_BINDING] Apply localAddress ONLY for direct order placement
+    if (isIpValid) {
+        const agent = new https.Agent({
+            family: 4,
+            localAddress: this.outgoingIp,
+            keepAlive: true,
+            timeout: 60000
+        });
+
+        log.info(`[DIRECT_BINDING] Placing order via ${this.outgoingIp}`);
+        return await axios.post(`${this.forcedBaseUrl}/rest/secure/angelbroking/order/v1/placeOrder`, payload, {
+            headers: this.baseHeaders(jwtToken),
+            httpsAgent: agent,
+            timeout: 60000
+        });
+    }
+
+    // Fallback (e.g. data account or missing IP)
     return await this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
   }
 }
