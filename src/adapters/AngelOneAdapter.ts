@@ -21,6 +21,7 @@ export class AngelOneAdapter {
   private agentUrl?: string;
   private tokenPath: string = "/rest/auth/angelbroking/jwt/v1/generateTokens";
   private refreshTokenPath: string = "/rest/auth/angelbroking/jwt/v1/refreshToken";
+  private isDataAccount: boolean;
 
   // Force official production URL to avoid 405/proxy issues
   private forcedBaseUrl: string = "https://apiconnect.angelone.in";
@@ -29,6 +30,7 @@ export class AngelOneAdapter {
     this.apiKey = apiKey || "";
     this.outgoingIp = outgoingIp;
     this.agentUrl = agentUrl;
+    this.isDataAccount = isDataAccount;
 
     if (!this.apiKey) {
       log.error("AngelOneAdapter: API key missing.");
@@ -53,15 +55,9 @@ export class AngelOneAdapter {
         this.outgoingIp = undefined; // Force invalidation
     }
 
-    // 🛡️ SEBI COMPLIANCE: If outgoingIp is intended but missing/empty, DO NOT use ipv4Agent (server IP)
-    // For trading accounts, we must have a localAddress OR an agentUrl.
+    // 🛡️ [REMOVED FROM CONSTRUCTOR] Strict IP validation now happens in placeOrder
     const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
     const hasAgent = this.agentUrl && String(this.agentUrl).trim() !== "";
-    
-    if (!isIpValid && !isDataAccount && !hasAgent) {
-        log.error(`[ADAPTER_BIND_ERROR] Trading session for API Key ${this.apiKey?.slice(0,5)} requires a valid static IP or VPS Agent. Blocking.`);
-        throw new Error("User static IP not registered. Please contact admin.");
-    }
 
     this.client = axios.create({
       baseURL: this.forcedBaseUrl,
@@ -108,6 +104,15 @@ export class AngelOneAdapter {
   async generateSession(credentials: { clientcode: string; password: string; totp: string; totp_secret?: string }) {
     const { clientcode, password, totp, totp_secret } = credentials;
     
+    // 🛡️ SEBI COMPLIANCE: Only enforce for non-data accounts
+    const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
+    const hasAgent = this.agentUrl && String(this.agentUrl).trim() !== "";
+
+    if (!isIpValid && !hasAgent && !this.isDataAccount) {
+        log.error(`[LOGIN_ERROR] Login for ${clientcode} requires a valid static IP or VPS Agent. Blocking.`);
+        throw new Error("User static IP not registered. Please contact admin.");
+    }
+
     // 🛡️ [DIAGNOSTIC LOG] - Show what's being sent (masked)
     const maskedPsw = password ? (password.substring(0, 2) + "****") : "MISSING";
     log.info(`[LOGIN_ATTEMPT] Client: ${clientcode}, MPIN: ${maskedPsw}, TOTP_PROVIDED: ${!!totp || !!totp_secret}`);
@@ -262,6 +267,15 @@ export class AngelOneAdapter {
 
   // ------------ VPS AGENT ROUTING ------------
   async placeOrder(jwtToken: string, payload: any) {
+    const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
+    const hasAgent = this.agentUrl && String(this.agentUrl).trim() !== "";
+
+    // 🛡️ SEBI COMPLIANCE: Only enforce for non-data accounts
+    if (!isIpValid && !hasAgent && !this.isDataAccount) {
+        log.error(`[PLACE_ORDER_ERROR] Order placement requires a valid static IP or VPS Agent. Blocking.`);
+        throw new Error("User static IP not registered. Please contact admin.");
+    }
+
     if (this.agentUrl) {
         const { safeDecrypt } = require("../utils/encryption");
         const decApiKey = safeDecrypt(this.apiKey, "agent_routing");
