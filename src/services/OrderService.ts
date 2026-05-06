@@ -9,7 +9,7 @@ import log from "../utils/logger";
 import { ProfileValidationService } from "./ProfileValidationService";
 import { RiskManagementService } from "./RiskManagementService";
 import User from "../models/User";
-import { decrypt, ensureEncrypted } from "../utils/encryption";
+import { decrypt, ensureEncrypted, encrypt } from "../utils/encryption";
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
