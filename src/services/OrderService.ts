@@ -299,8 +299,18 @@ export async function placeOrderForClient(
         payload
       );
 
+      const brokerData = resp?.data || {};
+      const brokerCode = String(brokerData?.errorCode || brokerData?.errorcode || "").toUpperCase();
+      const brokerMessage = String(brokerData?.message || "");
+      const brokerSuccess = brokerData?.status === true || brokerData?.success === true;
+      const isInvalidTokenPayload = brokerCode === "AG8001" || brokerMessage.toLowerCase().includes("invalid token");
+
+      if (isInvalidTokenPayload) {
+          throw new Error(`AG8001 Invalid Token: ${brokerMessage || "Token expired"}`);
+      }
+
       // Reset failures on success
-      if (resp && resp.status === 200) {
+      if (resp && resp.status === 200 && (brokerSuccess || brokerData?.data?.orderid || brokerData?.orderid)) {
           // [ISSUE 2 FIX] Atomic reset in DB + In-memory update
           await User.updateOne({ _id: userId }, { $set: { consecutive_failures: 0, trading_paused: false } });
           if (user) {
@@ -310,7 +320,7 @@ export async function placeOrderForClient(
           log.info(`PLACE_ORDER_BROKER_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
           return resp;
       } else {
-          throw new Error(resp?.data?.message || "Broker rejected order");
+          throw new Error(brokerMessage || resp?.data?.message || "Broker rejected order");
       }
 
   } catch (err: any) {

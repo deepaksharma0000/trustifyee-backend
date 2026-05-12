@@ -15,12 +15,21 @@ function getUpstoxAdapter() {
     return _upstoxAdapter;
 }
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
+const warningCache = new Map<string, number>();
 const CACHE_MS = 1500; // 1.5s for real-time feel
 let cooldownUntil = 0;
 let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 350; // Balanced for approx 2.8 req/sec (staying under 3/sec limit)
 
 const pendingRequests = new Map<string, Promise<any>>();
+
+function shouldLogWarning(key: string, windowMs = 60000) {
+    const now = Date.now();
+    const last = warningCache.get(key) || 0;
+    if (now - last < windowMs) return false;
+    warningCache.set(key, now);
+    return true;
+}
 
 async function throttledFetch<T>(key: string, fn: () => Promise<T>): Promise<T> {
     // 🚀 [REQUEST COLLAPSING]
@@ -52,9 +61,10 @@ async function throttledFetch<T>(key: string, fn: () => Promise<T>): Promise<T> 
 }
 
 function isInvalidTokenResponse(resp: any) {
-    const code = resp?.errorcode || resp?.errorCode;
-    const msg = String(resp?.message || "").toLowerCase();
-    return code === "AG8001" || msg.includes("invalid token");
+    const body = resp?.data || resp || {};
+    const code = body?.errorCode || body?.errorcode || body?.code || resp?.errorCode || resp?.errorcode;
+    const msg = String(body?.message || resp?.message || "").toLowerCase();
+    return String(code || "").toUpperCase() === "AG8001" || msg.includes("invalid token");
 }
 
 function isInvalidTokenError(err: any) {
@@ -63,7 +73,8 @@ function isInvalidTokenError(err: any) {
 }
 
 function isRateLimitError(err: any) {
-    const msg = String(err?.message || err?.data?.message || err?.errorcode || err || "").toLowerCase();
+    const body = err?.data || err?.response?.data || {};
+    const msg = String(err?.message || body?.message || body?.errorCode || body?.errorcode || err || "").toLowerCase();
     return (
         msg.includes("403") ||
         msg.includes("429") ||
@@ -106,7 +117,7 @@ async function refreshAngelSession(session: any) {
             jwtToken: encrypt(jwtToken), 
             refreshToken: encrypt(refreshToken), 
             feedToken: encrypt(feedToken), 
-            expiresAt: undefined 
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) 
         },
         { new: true }
     );
@@ -163,7 +174,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                     if (!Number.isNaN(ltp) && ltp > 0) {
                         ltpCache.set(cacheKey, { ltp, ts: now });
                         return ltp;
-                    } else if (ltp === 0) {
+                    } else if (ltp === 0 && shouldLogWarning(`INDEX_ZERO:${indexName}`)) {
                         log.warn(`[INDEX_ZERO_LTP] Received 0 for ${indexName}. Raw: ${JSON.stringify(resp.data)}`);
                     }
                 }
@@ -274,7 +285,7 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
                         if (!Number.isNaN(ltp) && ltp > 0) {
                             ltpCache.set(cacheKey, { ltp, ts: now });
                             return ltp;
-                        } else if (ltp === 0) {
+                        } else if (ltp === 0 && shouldLogWarning(`INSTRUMENT_ZERO:${tradingsymbol}:${symboltoken}`)) {
                             log.warn(`[INSTRUMENT_ZERO_LTP] Received 0 for ${tradingsymbol}. Raw: ${JSON.stringify(resp.data)}`);
                         }
                     }

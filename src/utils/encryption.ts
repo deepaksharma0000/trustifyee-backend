@@ -1,9 +1,11 @@
 import crypto from 'crypto';
 import { config } from '../config';
+import log from './logger';
 
 const ENCRYPTION_PREFIX = 'enc::';
 const ENCRYPTION_KEY = config.encryptionKey || 'your-default-secure-key-32-chars-long'; // Fallback for dev only
 const IV_LENGTH = 16; // AES block size
+const ENCRYPTION_VERBOSE = process.env.ENCRYPTION_VERBOSE === 'true';
 
 // Ensure key is 32 bytes (256 bits)
 const getKey = () => {
@@ -48,8 +50,8 @@ export const safeDecrypt = (text: string, identifier: string = 'field'): string 
     // If it doesn't have the prefix, treat as plaintext or legacy
     if (!isMigrated(text)) {
         // [AUDIT] Log that we are using legacy plaintext
-        if (text.length > 5) {
-            console.log(`[DECRYPTION_INFO] [PLAINTEXT_DETECTED] [${identifier}] Field: ${identifier}`);
+        if (ENCRYPTION_VERBOSE && text.length > 5) {
+            log.debug(`[DECRYPTION_INFO] [PLAINTEXT_DETECTED] [${identifier}] Field: ${identifier}`);
         }
         return text;
     }
@@ -59,7 +61,7 @@ export const safeDecrypt = (text: string, identifier: string = 'field'): string 
     const textParts = rawData.split(':');
     
     if (textParts.length < 2) {
-        console.warn(`[DECRYPTION_FAILURE] [INVALID_FORMAT] [${identifier}] Data: ${maskedRaw} - Expected iv:data`);
+        log.warn(`[DECRYPTION_FAILURE] [INVALID_FORMAT] [${identifier}] Data: ${maskedRaw} - Expected iv:data`);
         return null;
     }
 
@@ -76,17 +78,19 @@ export const safeDecrypt = (text: string, identifier: string = 'field'): string 
         
         const result = decrypted.toString('utf8');
         if (!result || result.length < 1) {
-             console.error(`[DECRYPTION_FAILURE] [EMPTY_RESULT] [${identifier}] Decryption succeeded but resulted in empty string.`);
+             log.error(`[DECRYPTION_FAILURE] [EMPTY_RESULT] [${identifier}] Decryption succeeded but resulted in empty string.`);
              return null;
         }
 
         // [DEBUG] Success log (masked)
-        console.log(`[DECRYPTION_SUCCESS] [${identifier}] Decrypted successfully. Preview: ${result.substring(0, 4)}****`);
+        if (ENCRYPTION_VERBOSE) {
+            log.debug(`[DECRYPTION_SUCCESS] [${identifier}] Decrypted successfully. Preview: ${result.substring(0, 4)}****`);
+        }
         
         return result;
     } catch (error: any) {
         // [AUDIT LOG] track records that failed decryption (likely key mismatch or corrupted iv)
-        console.error(`[DECRYPTION_FAILURE] [BAD_DECRYPT] [${identifier}] Possible key mismatch. Msg: ${error.message} | Raw: ${maskedRaw}`);
+        log.error(`[DECRYPTION_FAILURE] [BAD_DECRYPT] [${identifier}] Possible key mismatch. Msg: ${error.message} | Raw: ${maskedRaw}`);
         return null;
     }
 };
@@ -105,14 +109,14 @@ export const ensureEncrypted = async (doc: any, field: string, identifier: strin
     
     // [HARDENING] If value is too short, reject
     if (value.length < 5) {
-        console.warn(`[AUTO_MIGRATION_REJECTED] [${identifier}] Field: ${field} - Value too short (<5 chars).`);
+        log.warn(`[AUTO_MIGRATION_REJECTED] [${identifier}] Field: ${field} - Value too short (<5 chars).`);
         return "";
     }
 
     if (isMigrated(value)) {
         const testDec = safeDecrypt(value, identifier);
         if (!testDec) {
-            console.error(`[AUTO_MIGRATION_ERROR] [CORRUPTED_DATA] [${identifier}] Field: ${field} - Decryption failed on already-prefixed data. Likely OLD encryption key.`);
+            log.error(`[AUTO_MIGRATION_ERROR] [CORRUPTED_DATA] [${identifier}] Field: ${field} - Decryption failed on already-prefixed data. Likely OLD encryption key.`);
             return ""; // Refuse to use corrupted data
         }
         return testDec;
@@ -120,7 +124,9 @@ export const ensureEncrypted = async (doc: any, field: string, identifier: strin
     
     // Legacy plaintext -> Encrypt it
     const encrypted = encrypt(value);
-    console.log(`[AUTO_MIGRATION_SUCCESS] [${identifier}] Field: ${field} - Legacy plaintext upgraded.`);
+    if (ENCRYPTION_VERBOSE) {
+        log.info(`[AUTO_MIGRATION_SUCCESS] [${identifier}] Field: ${field} - Legacy plaintext upgraded.`);
+    }
     
     doc[field] = encrypted;
     if (typeof doc.save === 'function') {

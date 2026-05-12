@@ -29,9 +29,10 @@ const quoteCache = new Map<
 >();
 
 function isInvalidTokenResponse(resp: any) {
-  const code = resp?.errorcode || resp?.errorCode || resp?.data?.errorcode;
-  const msg = String(resp?.data?.message || resp?.message || "").toLowerCase();
-  return code === "AG8001" || msg.includes("invalid token");
+  const body = resp?.data || resp || {};
+  const code = body?.errorCode || body?.errorcode || body?.code || resp?.errorCode || resp?.errorcode;
+  const msg = String(body?.message || resp?.message || "").toLowerCase();
+  return String(code || "").toUpperCase() === "AG8001" || msg.includes("invalid token");
 }
 
 async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
@@ -57,7 +58,7 @@ async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
       jwtToken: encrypt(jwtToken), 
       refreshToken: encrypt(refreshToken), 
       feedToken: encrypt(feedToken), 
-      expiresAt: undefined 
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) 
     },
     { new: true }
   ).lean();
