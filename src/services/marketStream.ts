@@ -6,7 +6,8 @@ import UpstoxTokensModel from "../models/UpstoxTokens";
 import { config } from "../config";
 import log from "../utils/logger";
 import { getUpstoxAdapter } from "../utils/upstox";
-import { encrypt, decrypt } from "../utils/encryption";
+import { decrypt } from "../utils/encryption";
+import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 
 type QuoteRequestItem = {
   exchange: string;
@@ -36,33 +37,17 @@ function isInvalidTokenResponse(resp: any) {
 }
 
 async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
-  if (!session?.refreshToken) {
-    throw new Error("Angel refreshToken missing. Please login again.");
+  const sessionDoc = await AngelTokensModel.findById(session?._id);
+  if (!sessionDoc) {
+    throw new Error("Session not found for refresh");
   }
-  const decRefreshToken = decrypt(session.refreshToken);
-  const resp = await adapter.generateTokensUsingRefresh(decRefreshToken);
-  if (!resp || resp.status !== 200 || !resp.data) {
-    log.error("Angel refresh failed:", resp);
-    throw new Error((resp as any)?.data?.message || (resp as any)?.message || "Angel refresh failed");
+
+  const recovery = await recoverSessionByRefreshOrLogin(sessionDoc, "market_stream");
+  if (!recovery.ok || !recovery.jwtToken) {
+    throw new Error(recovery.reason || "SESSION_RECOVERY_FAILED");
   }
-  const tokensData = resp.data?.data || resp.data;
-  const jwtToken = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
-  const refreshToken = tokensData.refreshToken || session.refreshToken;
-  const feedToken = tokensData.websocketToken || tokensData.feedToken || session.feedToken;
-  if (!jwtToken) {
-    throw new Error("Angel refresh returned no jwtToken");
-  }
-  await AngelTokensModel.findOneAndUpdate(
-    { _id: session._id },
-    { 
-      jwtToken: encrypt(jwtToken), 
-      refreshToken: encrypt(refreshToken), 
-      feedToken: encrypt(feedToken), 
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) 
-    },
-    { new: true }
-  ).lean();
-  return { jwtToken };
+
+  return { jwtToken: recovery.jwtToken };
 }
 
 export function startMarketStream(server: any) {

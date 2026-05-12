@@ -1,8 +1,7 @@
 import AngelTokensModel from "../models/AngelTokens";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import log from "../utils/logger";
-import { ensureEncrypted, encrypt } from "../utils/encryption";
 import redlock from "../utils/redlock";
+import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 
 const REFRESH_LOOKAHEAD_MS = 30 * 60 * 1000;
 const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
@@ -53,42 +52,12 @@ export class TokenRefreshScheduler {
       const settled = await Promise.allSettled(
         sessions.map(async (session) => {
           try {
-            const apiKey = await ensureEncrypted(session, "apiKey", `refresh_api_${session.clientcode}`);
-            const refreshToken = await ensureEncrypted(
-              session,
-              "refreshToken",
-              `refresh_rt_${session.clientcode}`
-            );
-
-            if (!apiKey || !refreshToken) {
-              throw new Error("Missing apiKey or refreshToken");
+            const recovered = await recoverSessionByRefreshOrLogin(session, "token_scheduler");
+            if (!recovered.ok) {
+              return { clientcode: session.clientcode, status: "failed", reason: recovered.reason };
             }
 
-            const adapter = new AngelOneAdapter(apiKey);
-            const refreshResp = await adapter.generateTokensUsingRefresh(refreshToken);
-            const refreshData = refreshResp?.data?.data || refreshResp?.data;
-
-            const newJwt = refreshData?.jwtToken || refreshData?.accessToken || refreshData?.token;
-            const newRefresh = refreshData?.refreshToken || refreshToken;
-            const newFeed = refreshData?.feedToken || refreshData?.websocketToken;
-
-            if (!newJwt) {
-              throw new Error("Refresh response missing jwt token");
-            }
-
-            await AngelTokensModel.updateOne(
-              { _id: session._id },
-              {
-                $set: {
-                  jwtToken: encrypt(newJwt),
-                  refreshToken: encrypt(newRefresh),
-                  feedToken: newFeed ? encrypt(newFeed) : undefined,
-                  expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-                },
-              }
-            );
-
-            return { clientcode: session.clientcode, status: "refreshed" };
+            return { clientcode: session.clientcode, status: "refreshed", mode: recovered.mode };
           } catch (error: any) {
             log.warn("[TokenRefreshScheduler] refresh failed", {
               clientcode: session.clientcode,

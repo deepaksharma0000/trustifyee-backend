@@ -4,7 +4,8 @@ import UpstoxTokensModel from "../models/UpstoxTokens";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { config } from "../config";
 import log from "../utils/logger";
-import { decrypt, ensureEncrypted, encrypt } from "../utils/encryption";
+import { ensureEncrypted } from "../utils/encryption";
+import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 
 // Removed global adapters to enforce per-user keys
 // const adapter = new AngelOneAdapter();
@@ -87,41 +88,25 @@ function isRateLimitError(err: any) {
 }
 
 async function refreshAngelSession(session: any) {
-    if (!session?.refreshToken) {
-        throw new Error("Angel refreshToken missing. Please login again.");
+    const recovery = await recoverSessionByRefreshOrLogin(session, "market_data");
+    if (!recovery.ok || !recovery.jwtToken) {
+        throw new Error(recovery.reason || "SESSION_RECOVERY_FAILED");
     }
-    if (!session.apiKey) throw new Error("API Key missing in session for refresh");
-    
-    // [AUTO-MIGRATION on refresh]
-    const sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_refresh_${session.clientcode}`);
-    const decRefreshToken = await ensureEncrypted(session, 'refreshToken', `market_data_refresh_rt_${session.clientcode}`);
-    
-    const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
-    const resp = await dynamicAdapter.generateTokensUsingRefresh(decRefreshToken);
-    if (!resp || resp.status !== 200 || !resp.data) {
-        log.error("Angel refresh failed:", resp?.data);
-        throw new Error(resp?.data?.message || "Angel refresh failed");
+
+    // Ensure API key is available after recovery (refresh or fresh login)
+    let sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_refresh_${session.clientcode}`);
+    if (!sessionApiKey) {
+        const latestSession = await AngelTokensModel.findById(session._id);
+        if (latestSession) {
+            sessionApiKey = await ensureEncrypted(latestSession, 'apiKey', `market_data_refresh_latest_${session.clientcode}`);
+        }
     }
-    const tokensData = resp.data?.data || resp.data;
-    const jwtToken = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
-    const refreshToken = tokensData.refreshToken || session.refreshToken;
-    const feedToken = tokensData.websocketToken || tokensData.feedToken || session.feedToken;
-    if (!jwtToken) {
-        throw new Error("Angel refresh returned no jwtToken");
+
+    if (!sessionApiKey) {
+        throw new Error("API Key missing after session recovery");
     }
-    
-    // Encrypt new tokens with prefix before saving
-    await AngelTokensModel.findOneAndUpdate(
-        { _id: session._id },
-        { 
-            jwtToken: encrypt(jwtToken), 
-            refreshToken: encrypt(refreshToken), 
-            feedToken: encrypt(feedToken), 
-            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) 
-        },
-        { new: true }
-    );
-    return { jwtToken, apiKey: sessionApiKey };
+
+    return { jwtToken: recovery.jwtToken, apiKey: sessionApiKey };
 }
 
 async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string, apiKey: string) {
@@ -165,7 +150,9 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
                         const refreshed = await refreshAngelSession(session);
                         resp = await getLtpInternal(refreshed.jwtToken, "NSE", index.symbol, index.token, refreshed.apiKey);
                     } catch (reErr) {
-                        log.warn(`Angel refresh failed for ${indexName} LTP index:`, reErr);
+                        if (shouldLogWarning(`REFRESH_FAIL_INDEX:${session?.clientcode || "UNKNOWN"}:${indexName}`)) {
+                            log.warn(`Angel refresh failed for ${indexName} LTP index:`, reErr);
+                        }
                     }
                 }
 
@@ -276,7 +263,9 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
                             const refreshed = await refreshAngelSession(session);
                             resp = await getLtpInternal(refreshed.jwtToken, exchange, tradingsymbol, symboltoken, refreshed.apiKey);
                         } catch (reErr) {
-                            log.warn(`Angel refresh failed for ${tradingsymbol} LTP:`, reErr);
+                            if (shouldLogWarning(`REFRESH_FAIL_SYMBOL:${session?.clientcode || "UNKNOWN"}:${tradingsymbol}`)) {
+                                log.warn(`Angel refresh failed for ${tradingsymbol} LTP:`, reErr);
+                            }
                         }
                     }
 

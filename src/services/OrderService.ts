@@ -9,7 +9,8 @@ import log from "../utils/logger";
 import { ProfileValidationService } from "./ProfileValidationService";
 import { RiskManagementService } from "./RiskManagementService";
 import User from "../models/User";
-import { decrypt, ensureEncrypted, encrypt } from "../utils/encryption";
+import { decrypt, ensureEncrypted } from "../utils/encryption";
+import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
@@ -373,35 +374,14 @@ export async function placeOrderForClient(
 async function attemptTokenRefresh(userId: string, clientcode: string, outgoingIp?: string): Promise<boolean> {
     try {
         const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
-        if (!angelTokens?.refreshToken) return false;
+        if (!angelTokens) return false;
 
-        const sessionApiKey = await ensureEncrypted(angelTokens, 'apiKey', `order_refresh_api_${clientcode}`);
-        const decRefreshToken = await ensureEncrypted(angelTokens, 'refreshToken', `order_refresh_rt_${clientcode}`);
-        
-        const dynamicAdapter = new AngelOneAdapter(sessionApiKey, outgoingIp);
-        const refreshResp = await dynamicAdapter.generateTokensUsingRefresh(decRefreshToken);
-        
-        if (refreshResp && refreshResp.status === 200 && refreshResp.data) {
-            const payload = refreshResp.data?.data || refreshResp.data;
-            const newJwt = payload?.jwtToken || payload?.accessToken || payload?.token;
-            const newFeed = payload?.feedToken || payload?.websocketToken;
-            
-            if (!newJwt || typeof newJwt !== "string") {
-                log.error(`[OrderService] Refresh response missing jwtToken for ${clientcode}`, refreshResp.data);
-                return false;
-            }
-
-            await AngelTokensModel.findOneAndUpdate(
-                { userId, clientcode },
-                { 
-                    jwtToken: encrypt(newJwt), 
-                    feedToken: newFeed ? encrypt(newFeed) : undefined,
-                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
-                }
-            );
-            return true;
+        const recovered = await recoverSessionByRefreshOrLogin(angelTokens, "order_service");
+        if (!recovered.ok || !recovered.jwtToken) {
+            log.warn(`[OrderService] Session recovery failed for ${clientcode}: ${recovered.reason || "unknown"}`);
+            return false;
         }
-        return false;
+        return true;
     } catch (err: any) {
         log.error(`[OrderService] Token refresh attempt failed for ${clientcode}: ${err.message}`);
         return false;
