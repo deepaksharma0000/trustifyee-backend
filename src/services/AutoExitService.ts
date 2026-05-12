@@ -2,20 +2,13 @@ import { Queue } from "bullmq";
 import moment from "moment-timezone";
 import { Position } from "../models/Position.model";
 import log from "../utils/logger";
-
-const connection = {
-    host: process.env.REDIS_HOST || "127.0.0.1",
-    port: parseInt(process.env.REDIS_PORT || "6379"),
-    enableReadyCheck: false,
-    maxRetriesPerRequest: 0,
-    connectTimeout: 5000,
-};
+import { redisBullConnection } from "../utils/redis";
 
 let autoExitQueue: Queue | null = null;
 
 try {
     autoExitQueue = new Queue("auto-square-off", {
-        connection,
+        connection: redisBullConnection as any,
         defaultJobOptions: {
             removeOnComplete: true,
             removeOnFail: false

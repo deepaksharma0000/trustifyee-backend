@@ -1,10 +1,10 @@
-// src/index.ts
 import express from "express";
 import http from "http";
 import bodyParser from "body-parser";
 import mongoose from "mongoose";
-import { config } from "./config";
-import InstrumentModel from "./models/Instrument";
+import cors from "cors";
+
+import { config, validateConfig } from "./config";
 import authRoutes from "./routes/auth";
 import User from "./models/User";
 import orderRoutes from "./routes/orders";
@@ -14,12 +14,10 @@ import instrumentRoutes from "./routes/instruments";
 import niftyRoutes from "./routes/nifty";
 import pnlRoutes from "./routes/pnl.routes";
 import webhookRoutes from "./routes/webhook.routes";
-
 import appAuthRoutes from "./routes/appAuth.routes";
 import adminRoutes from "./routes/admin.routes";
 import userRoutes from "./routes/user.routes";
 import adminModuleRoutes from "./routes/admin_modules.routes";
-
 import upstoxAuthRoutes from "./routes/upstoxAuth";
 import upstoxOrder from "./routes/upstoxOrders";
 import upstoxAlgoOrderRoutes from "./routes/upstoxAlgoOrderRoutes";
@@ -34,106 +32,136 @@ import signalRoutes from "./routes/signal.routes";
 import angeloneAuthRoutes from "./routes/angeloneAuth";
 import productRoutes from "./routes/product.routes";
 import subscriptionRoutes from "./routes/subscription.routes";
-
-
-
 import aliceAuthRoutes from "./routes/aliceAuth";
 import aliceOrderRoutes from "./routes/aliceOrders";
 import aliceInstrumentsRoutes from "./routes/aliceInstruments";
 import { syncPendingOrders } from "./jobs/orderSync.job";
 import marketStatusRoutes from "./routes/marketStatus.routes";
-
 import log from "./utils/logger";
-import cors from "cors";
 import { startMarketStream } from "./services/marketStream";
-import { startSignalStream } from "./services/signalStream"; // FIX #1
-import { recoverRunningRuns } from "./services/algoEngineV2"; // FIX #8
-
-
-import axios from "axios";
+import { startSignalStream } from "./services/signalStream";
+import { recoverRunningRuns } from "./services/algoEngineV2";
 import { startPositionWatchdog } from "./services/PositionManager";
 import { initAutoExitWorker } from "./jobs/AutoExitWorker";
 import { initTradeExecutionWorker } from "./jobs/TradeExecutionWorker";
+import { getPublicIp } from "./utils/ipService";
+import { requestLogger } from "./middleware/requestLogger.middleware";
+import redisConnection from "./utils/redis";
+import { TokenRefreshScheduler } from "./services/TokenRefreshScheduler";
 
-// Initialize Workers
 initAutoExitWorker();
 initTradeExecutionWorker();
 
-import { getPublicIp } from "./utils/ipService";
+function setupProcessGuards() {
+  process.on("unhandledRejection", (reason) => {
+    log.error("[PROCESS] Unhandled promise rejection", { reason });
+  });
+
+  process.on("uncaughtException", (error) => {
+    log.error("[PROCESS] Uncaught exception", error);
+
+    if (config.nodeEnv === "production") {
+      setTimeout(() => process.exit(1), 1500);
+    }
+  });
+}
+
+function runtimeDiagnostics() {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new Date();
+  const offsetMinutes = now.getTimezoneOffset();
+
+  log.info("[STARTUP] Runtime diagnostics", {
+    nodeEnv: config.nodeEnv,
+    executionMode: config.executionMode,
+    timezone: tz,
+    offsetMinutes,
+    nowIso: now.toISOString(),
+  });
+}
 
 async function updatePublicIp() {
   try {
     const ip = getPublicIp();
     (config as any).publicIp = ip;
-
+    log.info("[NETWORK] Public IP set", { publicIp: ip });
   } catch (err: any) {
-    log.warn(`⚠️ Failed to set public IP: ${err.message}`);
+    log.warn("[NETWORK] Failed to set public IP", { message: err?.message });
   }
 }
 
 async function start() {
   try {
-
-    const { validateConfig } = require("./config");
+    setupProcessGuards();
+    runtimeDiagnostics();
     validateConfig();
 
     await updatePublicIp();
-    setInterval(updatePublicIp, 5 * 60 * 1000); // Update every 5 mins
+    setInterval(() => {
+      updatePublicIp().catch((err) => log.error("[NETWORK] periodic public IP refresh failed", err));
+    }, 5 * 60 * 1000);
 
     await mongoose.connect(config.mongoUri);
+    log.info("[DB] MongoDB connected");
 
-    // Additional guard check
     if (!config.encryptionKey || config.encryptionKey.length < 32) {
-      if (config.nodeEnv === 'production') process.exit(1);
+      throw new Error("ENCRYPTION_SECRET must be at least 32 characters.");
     }
 
-    // Validate Lot Sizes (Production Ready Check)
     await forceFixLotSizes();
-
-    // Start Watchdog
     startPositionWatchdog();
 
-    // 💹 Initialize dedicated Data Feed Layer
-    const { dataFeedService } = require("./services/DataFeedService");
     await recoverRunningRuns();
+    TokenRefreshScheduler.start();
 
     try {
       const upstoxUser = await User.findOne({
-        broker: { $regex: /^upstox$/i }, // Case-insensitive
-        status: 'active',
-        broker_connected: true
+        broker: { $regex: /^upstox$/i },
+        status: "active",
+        broker_connected: true,
       }).lean();
 
-      if (!upstoxUser) {
-      } else {
-        const result = await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
+      if (upstoxUser) {
+        await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
       }
     } catch (err: any) {
-
+      log.warn("[STARTUP] Option chain warmup failed", { message: err?.message });
     }
 
     const app = express();
-    app.use(cors({
-      origin: (origin, callback) => {
-        const allowed = [
-          ...(config.corsOrigins || []),
-          "http://localhost:8080",
-          "http://localhost:3000",
-          config.frontendUrl
-        ].filter(Boolean);
 
-        if (!origin || allowed.includes(origin)) {
-          callback(null, true);
-        } else {
-          log.warn(`[CORS] Blocked origin: ${origin}`);
+    app.use(
+      cors({
+        origin: (origin, callback) => {
+          const allowed = [
+            ...(config.corsOrigins || []),
+            "http://localhost:8080",
+            "http://localhost:3000",
+            config.frontendUrl,
+          ].filter(Boolean);
+
+          if (!origin || allowed.includes(origin)) {
+            callback(null, true);
+            return;
+          }
+
+          log.warn("[CORS] Blocked origin", { origin });
           callback(new Error(`CORS: Origin ${origin} not allowed`));
-        }
-      },
-      credentials: true,
-      methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "x-access-token", "x-user-id", "x-correlation-id"]
-    }));
+        },
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allowedHeaders: [
+          "Content-Type",
+          "Authorization",
+          "X-Requested-With",
+          "x-access-token",
+          "x-user-id",
+          "x-correlation-id",
+        ],
+      })
+    );
 
+    app.use(requestLogger);
     app.use(bodyParser.json());
     app.use("/uploads", express.static("uploads"));
 
@@ -154,16 +182,25 @@ async function start() {
     const { OutboxService } = require("./services/OutboxService");
     const { MonitoringService } = require("./services/MonitoringService");
 
-    setInterval(() => OutboxService.processPending(), 2000);
-
-    setInterval(() => MonitoringService.logSystemMetrics(), 60000);
+    setInterval(() => {
+      OutboxService.processPending().catch((err: any) => {
+        log.error("[OUTBOX] periodic processing failed", err);
+      });
+    }, 2000);
 
     setInterval(() => {
-      syncPendingOrders();
+      MonitoringService.logSystemMetrics().catch((err: any) => {
+        log.error("[MONITOR] metrics collection failed", err);
+      });
+    }, 60000);
+
+    setInterval(() => {
+      syncPendingOrders().catch((err: any) => {
+        log.error("[ORDER_SYNC] periodic sync failed", err);
+      });
     }, 5000);
 
     app.use("/api/market", marketStatusRoutes);
-
     app.use("/api/upstox/auth", upstoxAuthRoutes);
     app.use("/api/upstox/orders", upstoxOrder);
     app.use("/api/upstox", upstoxOrderRoutes);
@@ -182,47 +219,67 @@ async function start() {
     app.use("/api/product", productRoutes);
     app.use("/api/subscriptions", subscriptionRoutes);
     app.use("/api/angelone/auth", angeloneAuthRoutes);
+
     const messageRoutes = require("./routes/message.routes").default;
-    app.use("/api/messages", messageRoutes);
     const ticketRoutes = require("./routes/ticket.routes").default;
+    app.use("/api/messages", messageRoutes);
     app.use("/api/tickets", ticketRoutes);
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
 
-    // FIX: Comprehensive Health check endpoint
-    app.get("/health", (req, res) => {
+    app.get("/health", (_req, res) => {
+      const redisState = redisConnection.status;
       res.json({
-        status: 'ok',
+        status: "ok",
         timestamp: new Date().toISOString(),
-        mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+        mongo: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+        redis: redisState,
         env: config.nodeEnv,
         executionMode: config.executionMode,
-        version: process.env.npm_package_version || '1.0.0'
+        version: process.env.npm_package_version || "1.0.0",
+      });
+    });
+
+    app.use((err: any, req: any, res: any, _next: any) => {
+      const correlationId = req?.correlationId || req?.headers?.["x-correlation-id"];
+      log.error("[HTTP] Unhandled route error", {
+        correlationId,
+        path: req?.path,
+        method: req?.method,
+        message: err?.message,
+      });
+
+      res.status(err?.statusCode || 500).json({
+        status: false,
+        error: err?.message || "Internal server error",
+        correlationId,
       });
     });
 
     const server = http.createServer(app);
-    startMarketStream(server);  // LTP stream on /ws/market
-    startSignalStream(server);  // FIX #1 — Signal push on /ws/signals
+    startMarketStream(server);
+    startSignalStream(server);
 
-    server.on('error', (err: any) => {
-      if (err.code === 'EADDRINUSE') {
-        log.error(`❌ Port ${config.port} is already in use. Kill the process and restart.`);
-        process.exit(1);
+    server.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE") {
+        log.error("[SERVER] Port already in use", { port: config.port });
       } else {
-        throw err;
+        log.error("[SERVER] Fatal server error", err);
       }
+      process.exit(1);
     });
 
     server.listen(config.port, async () => {
+      log.info("[SERVER] HTTP server started", { port: config.port });
 
       try {
         await syncAllOptionInstruments();
       } catch (err: any) {
+        log.warn("[STARTUP] Background instrument sync failed", { message: err?.message });
       }
     });
-
   } catch (err: any) {
+    log.error("[STARTUP] Boot failed", err);
     process.exit(1);
   }
 }

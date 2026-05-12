@@ -17,15 +17,25 @@ export const queueExecution = async (req: Request, res: Response) => {
 
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
-        // Block only if already SUCCESS
-        const existing = await SignalExecutionResult.findOne({
-            signalId, userId, status: "SUCCESS"
+        const existingExecution = await SignalExecutionResult.findOne({
+            signalId,
+            userId
         }).lean();
-        if (existing) {
+
+        if (existingExecution?.status === "SUCCESS") {
             return res.status(200).json({
                 status: true,
                 message: "Signal already executed successfully",
                 currentStatus: "SUCCESS"
+            });
+        }
+
+        if (existingExecution?.status === "PENDING" || existingExecution?.status === "QUEUED") {
+            return res.status(200).json({
+                status: true,
+                message: "Signal execution already queued.",
+                currentStatus: existingExecution.status,
+                clientOrderId: existingExecution.clientOrderId
             });
         }
 
@@ -42,7 +52,7 @@ export const queueExecution = async (req: Request, res: Response) => {
         }
 
         const user = await User.findById(userId)
-            .select('+outgoing_ip +broker_password +broker_totp_secret')
+            .select('+outgoing_ip +agent_url +broker_password +broker_totp_secret')
             .lean();
         if (!user) return res.status(404).json({ error: "User not found", status: false });
 
@@ -58,21 +68,37 @@ export const queueExecution = async (req: Request, res: Response) => {
 
         const clientOrderId = `USER-${uuidv4()}`;
         const correlationId = uuidv4();
+        const resolvedClientCode = decrypt(user.client_key || "");
 
-        await SignalExecutionResult.create({
-            signalId, userId, clientOrderId,
-            broker: user.broker || "ANGELONE",
-            status: "PENDING",
-            correlationId,
-            source: "USER_QUEUE"
-        });
+        if (!resolvedClientCode) {
+            return res.status(400).json({
+                status: false,
+                error: "Client code is missing or invalid. Please reconnect broker credentials."
+            });
+        }
+
+        await SignalExecutionResult.findOneAndUpdate(
+            { signalId, userId },
+            {
+                signalId,
+                userId,
+                clientOrderId,
+                broker: user.broker || "ANGELONE",
+                status: "PENDING",
+                correlationId,
+                source: "USER_QUEUE"
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
 
         await tradeQueue.add(`exec-${clientOrderId}`, {
             userId,
             signalId,
             clientOrderId,
             correlationId,
-            clientCode: decrypt(user.client_key || ""),
+            clientCode: resolvedClientCode,
+            outgoingIp: user.outgoing_ip || undefined,
+            agentUrl: (user as any).agent_url || undefined,
             orderData: {
                 exchange: signal.exchange,
                 tradingsymbol: signal.tradingsymbol,
@@ -80,12 +106,12 @@ export const queueExecution = async (req: Request, res: Response) => {
                 quantity: (Number(lots) || 1) * signal.quantity,
                 strategy: signal.strategy || "Manual",
                 symboltoken,
-                broker: user.broker || "ANGELONE",
-                outgoingIp: user.outgoing_ip || undefined
+                broker: user.broker || "ANGELONE"
             }
         }, {
             attempts: 3,
-            backoff: { type: "exponential", delay: 2000 }
+            backoff: { type: "exponential", delay: 2000 },
+            jobId: `signal-exec-${clientOrderId}`
         });
 
         return res.json({

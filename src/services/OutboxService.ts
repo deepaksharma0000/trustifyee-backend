@@ -46,8 +46,8 @@ export class OutboxService {
 
                 } catch (err: any) {
                     log.error(`Failed to process outbox ${outbox._id}:`, err.message);
-                    outbox.status = outbox.attempts >= 5 ? "FAILED" : "PENDING";
                     outbox.attempts += 1;
+                    outbox.status = outbox.attempts >= 5 ? "FAILED" : "PENDING";
                     outbox.error = err.message;
                     await outbox.save();
                     

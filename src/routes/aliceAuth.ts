@@ -6,6 +6,7 @@ import { AliceBlueAdapter } from "../adapters/AliceBlueAdapter";
 import { encrypt } from "../utils/encryption";
 import { config } from "../config";
 import { auth } from "../middleware/auth.middleware";
+import { findUserByClientCode } from "../utils/clientCodeLookup";
 
 const router = express.Router();
 const aliceAdapter = new AliceBlueAdapter();
@@ -92,19 +93,20 @@ router.get("/auth/callback", async (req, res) => {
       );
     } else {
       // Fallback (Legacy/Incomplete State)
-      const { encrypt: dbEncrypt } = require("../utils/encryption");
-      const encryptedCC = dbEncrypt(clientcode);
-      await User.findOneAndUpdate(
-        { client_key: encryptedCC },
-        { 
-          broker: "AliceBlue",
-          broker_connected: true,
-          broker_verified: true,
-          is_online: true,
-          trading_paused: false, // [FIX] Reset circuit breaker
-          consecutive_failures: 0 // [FIX] Reset failure count
-        }
-      );
+      const matchedUser = await findUserByClientCode(clientcode);
+      if (matchedUser?._id) {
+        await User.updateOne(
+          { _id: matchedUser._id },
+          {
+            broker: "AliceBlue",
+            broker_connected: true,
+            broker_verified: true,
+            is_online: true,
+            trading_paused: false, // [FIX] Reset circuit breaker
+            consecutive_failures: 0 // [FIX] Reset failure count
+          }
+        );
+      }
     }
 
     log.info(`[ALICE_AUTH] ✅ Saved Alice session and updated User profile for: ${clientcode}`);

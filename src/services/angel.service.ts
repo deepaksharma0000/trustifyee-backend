@@ -13,65 +13,84 @@ interface PlaceOrderPayload {
   producttype?: string;
 }
 
-export const placeAngelOrder = async (
-  payload: PlaceOrderPayload
-) => {
-  log.error("[EXECUTION_BLOCKED] Internal placeAngelOrder called.");
-  throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+const systemHeaders = {
+  "x-system-secret": "INTERNAL_JOB_SECRET",
+};
+
+function ensureAppBaseUrl() {
   if (!config.appBaseUrl) {
     throw new Error("APP_BASE_URL is not set");
   }
-  const res = await axios.post(
-    `${config.appBaseUrl}/api/orders/place`,
-    payload,
-    {
-      headers: {
-        'x-system-secret': 'INTERNAL_JOB_SECRET'
-      }
-    }
-  );
+}
 
-  return res.data; // { ok, resp }
-};
+export const placeAngelOrder = async (payload: PlaceOrderPayload) => {
+  ensureAppBaseUrl();
+  try {
+    const res = await axios.post(`${config.appBaseUrl}/api/orders/place`, payload, {
+      headers: systemHeaders,
+      timeout: 15000,
+    });
 
-export const closeAngelOrder = async (
-  clientcode: string,
-  orderid: string
-) => {
-  log.error("[EXECUTION_BLOCKED] Internal closeAngelOrder called.");
-  throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
-  if (!config.appBaseUrl) {
-    throw new Error("APP_BASE_URL is not set");
+    return res.data;
+  } catch (error: any) {
+    log.error("[angel.service] placeAngelOrder failed", {
+      message: error?.message,
+      status: error?.response?.status,
+      data: error?.response?.data,
+      tradingsymbol: payload.tradingsymbol,
+      clientcode: payload.clientcode,
+    });
+    throw error;
   }
-  const res = await axios.post(
-    `${config.appBaseUrl}/api/orders/close`,
-    { clientcode, orderid },
-    {
-      headers: {
-        'x-system-secret': 'INTERNAL_JOB_SECRET'
-      }
-    }
-  );
-
-  return res.data;
 };
 
-// ✅ ye function alag hi rahega
+export const closeAngelOrder = async (clientcode: string, orderid: string) => {
+  ensureAppBaseUrl();
+
+  try {
+    const res = await axios.post(
+      `${config.appBaseUrl}/api/orders/close`,
+      { clientcode, orderid },
+      {
+        headers: systemHeaders,
+        timeout: 15000,
+      }
+    );
+
+    return res.data;
+  } catch (error: any) {
+    log.error("[angel.service] closeAngelOrder failed", {
+      message: error?.message,
+      status: error?.response?.status,
+      data: error?.response?.data,
+      clientcode,
+      orderid,
+    });
+    throw error;
+  }
+};
+
 export const checkAngelOrderStatus = async (
   clientcode: string,
   orderid: string
 ): Promise<boolean> => {
-  if (!config.appBaseUrl) {
-    throw new Error("APP_BASE_URL is not set");
-  }
-  const res = await axios.get(
-    `${config.appBaseUrl}/api/orders/status/${clientcode}/${orderid}`,
-    {
-      headers: {
-        'x-system-secret': 'INTERNAL_JOB_SECRET'
-      }
-    }
-  );
+  ensureAppBaseUrl();
 
-  return res.data === true;
+  try {
+    const res = await axios.get(`${config.appBaseUrl}/api/orders/status/${clientcode}/${orderid}`, {
+      headers: systemHeaders,
+      timeout: 15000,
+    });
+
+    return res.data === true;
+  } catch (error: any) {
+    log.error("[angel.service] checkAngelOrderStatus failed", {
+      message: error?.message,
+      status: error?.response?.status,
+      data: error?.response?.data,
+      clientcode,
+      orderid,
+    });
+    throw error;
+  }
 };

@@ -5,6 +5,8 @@ import redis from "../utils/redis";
 import { getInstrumentLtp, getMultipleInstrumentsLtp } from "./MarketDataService";
 import log from "../utils/logger";
 import { config } from "../config";
+import InstrumentModel from "../models/Instrument";
+import UpstoxInstrumentModel from "../models/UpstoxInstrument";
 
 export class DataFeedService {
     private static instance: DataFeedService;
@@ -46,6 +48,57 @@ export class DataFeedService {
             }));
         }
         return results;
+    }
+
+    /**
+     * Resolve tradingsymbols to broker tokens using local instrument masters.
+     */
+    public static async resolveSymbols(
+        exchange: string,
+        tradingsymbols: string[]
+    ): Promise<Record<string, string>> {
+        const normalizedExchange = String(exchange || "").toUpperCase();
+        const cleanSymbols = (tradingsymbols || [])
+            .map((s) => String(s || "").trim().toUpperCase())
+            .filter(Boolean);
+
+        if (cleanSymbols.length === 0) return {};
+
+        const symbolMap: Record<string, string> = {};
+
+        // Upstox symbols are often in `NSE_INDEX|...` format.
+        const upstoxLike = cleanSymbols.filter((s) => s.includes("|"));
+        if (upstoxLike.length > 0) {
+            const upstoxDocs = await UpstoxInstrumentModel.find({
+                $or: [
+                    { instrument_key: { $in: upstoxLike } },
+                    { tradingsymbol: { $in: upstoxLike } },
+                ],
+            })
+                .select("tradingsymbol instrument_key")
+                .lean() as any[];
+
+            for (const doc of upstoxDocs) {
+                if (doc?.tradingsymbol && doc?.instrument_key) {
+                    symbolMap[String(doc.tradingsymbol).toUpperCase()] = String(doc.instrument_key);
+                }
+            }
+        }
+
+        const angelDocs = await InstrumentModel.find({
+            exchange: normalizedExchange,
+            tradingsymbol: { $in: cleanSymbols },
+        })
+            .select("tradingsymbol symboltoken")
+            .lean() as any[];
+
+        for (const doc of angelDocs) {
+            if (doc?.tradingsymbol && doc?.symboltoken) {
+                symbolMap[String(doc.tradingsymbol).toUpperCase()] = String(doc.symboltoken);
+            }
+        }
+
+        return symbolMap;
     }
 
     /**

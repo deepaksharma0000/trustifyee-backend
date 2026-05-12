@@ -3,7 +3,6 @@ import User from '../models/User';
 import Joi from 'joi';
 import bcrypt from 'bcryptjs';
 import { encrypt, maskKey, decrypt } from '../utils/encryption';
-import { AngelOneAdapter } from '../adapters/AngelOneAdapter';
 import AngelTokensModel from '../models/AngelTokens';
 import UpstoxTokensModel from '../models/UpstoxTokens';
 import log from '../utils/logger';
@@ -324,7 +323,8 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
             });
         }
 
-        const adapter = new AngelOneAdapter();
+        const { createAngelAdapter } = await import('../utils/broker');
+        const adapter = await createAngelAdapter(user._id.toString());
         const profile = await adapter.getProfile(tokenData.jwtToken);
 
         if (profile && profile.status === 200) {

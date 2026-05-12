@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { Position } from "../models/Position.model";
 import { getLTP } from "../services/market.service";
+import { matchesEncryptedValue } from "../utils/encryption";
 
 export const getLivePnL = async (req: Request, res: Response) => {
   try {
@@ -9,7 +10,7 @@ export const getLivePnL = async (req: Request, res: Response) => {
     const userType = (req as any).userType;
 
     // Security check: If user, must match clientcode
-    if (userType === 'user' && user.client_key !== clientcode) {
+    if (userType === 'user' && !matchesEncryptedValue(user.client_key || "", clientcode)) {
       return res.status(403).json({ ok: false, message: "Unauthorized access to PnL data" });
     }
 

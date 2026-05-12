@@ -27,8 +27,19 @@ router.post("/login", async (req, res) => {
     return res.status(400).json({ error: "Email, User name or Client Code is required", status: false });
   }
 
+  const findByDecryptedClientCode = async (
+    docs: Array<{ _id: any; client_key?: string }>,
+    candidate: string
+  ): Promise<{ _id: any; client_key?: string } | null> => {
+    const matched = docs.find((doc) => {
+      if (!doc.client_key) return false;
+      return decrypt(doc.client_key) === candidate;
+    });
+    return matched || null;
+  };
+
   // 1. Try Admin Login (handles email, mobile, or panel_client_key)
-  const admin = await Admin.findOne({
+  let admin = await Admin.findOne({
     $or: [
       { email: loginIdentifier },
       { mobile: loginIdentifier },
@@ -37,19 +48,39 @@ router.post("/login", async (req, res) => {
     ]
   });
 
+  if (!admin) {
+    const adminCandidates = await Admin.find({ client_key: { $exists: true, $ne: "" } })
+      .select("client_key email mobile panel_client_key")
+      .lean() as any[];
+    const decryptedAdmin = await findByDecryptedClientCode(adminCandidates, loginIdentifier);
+    if (decryptedAdmin?._id) {
+      admin = await Admin.findById(decryptedAdmin._id);
+    }
+  }
+
   if (admin) {
     req.body.email = loginIdentifier; 
     return loginAdmin(req, res);
   }
 
   // 2. Try User Login (email, user_name or client_key)
-  const user = await User.findOne({
+  let user = await User.findOne({
     $or: [
       { email: loginIdentifier },
       { user_name: loginIdentifier },
       { client_key: loginIdentifier }
     ]
   });
+
+  if (!user) {
+    const userCandidates = await User.find({ client_key: { $exists: true, $ne: "" } })
+      .select("client_key email user_name")
+      .lean() as any[];
+    const decryptedUser = await findByDecryptedClientCode(userCandidates, loginIdentifier);
+    if (decryptedUser?._id) {
+      user = await User.findById(decryptedUser._id);
+    }
+  }
 
   if (user) {
     req.body.user_name = user.user_name; 
@@ -119,7 +150,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
       });
     }
 
-    const tokensData = resp.data;
+    const tokensData = resp.data?.data || resp.data;
     const jwtToken = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
     const refreshToken = tokensData.refreshToken;
     const feedToken = tokensData.websocketToken || tokensData.feedToken;
@@ -226,8 +257,13 @@ router.post("/validate-session", auth, async (req: any, res) => {
         try {
           const refreshResp = await adapter.generateTokensUsingRefresh(tokenData.refreshToken);
           if (refreshResp && refreshResp.status === 200 && refreshResp.data) {
-            const newJwt = refreshResp.data.jwtToken || refreshResp.data.accessToken;
-            const newFeed = refreshResp.data.feedToken || refreshResp.data.refreshToken;
+            const refreshData = refreshResp.data?.data || refreshResp.data;
+            const newJwt = refreshData.jwtToken || refreshData.accessToken || refreshData.token;
+            const newFeed = refreshData.feedToken || refreshData.websocketToken;
+
+            if (!newJwt) {
+              throw new Error("Refresh response missing jwt token");
+            }
 
             await AngelTokensModel.findOneAndUpdate(
               { userId, clientcode },

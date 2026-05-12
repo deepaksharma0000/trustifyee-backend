@@ -20,4 +20,6 @@ const TradeOutboxSchema = new Schema({
     processedAt: { type: Date },
 }, { timestamps: true });
 
+TradeOutboxSchema.index({ status: 1, createdAt: 1 });
+
 export const TradeOutbox = mongoose.model<ITradeOutbox>("TradeOutbox", TradeOutboxSchema);

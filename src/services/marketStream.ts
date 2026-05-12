@@ -44,7 +44,7 @@ async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
     log.error("Angel refresh failed:", resp);
     throw new Error((resp as any)?.data?.message || (resp as any)?.message || "Angel refresh failed");
   }
-  const tokensData = resp.data;
+  const tokensData = resp.data?.data || resp.data;
   const jwtToken = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
   const refreshToken = tokensData.refreshToken || session.refreshToken;
   const feedToken = tokensData.websocketToken || tokensData.feedToken || session.feedToken;
@@ -52,7 +52,7 @@ async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
     throw new Error("Angel refresh returned no jwtToken");
   }
   await AngelTokensModel.findOneAndUpdate(
-    { clientcode: session.clientcode },
+    { _id: session._id },
     { 
       jwtToken: encrypt(jwtToken), 
       refreshToken: encrypt(refreshToken), 
@@ -120,10 +120,16 @@ export function startMarketStream(server: any) {
               const resolvedMap: Record<string, string[]> = {};
               for (const ex in exchangeSymbols) {
                   const resolved = await DataFeedService.resolveSymbols(ex, exchangeSymbols[ex]);
-                  resolvedMap[ex] = Object.values(resolved);
+                  const resolvedTokens = Object.values(resolved).filter(Boolean) as string[];
+                  if (resolvedTokens.length > 0) {
+                    resolvedMap[ex] = resolvedTokens;
+                  }
               }
 
-              if (Object.keys(resolvedMap).length === 0) return;
+              if (Object.keys(resolvedMap).length === 0) {
+                log.warn("[MarketStream] No tokens resolved for requested symbols.");
+                return;
+              }
 
               if (!angelSession.apiKey) throw new Error(`API Key missing for ${angelSession.clientcode}`);
               const sessionApiKey = decrypt(angelSession.apiKey, `market_stream_${angelSession.clientcode}`);

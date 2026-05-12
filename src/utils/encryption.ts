@@ -142,3 +142,9 @@ export const maskKey = (key: string): string => {
     if (!clean || clean.length < 4) return "****";
     return clean.substring(0, 4) + '...';
 };
+
+export const matchesEncryptedValue = (encryptedOrPlain: string, candidate: string): boolean => {
+    if (!encryptedOrPlain || !candidate) return false;
+    const decrypted = safeDecrypt(encryptedOrPlain, "match_check");
+    return decrypted === candidate;
+};

@@ -91,7 +91,7 @@ async function refreshAngelSession(session: any) {
         log.error("Angel refresh failed:", resp?.data);
         throw new Error(resp?.data?.message || "Angel refresh failed");
     }
-    const tokensData = resp.data;
+    const tokensData = resp.data?.data || resp.data;
     const jwtToken = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
     const refreshToken = tokensData.refreshToken || session.refreshToken;
     const feedToken = tokensData.websocketToken || tokensData.feedToken || session.feedToken;
@@ -101,7 +101,7 @@ async function refreshAngelSession(session: any) {
     
     // Encrypt new tokens with prefix before saving
     await AngelTokensModel.findOneAndUpdate(
-        { clientcode: session.clientcode },
+        { _id: session._id },
         { 
             jwtToken: encrypt(jwtToken), 
             refreshToken: encrypt(refreshToken), 

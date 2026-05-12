@@ -35,6 +35,31 @@ export type PlaceOrderInput = {
   riskPercent?: number;
 };
 
+function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
+  const fromPayloadIp = typeof orderInput.outgoingIp === "string" ? orderInput.outgoingIp.trim() : "";
+  const fromProfileIp = typeof user?.outgoing_ip === "string" ? String(user.outgoing_ip).trim() : "";
+  const fromPayloadAgent = typeof orderInput.agentUrl === "string" ? orderInput.agentUrl.trim() : "";
+  const fromProfileAgent = typeof user?.agent_url === "string" ? String(user.agent_url).trim() : "";
+
+  const outgoingIp = fromPayloadIp || fromProfileIp || "";
+  const agentUrl = fromPayloadAgent || fromProfileAgent || "";
+
+  if (!outgoingIp && !agentUrl) {
+    // Centralized server execution can still continue if app static IP is whitelisted at API-key level.
+    return {
+      outgoingIp: "",
+      agentUrl: "",
+      usingServerNetworkFallback: true,
+    };
+  }
+
+  return {
+    outgoingIp,
+    agentUrl,
+    usingServerNetworkFallback: false,
+  };
+}
+
 /**
  * Robust Pre-Trade Validation Wrapper
  */
@@ -103,11 +128,9 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
       log.warn(`MARGIN_CHECK_SKIP: Placing order for ${clientcode} without margin sufficiency check (broker data missing).`);
   }
 
-  // 5. SEBI COMPLIANCE: Static IP Guard
-  const outgoingIp = orderInput.outgoingIp;
-  if (!outgoingIp || String(outgoingIp).trim() === "") {
-      log.error(`[SEBI_VIOLATION] Trade blocked for ${clientcode}: User static IP not registered.`);
-      return { status: false, message: "User static IP not registered. Please contact admin." };
+  // 5. Network route note (non-blocking)
+  if (!orderInput.outgoingIp && !orderInput.agentUrl) {
+      log.warn(`[ORDER_NETWORK_FALLBACK] ${clientcode} has no dedicated outgoing_ip/agent_url. Falling back to server network path.`);
   }
 
   return { status: true, message: "" };
@@ -146,10 +169,12 @@ export async function placeOrderForClient(
 
 
   // 🚀 [BROKER ROUTING]
-  const currentIp = orderInput.outgoingIp || user!?.outgoing_ip;
-  if (!currentIp || String(currentIp).trim() === "") {
-      log.error(`[SEBI_VIOLATION] ${clientcode} - User static IP missing. Execution halted.`);
-      return { status: false, message: "User static IP not registered. Please contact admin." };
+  const routing = resolveNetworkRouting(orderInput, user);
+  const currentIp = routing.outgoingIp || undefined;
+  const currentAgentUrl = routing.agentUrl || undefined;
+
+  if (routing.usingServerNetworkFallback) {
+      log.warn(`[ORDER_NETWORK_FALLBACK] ${clientcode} executing via server network (no user-specific IP/agent).`);
   }
 
   // 1. [UPSTOX]
@@ -216,7 +241,11 @@ export async function placeOrderForClient(
   // 😇 [DEFAULT / ANGELONE FLOW] - Unmodified production logic
   try {
       // 1. Run Validations
-      const validation = await runPreTradeValidation(user!._id.toString(), clientcode, orderInput);
+      const validation = await runPreTradeValidation(user!._id.toString(), clientcode, {
+        ...orderInput,
+        outgoingIp: currentIp,
+        agentUrl: currentAgentUrl
+      });
       if (!validation.status) {
           throw new Error(validation.message || "Validation failed");
       }
@@ -241,9 +270,9 @@ export async function placeOrderForClient(
       // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
       const dynamicAdapter = new AngelOneAdapter(
           userApiKey, 
-          orderInput.outgoingIp || user!?.outgoing_ip, 
+          currentIp, 
           false, 
-          orderInput.agentUrl || (user as any)?.agent_url
+          currentAgentUrl
       );
 
 
@@ -300,7 +329,7 @@ export async function placeOrderForClient(
       
       if (isInvalidToken && retryCount < 1) {
           log.info(`[OrderService] Token expired for ${clientcode}. Attempting auto-refresh...`);
-          const refreshed = await attemptTokenRefresh(userId, clientcode, orderInput.outgoingIp || user!?.outgoing_ip);
+          const refreshed = await attemptTokenRefresh(userId, clientcode, currentIp);
           if (refreshed) {
               log.info(`[OrderService] Token refreshed successfully for ${clientcode}. Retrying order...`);
               return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
@@ -343,15 +372,21 @@ async function attemptTokenRefresh(userId: string, clientcode: string, outgoingI
         const refreshResp = await dynamicAdapter.generateTokensUsingRefresh(decRefreshToken);
         
         if (refreshResp && refreshResp.status === 200 && refreshResp.data) {
-            const tokensData = refreshResp.data;
-            const newJwt = tokensData.jwtToken || tokensData.accessToken || tokensData.token;
-            const newFeed = tokensData.feedToken || tokensData.websocketToken;
+            const payload = refreshResp.data?.data || refreshResp.data;
+            const newJwt = payload?.jwtToken || payload?.accessToken || payload?.token;
+            const newFeed = payload?.feedToken || payload?.websocketToken;
             
+            if (!newJwt || typeof newJwt !== "string") {
+                log.error(`[OrderService] Refresh response missing jwtToken for ${clientcode}`, refreshResp.data);
+                return false;
+            }
+
             await AngelTokensModel.findOneAndUpdate(
                 { userId, clientcode },
                 { 
                     jwtToken: encrypt(newJwt), 
-                    feedToken: newFeed ? encrypt(newFeed) : undefined 
+                    feedToken: newFeed ? encrypt(newFeed) : undefined,
+                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
                 }
             );
             return true;

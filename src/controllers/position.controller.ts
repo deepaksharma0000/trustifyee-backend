@@ -2,7 +2,6 @@ import { Request, Response } from "express";
 import { Position } from "../models/Position.model";
 import { placeOrderForClient, getOrderStatusForClient } from "../services/OrderService";
 import AngelTokensModel from "../models/AngelTokens";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import log from "../utils/logger";
 import { getUpstoxAdapter } from "../utils/upstox";
 import { PlaceOrderInput } from "../services/OrderService";
@@ -61,8 +60,6 @@ export const getOpenPositions = async (req: Request, res: Response) => {
     try {
       const AngelTokensModel = require("../models/AngelTokens").default;
       const UpstoxTokensModel = require("../models/UpstoxTokens").default;
-      const { AngelOneAdapter } = require("../adapters/AngelOneAdapter");
-      const { UpstoxAdapter } = require("../adapters/UpstoxAdapter");
       const InstrumentModel = require("../models/Instrument").default;
 
       // ── For ADMIN_ALL: find any available valid token ──────────────────
@@ -77,7 +74,15 @@ export const getOpenPositions = async (req: Request, res: Response) => {
           : UpstoxTokensModel.findOne(userId ? { userId } : {}).sort({ updatedAt: -1 }).lean()
       ]);
 
-      const angelAdapter = new AngelOneAdapter();
+      let angelAdapter: any = null;
+      if (angelTokens?.userId) {
+        try {
+          const { createAngelAdapter } = await import("../utils/broker");
+          angelAdapter = await createAngelAdapter(String(angelTokens.userId));
+        } catch (adapterErr) {
+          log.warn("Unable to create Angel adapter for LTP enrichment", adapterErr);
+        }
+      }
       const upstoxAdapter = getUpstoxAdapter();
 
       positionsWithLtp = await Promise.all(positions.map(async (p: any) => {
@@ -107,7 +112,7 @@ export const getOpenPositions = async (req: Request, res: Response) => {
               }
               ltp = Number(entry?.last_price || 0);
             }
-          } else if (!isUpstox && angelTokens?.jwtToken) {
+          } else if (!isUpstox && angelTokens?.jwtToken && angelAdapter) {
             if (!currentSymbolToken) {
               const inst = await InstrumentModel.findOne({ tradingsymbol: p.tradingsymbol, exchange: p.exchange });
               currentSymbolToken = inst?.symboltoken;
@@ -154,7 +159,13 @@ export const getOpenPositions = async (req: Request, res: Response) => {
           // Add a small delay between each broker call (600ms)
           await new Promise(r => setTimeout(r, 600));
 
-          const statusResp = await getOrderStatusForClient(p.userId, p.clientcode, p.orderid, p.tradingsymbol);
+          const statusResp = await getOrderStatusForClient(
+            p.userId,
+            p.clientcode,
+            p.orderid,
+            undefined,
+            p.tradingsymbol
+          );
           let bData = statusResp?.data || statusResp;
           if (Array.isArray(bData)) bData = bData[bData.length - 1];
 
@@ -234,7 +245,8 @@ export const closePosition = async (req: Request, res: Response) => {
       }
 
       if (tokens?.jwtToken && position.symboltoken) {
-        const adapter = new AngelOneAdapter();
+        const { createAngelAdapter } = await import("../utils/broker");
+        const adapter = await createAngelAdapter(String(position.userId));
         const ltpResp = await adapter.getLtp(tokens.jwtToken, position.exchange, position.tradingsymbol, position.symboltoken);
         exitPrice = ltpResp?.data?.ltp || 0;
       }

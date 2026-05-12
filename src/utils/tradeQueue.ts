@@ -1,6 +1,6 @@
 // src/utils/tradeQueue.ts
 import { Queue } from "bullmq";
-import { redisConnection } from "./redis";
+import { redisBullConnection } from "./redis";
 
 /**
  * STRICT JOB SCHEMA
@@ -9,6 +9,10 @@ export type TradeJob = {
   userId: string;
   signalId: string;
   clientCode: string;
+  clientOrderId: string;
+  correlationId: string;
+  outgoingIp?: string;
+  agentUrl?: string;
   orderData: {
     exchange: string;
     tradingsymbol: string;
@@ -18,12 +22,11 @@ export type TradeJob = {
     symboltoken?: string;
     orderType: "MARKET" | "LIMIT";
   };
-  correlationId: string;
   timestamp: number;
 };
 
 export const tradeQueue = new Queue("trade-execution", {
-    connection: redisConnection as any,
+    connection: redisBullConnection as any,
     defaultJobOptions: {
         attempts: 3,
         backoff: {
@@ -39,7 +42,7 @@ export const tradeQueue = new Queue("trade-execution", {
  * REPEATABLE RISK CHECK QUEUE
  */
 export const riskQueue = new Queue("risk-management", {
-    connection: redisConnection as any,
+    connection: redisBullConnection as any,
 });
 
 export default tradeQueue;

@@ -11,7 +11,7 @@ export interface ISignalExecutionResult extends Document {
     executedAt: Date;
     correlationId?: string;
 
-    source?: "USER_DEVICE" | "BACKEND_BLOCKED";
+    source?: "USER_DEVICE" | "BACKEND_BLOCKED" | "USER_QUEUE" | "SERVER_QUEUE";
     orderType?: "LIMIT";
     strategyId?: string;
     ipAddress?: string;
@@ -30,7 +30,7 @@ const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
         errorMessage: { type: String },
         executedAt: { type: Date, default: Date.now },
         correlationId: { type: String },
-        source: { type: String, enum: ["USER_DEVICE", "BACKEND_BLOCKED"] },
+        source: { type: String, enum: ["USER_DEVICE", "BACKEND_BLOCKED", "USER_QUEUE", "SERVER_QUEUE"] },
         orderType: { type: String, enum: ["LIMIT"] },
         strategyId: { type: String },
         ipAddress: { type: String },

@@ -7,15 +7,10 @@ import {
 } from "../services/OrderService";
 import log from "../utils/logger";
 import { auth, adminOnly } from "../middleware/auth.middleware";
-import User from "../models/User";
 import { Position } from "../models/Position.model";
 import InstrumentModel from "../models/Instrument";
-import { Group } from "../models/GroupServices";
-import { getOptionChain } from "../services/NiftyOptionService";
-import { decrypt, encrypt } from "../utils/encryption";
+import { matchesEncryptedValue } from "../utils/encryption";
 import AngelTokensModel from "../models/AngelTokens";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
-import { placeAngelOrder } from "../services/angel.service";
 import { AutoExitService } from "../services/AutoExitService";
 import { MarketStatusService } from "../services/MarketStatusService";
 import { BrokerResponse } from "../models/BrokerResponse";
@@ -25,6 +20,7 @@ import {
   exportGlobalTradeHistory
 } from "../controllers/order.controller";
 import moment from "moment-timezone";
+import { findUserByClientCode } from "../utils/clientCodeLookup";
 
 const router = express.Router();
 
@@ -76,8 +72,7 @@ router.post("/place", async (req, res, next) => {
 
     // For admin placing for client, we need the client's userId.
     // Encrypt search term to find user with encrypted client_key
-    const encryptedClientCode = encrypt(clientcode);
-    const targetUser = await User.findOne({ client_key: encryptedClientCode }).lean();
+    const targetUser = await findUserByClientCode(clientcode);
     if (!targetUser) {
       return res.status(404).json({ error: "User with this clientcode not found" });
     }
@@ -151,28 +146,11 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       exchange: orderPayload.exchange
     }).lean() as any;
 
-    const isOptionChainTrade = req.body.tradeType === "Option-Chain";
+    if (!instrument && !orderPayload.symboltoken) {
+      return res.status(400).json({ error: "Instrument not found and symboltoken missing" });
+    }
+
     const targetStrategy = req.body.strategy || "Manual";
-
-    const baseSymbol = req.body.tradingsymbol?.replace(/[0-9].*$/, "").trim().toUpperCase() || "";
-
-    // 1. Fetch all groups once for lookup
-    const allGroups = await Group.find({}).lean();
-
-    // 2. Find eligible users
-    // If strategy is Manual, we also include users with NO strategies defined (legacy support)
-    const strategyQuery = targetStrategy === "Manual" 
-      ? { $or: [{ strategies: "Manual" }, { strategies: { $size: 0 } }, { strategies: { $exists: false } }] }
-      : { strategies: targetStrategy };
-
-    const userQuery: any = {
-      status: "active",
-      trading_status: "enabled",
-      licence: { $in: ["Live", "Demo"] },
-      ...strategyQuery
-    };
-
-    let users = await User.find(userQuery).lean();
 
     // 🚀 [COMPLIANCE FIX] Generate ONE broadcast signal via SignalService
     // All connected users will receive this TRADE_SIGNAL via WebSocket and execute it locally.
@@ -230,7 +208,7 @@ router.get("/status/:clientcode/:orderId", async (req, res, next) => {
     const userType = (req as any).userType;
 
     // Security check: If user, must match clientcode
-    if (userType === 'user' && user.client_key !== clientcode) {
+    if (userType === 'user' && !matchesEncryptedValue(user.client_key || "", clientcode)) {
       return res.status(403).json({ ok: false, message: "Unauthorized access to these orders" });
     }
 
@@ -392,7 +370,7 @@ router.get("/active-positions/:clientcode", auth, async (req, res) => {
     const user = (req as any).user;
     const userType = (req as any).userType;
 
-    if (userType === 'user' && user.client_key !== clientcode) {
+    if (userType === 'user' && !matchesEncryptedValue(user.client_key || "", clientcode)) {
       return res.status(403).json({ ok: false, message: "Unauthorized access" });
     }
 
@@ -413,7 +391,8 @@ router.get("/active-positions/:clientcode", auth, async (req, res) => {
       return res.json({ ok: true, data: positions.map(p => ({ ...p, ltp: 0, pnl: 0 })) });
     }
 
-    const adapter = new AngelOneAdapter();
+    const { createAngelAdapter } = await import("../utils/broker");
+    const adapter = await createAngelAdapter(tokens.userId?.toString() || (req as any).id);
     const positionsWithLtp = await Promise.all(positions.map(async (p) => {
       try {
         let currentSymbolToken = p.symboltoken;
@@ -446,7 +425,7 @@ router.get("/trade-history/:clientcode", auth, async (req, res) => {
     const user = (req as any).user;
     const userType = (req as any).userType;
 
-    if (userType === 'user' && user.client_key !== clientcode) {
+    if (userType === 'user' && !matchesEncryptedValue(user.client_key || "", clientcode)) {
       return res.status(403).json({ ok: false, message: "Unauthorized access" });
     }
 
@@ -466,8 +445,7 @@ router.get("/broker-responses", auth, async (req: any, res) => {
       if (req.query.userId) {
         userId = req.query.userId as string;
       } else if (req.query.clientcode) {
-        const encryptedCode = encrypt(req.query.clientcode as string);
-        const targetUser = await User.findOne({ client_key: encryptedCode });
+        const targetUser = await findUserByClientCode(req.query.clientcode as string);
         if (targetUser) {
           userId = targetUser._id.toString();
         } else {

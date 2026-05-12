@@ -1,4 +1,3 @@
-// src/adapters/AngelOneAdapter.ts
 import axios, { AxiosInstance } from "axios";
 import https from "https";
 import speakeasy from "speakeasy";
@@ -19,12 +18,11 @@ export class AngelOneAdapter {
   private client: AxiosInstance;
   private outgoingIp?: string;
   private agentUrl?: string;
-  private tokenPath: string = "/rest/auth/angelbroking/jwt/v1/generateTokens";
-  private refreshTokenPath: string = "/rest/auth/angelbroking/jwt/v1/refreshToken";
+  private tokenPath = "/rest/auth/angelbroking/jwt/v1/generateTokens";
+  private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
   private isDataAccount: boolean;
 
-  // Force official production URL to avoid 405/proxy issues
-  private forcedBaseUrl: string = "https://apiconnect.angelone.in";
+  private forcedBaseUrl = "https://apiconnect.angelone.in";
 
   constructor(apiKey?: string, outgoingIp?: string, isDataAccount: boolean = false, agentUrl?: string) {
     this.apiKey = apiKey || "";
@@ -40,185 +38,167 @@ export class AngelOneAdapter {
     this.client = axios.create({
       baseURL: this.forcedBaseUrl,
       timeout: 60000,
-      httpsAgent: ipv4Agent
+      httpsAgent: ipv4Agent,
     });
 
-    log.info(`[ADAPTER_INIT] Mode: ${isDataAccount ? 'DEDICATED_DATA' : 'USER_SESSION'} | Server IP: ${config.publicIp} | Agent: ${this.agentUrl || 'NONE'}`);
+    log.info("[ADAPTER_INIT] AngelOne adapter initialized", {
+      mode: isDataAccount ? "DEDICATED_DATA" : "USER_SESSION",
+      outgoingIp: this.outgoingIp || "",
+      hasAgent: Boolean(this.agentUrl),
+    });
 
-    // Allow ENV override for token paths
     if (config.genPath) this.tokenPath = config.genPath;
     if (config.refreshPath) this.refreshTokenPath = config.refreshPath;
   }
 
-  // common headers
   private baseHeaders(jwtToken?: string) {
     const { safeDecrypt } = require("../utils/encryption");
-    
-    // 1. Validate Decrypted Key
+
     const decApiKey = safeDecrypt(this.apiKey, "angel_adapter_headers");
     if (!decApiKey) throw new Error("Invalid decryption key. Access Denied.");
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-UserType': 'USER',
-        'X-SourceID': 'WEB',
-        'X-ClientLocalIP': '127.0.0.1',
-        'X-ClientPublicIP': config.publicIp || '127.0.0.1',
-        'X-MACAddress': '00:00:00:00:00:00',
-        'X-PrivateKey': decApiKey,
-        'X-Api-Key': decApiKey
-      };
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "X-UserType": "USER",
+      "X-SourceID": "WEB",
+      "X-ClientLocalIP": "127.0.0.1",
+      "X-ClientPublicIP": config.publicIp || "127.0.0.1",
+      "X-MACAddress": "00:00:00:00:00:00",
+      "X-PrivateKey": decApiKey,
+      "X-Api-Key": decApiKey,
+    };
 
-      if (jwtToken) {
-        const decJwt = decrypt(jwtToken, "jwt_token");
-        if (decJwt) headers['Authorization'] = `Bearer ${decJwt}`;
-      }
+    if (jwtToken) {
+      const decJwt = decrypt(jwtToken, "jwt_token");
+      if (decJwt) headers.Authorization = `Bearer ${decJwt}`;
+    }
 
     return headers;
   }
 
-  // ------------ LOGIN (Trading APIs - Password Based) ------------
-  async generateSession(credentials: { clientcode: string; password: string; totp: string; totp_secret?: string }) {
-    const { clientcode, password, totp, totp_secret } = credentials;
-    
-    // 🛡️ [LOGIN_GUARD_REMOVED] Login always from server IP to avoid EADDRNOTAVAIL
-    
-    // 🛡️ [DIAGNOSTIC LOG] - Show what's being sent (masked)
-    const maskedPsw = password ? (password.substring(0, 2) + "****") : "MISSING";
-    log.info(`[LOGIN_ATTEMPT] Client: ${clientcode}, MPIN: ${maskedPsw}, TOTP_PROVIDED: ${!!totp || !!totp_secret}`);
-
-    // 🚀 RESTORED TO v1 ENDPOINT (v2 is being blocked by WAF/Firewall)
+  async generateSession(credentials: {
+    clientcode: string;
+    password: string;
+    totp: string;
+    totp_secret?: string;
+  }) {
     const path = "/rest/auth/angelbroking/user/v1/loginByPassword";
-    const fullUrl = `${this.forcedBaseUrl}${path}`;
-    
-    // 🛡️ Automated TOTP Generation
+
     let finalTotp = credentials.totp;
     if (!finalTotp && credentials.totp_secret) {
-        try {
-            finalTotp = speakeasy.totp({
-                secret: credentials.totp_secret,
-                encoding: 'base32'
-            });
-            log.info(`[TOTP] Generated auto-TOTP for ${credentials.clientcode}`);
-        } catch (err: any) {
-            log.error(`[TOTP_ERROR] Failed to generate TOTP from secret for ${credentials.clientcode}:`, err.message);
-        }
+      try {
+        finalTotp = speakeasy.totp({
+          secret: credentials.totp_secret,
+          encoding: "base32",
+        });
+      } catch (err: any) {
+        log.error("[TOTP_ERROR] Could not generate TOTP", {
+          clientcode: credentials.clientcode,
+          message: err?.message,
+        });
+      }
     }
 
     const payload = {
-        clientcode: credentials.clientcode,
-        password: credentials.password,
-        totp: finalTotp
+      clientcode: credentials.clientcode,
+      password: credentials.password,
+      totp: finalTotp,
     };
 
-    log.info(`[LOGIN_REQUEST] LOGIN_URL: ${fullUrl} | Account: ${credentials.clientcode}`);
-    log.info(`[LOGIN_DEBUG] Payload being sent: clientcode=${credentials.clientcode}, apikey=${this.apiKey?.slice(0,4)}****, totp=${finalTotp}`);
-    
+    log.info("[LOGIN_ATTEMPT] AngelOne login request", {
+      clientcode: credentials.clientcode,
+      hasTotp: Boolean(finalTotp),
+      hasTotpSecret: Boolean(credentials.totp_secret),
+    });
+
     try {
-      const resp = await this.client.post(path, payload, {
+      return await this.client.post(path, payload, {
         headers: this.baseHeaders(),
       });
-      return resp;
     } catch (err: any) {
       const errorData = err?.response?.data || {};
       const errorMessage = String(errorData.message || errorData.emsg || err.message || "").toUpperCase();
-      
-      log.error(`[LOGIN_RAW_ERROR] Full Response: ${JSON.stringify(errorData)}`);
 
-      // 🛡️ [MPIN GUARD] - If MPIN is invalid, do NOT retry. Throw fatal error to stop loop.
-      // Error code AB1008 and message "INVALID MPIN" are critical triggers.
-      const isInvalidMPIN = errorMessage.includes("INVALID MPIN") || 
-                            errorMessage.includes("INVALID PASSWORD") || 
-                            errorData.errorcode === "AB1008" ||
-                            errorMessage.includes("MAXIMUM ATTEMPTS");
+      const isInvalidMPIN =
+        errorMessage.includes("INVALID MPIN") ||
+        errorMessage.includes("INVALID PASSWORD") ||
+        errorData.errorcode === "AB1008" ||
+        errorMessage.includes("MAXIMUM ATTEMPTS");
+
+      log.error("[LOGIN_FAILED] AngelOne login failed", {
+        clientcode: credentials.clientcode,
+        errorCode: errorData.errorcode,
+        errorMessage: errorData.message || err.message,
+      });
 
       if (isInvalidMPIN) {
-          log.error(`[FATAL_LOGIN_ERROR] ${errorMessage} for ${credentials.clientcode}. Stopping all auto-login attempts to prevent account lock.`);
-          const fatalError = new Error("INVALID_MPIN_FATAL");
-          (fatalError as any).isFatal = true;
-          (fatalError as any).brokerCode = errorData.errorcode;
-          throw fatalError;
+        const fatalError = new Error("INVALID_MPIN_FATAL");
+        (fatalError as any).isFatal = true;
+        (fatalError as any).brokerCode = errorData.errorcode;
+        throw fatalError;
       }
 
-      log.error(`[LOGIN_FAILED] Attempt failed for ${credentials.clientcode}: ${errorMessage}`);
       throw err;
     }
   }
 
-
-  // ------------ OAUTH / PUBLISHER LOGIN FLOW ------------
   async generateSessionByAuthToken(authToken: string): Promise<any> {
     const body = { refreshToken: authToken };
-    try {
-      const resp = await this.client.post(this.tokenPath, body, {
-        headers: this.baseHeaders(),
-      });
-      return resp;
-    } catch (err: any) {
-      throw err;
-    }
+    return this.client.post(this.tokenPath, body, {
+      headers: this.baseHeaders(),
+    });
   }
 
-  // ------------ GENERIC AUTHP POST / GET ------------
   async authPost(jwtToken: string, path: string, body?: any) {
-    // Server-side execution enabled via backend worker
-
-    // [DATA_FEED GUARD]
-    if (this.apiKey === config.dataApiKey && path.includes('/order')) {
-        throw new Error("DATA_ACCOUNT_CANNOT_TRADE");
+    if (this.apiKey === config.dataApiKey && path.includes("/order")) {
+      throw new Error("DATA_ACCOUNT_CANNOT_TRADE");
     }
 
-    try {
-      const resp = await this.client.post(path, body || {}, {
-        headers: this.baseHeaders(jwtToken),
-      });
-      return resp;
-    } catch (err: any) {
-      throw err;
-    }
+    return this.client.post(path, body || {}, {
+      headers: this.baseHeaders(jwtToken),
+    });
   }
 
   async authGet(jwtToken: string, path: string, params?: any) {
-    try {
-      const resp = await this.client.get(path, {
-        headers: this.baseHeaders(jwtToken),
-        params
-      });
-      return resp;
-    } catch (err: any) {
-      throw err;
-    }
+    return this.client.get(path, {
+      headers: this.baseHeaders(jwtToken),
+      params,
+    });
   }
 
-  // ------------ MARKET DATA ------------
-  async getMarketData(jwtToken: string, mode: "LTP" | "QUOTE" | "FULL", exchangeTokens: Record<string, string[]>) {
-    const path = "/rest/secure/angelbroking/market/v1/quote";
-    const body = { mode, exchangeTokens };
-    return await this.authPost(jwtToken, path, body);
+  async getMarketData(
+    jwtToken: string,
+    mode: "LTP" | "QUOTE" | "FULL",
+    exchangeTokens: Record<string, string[]>
+  ) {
+    return this.authPost(jwtToken, "/rest/secure/angelbroking/market/v1/quote", {
+      mode,
+      exchangeTokens,
+    });
   }
 
   async getLtp(jwtToken: string, exchange: string, tradingsymbol: string, symboltoken: string) {
-    const path = "/rest/secure/angelbroking/order/v1/getLtpData";
-    const body = { exchange, tradingsymbol, symboltoken };
-    return await this.authPost(jwtToken, path, body);
+    return this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/getLtpData", {
+      exchange,
+      tradingsymbol,
+      symboltoken,
+    });
   }
 
   async generateTokensUsingRefresh(refreshToken: string) {
     const body = { refreshToken: decrypt(refreshToken) };
-    return await this.client.post(this.refreshTokenPath, body, {
-        headers: this.baseHeaders(),
-      });
+    return this.client.post(this.refreshTokenPath, body, {
+      headers: this.baseHeaders(),
+    });
   }
 
   async getProfile(jwtToken: string) {
-    const path = "/rest/secure/angelbroking/user/v1/getProfile";
-    return await this.authGet(jwtToken, path);
+    return this.authGet(jwtToken, "/rest/secure/angelbroking/user/v1/getProfile");
   }
 
   async getRMS(jwtToken: string) {
-    const path = "/rest/secure/angelbroking/user/v1/getRMS";
-    return await this.authGet(jwtToken, path);
+    return this.authGet(jwtToken, "/rest/secure/angelbroking/user/v1/getRMS");
   }
 
   async getOrderBook(token: string) {
@@ -226,66 +206,77 @@ export class AngelOneAdapter {
   }
 
   async getOrderStatus(token: string, orderId: string) {
-    const path = "/rest/secure/angelbroking/order/v1/getOrderStatus/" + orderId;
-    return this.authGet(token, path);
+    return this.authGet(token, `/rest/secure/angelbroking/order/v1/getOrderStatus/${orderId}`);
   }
 
   async searchScrip(token: string, exchange: string, searchtext: string) {
-    const path = "/rest/secure/angelbroking/order/v1/searchScrip";
-    const body = { exchange, searchtext };
-    return await this.authPost(token, path, body);
+    return this.authPost(token, "/rest/secure/angelbroking/order/v1/searchScrip", {
+      exchange,
+      searchtext,
+    });
   }
 
-  // ------------ VPS AGENT ROUTING ------------
   async placeOrder(jwtToken: string, payload: any) {
-    const isIpValid = this.outgoingIp && String(this.outgoingIp).trim() !== "";
-    const hasAgent = this.agentUrl && String(this.agentUrl).trim() !== "";
+    const isIpValid = Boolean(this.outgoingIp && String(this.outgoingIp).trim() !== "");
+    const hasAgent = Boolean(this.agentUrl && String(this.agentUrl).trim() !== "");
 
-    // 🛡️ SEBI COMPLIANCE: Only enforce for non-data accounts
-    if (!isIpValid && !hasAgent && !this.isDataAccount) {
-        log.error(`[PLACE_ORDER_ERROR] Order placement requires a valid static IP or VPS Agent. Blocking.`);
-        throw new Error("User static IP not registered. Please contact admin.");
-    }
+    if (hasAgent && this.agentUrl) {
+      const { safeDecrypt } = require("../utils/encryption");
+      const decApiKey = safeDecrypt(this.apiKey, "agent_routing");
 
-    if (this.agentUrl) {
-        const { safeDecrypt } = require("../utils/encryption");
-        const decApiKey = safeDecrypt(this.apiKey, "agent_routing");
-        
-        const agentPayload = {
-            secret: config.agentSecret,
-            jwtToken: decrypt(jwtToken, "agent_routing_jwt"),
-            apiKey: decApiKey,
-            orderPayload: payload
-        };
+      const agentPayload = {
+        secret: config.agentSecret,
+        jwtToken: decrypt(jwtToken, "agent_routing_jwt"),
+        apiKey: decApiKey,
+        orderPayload: payload,
+      };
 
-        log.info(`[AGENT_ROUTING] Routing order for ${payload.tradingsymbol} to ${this.agentUrl}`);
-        try {
-            const resp = await axios.post(`${this.agentUrl}/place-order`, agentPayload, { timeout: 15000 });
-            return resp;
-        } catch (err: any) {
-            log.error(`[AGENT_ERROR] Failed to route to agent ${this.agentUrl}: ${err.message}`);
-            throw err;
-        }
-    }
-
-    // 🛡️ [IP_BINDING] Apply localAddress ONLY for direct order placement
-    if (isIpValid) {
-        const agent = new https.Agent({
-            family: 4,
-            localAddress: this.outgoingIp,
-            keepAlive: true,
-            timeout: 60000
+      try {
+        return await axios.post(`${this.agentUrl}/place-order`, agentPayload, { timeout: 15000 });
+      } catch (err: any) {
+        log.error("[AGENT_ERROR] Failed order routing to agent", {
+          agentUrl: this.agentUrl,
+          message: err?.message,
         });
+        throw err;
+      }
+    }
 
-        log.info(`[DIRECT_BINDING] Placing order via ${this.outgoingIp}`);
-        return await axios.post(`${this.forcedBaseUrl}/rest/secure/angelbroking/order/v1/placeOrder`, payload, {
+    if (isIpValid && this.outgoingIp) {
+      const bindingAgent = new https.Agent({
+        family: 4,
+        localAddress: this.outgoingIp,
+        keepAlive: true,
+        timeout: 60000,
+      });
+
+      try {
+        return await axios.post(
+          `${this.forcedBaseUrl}/rest/secure/angelbroking/order/v1/placeOrder`,
+          payload,
+          {
             headers: this.baseHeaders(jwtToken),
-            httpsAgent: agent,
-            timeout: 60000
+            httpsAgent: bindingAgent,
+            timeout: 60000,
+          }
+        );
+      } catch (err: any) {
+        const code = String(err?.code || "");
+        if (code !== "EADDRNOTAVAIL" && code !== "EINVAL") {
+          throw err;
+        }
+
+        log.warn("[DIRECT_BINDING_FALLBACK] Local IP bind failed. Retrying via default route.", {
+          outgoingIp: this.outgoingIp,
+          code,
         });
+      }
     }
 
-    // Fallback (e.g. data account or missing IP)
-    return await this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
+    if (!isIpValid && !hasAgent && !this.isDataAccount) {
+      log.warn("[ORDER_NETWORK_FALLBACK] No dedicated IP/agent provided. Using server network route.");
+    }
+
+    return this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
   }
 }

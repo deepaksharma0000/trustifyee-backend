@@ -2,11 +2,7 @@ import { Worker } from "bullmq";
 import { Position } from "../models/Position.model";
 import { closeAngelOrder } from "../services/angel.service";
 import log from "../utils/logger";
-
-const connection = {
-    host: process.env.REDIS_HOST || "127.0.0.1",
-    port: parseInt(process.env.REDIS_PORT || "6379"),
-};
+import { redisBullConnection } from "../utils/redis";
 
 export const initAutoExitWorker = () => {
     try {
@@ -55,7 +51,7 @@ export const initAutoExitWorker = () => {
                     throw err; // Trigger BullMQ retry
                 }
             },
-            { connection, lockDuration: 30000 }
+            { connection: redisBullConnection as any, lockDuration: 30000 }
         );
 
         worker.on("completed", (job) => {

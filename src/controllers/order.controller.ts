@@ -1,10 +1,9 @@
 import { Request, Response } from "express";
 import { Position } from "../models/Position.model";
-import { placeAngelOrder } from "../services/angel.service";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import InstrumentModel from "../models/Instrument";
 import User from "../models/User";
+import { matchesEncryptedValue } from "../utils/encryption";
 
 export const getOrderStatus = async (req: Request, res: Response) => {
   const { orderid, clientcode } = req.params;
@@ -12,7 +11,7 @@ export const getOrderStatus = async (req: Request, res: Response) => {
   const userType = (req as any).userType;
 
   // Security check: If user, must match clientcode
-  if (userType === 'user' && user.client_key !== clientcode) {
+  if (userType === 'user' && !matchesEncryptedValue(user.client_key || "", clientcode)) {
     return res.status(403).json({ ok: false, message: "Unauthorized access to these orders" });
   }
 
@@ -100,7 +99,7 @@ export const getActivePositions = async (req: Request, res: Response) => {
     const userType = (req as any).userType;
 
     // Security check: If user, must match clientcode
-    if (userType === 'user' && user.client_key !== clientcode) {
+    if (userType === 'user' && !matchesEncryptedValue(user.client_key || "", clientcode)) {
       return res.status(403).json({ ok: false, message: "Unauthorized access to these positions" });
     }
 
@@ -219,7 +218,7 @@ export const getTradeHistory = async (req: Request, res: Response) => {
     const userType = (req as any).userType;
 
     // Security check: If user, must match clientcode
-    if (userType === 'user' && user.client_key !== clientcode) {
+    if (userType === 'user' && !matchesEncryptedValue(user.client_key || "", clientcode)) {
       return res.status(403).json({ ok: false, message: "Unauthorized access to trade history" });
     }
 

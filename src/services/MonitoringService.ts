@@ -13,11 +13,12 @@ export class MonitoringService {
             ]);
 
             const activeBrokers = ["ANGELONE", "UPSTOX"];
+            const resources = ["ORDER", "LTP", "AUTH"];
             const cbStates: Record<string, string> = {};
             
             for (const b of activeBrokers) {
-                const state = await redis.get(`CB:STATE:${b}`) || "CLOSED";
-                cbStates[b] = state;
+                const states = await Promise.all(resources.map((r) => redis.get(`CB:STATE:${b}:${r}`)));
+                cbStates[b] = states.some((v) => v === "OPEN") ? "OPEN" : "CLOSED";
             }
 
             log.info({
