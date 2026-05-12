@@ -28,6 +28,20 @@ const quoteCache = new Map<
   string,
   { ltp: number; oi: number | null; ts: number }
 >();
+const angelAdapterCache = new Map<string, AngelOneAdapter>();
+
+function getCachedAngelAdapter(apiKey: string) {
+  const cacheKey = apiKey;
+  const cached = angelAdapterCache.get(cacheKey);
+  if (cached) return cached;
+  const adapter = new AngelOneAdapter(apiKey);
+  angelAdapterCache.set(cacheKey, adapter);
+  if (angelAdapterCache.size > 20) {
+    const firstKey = angelAdapterCache.keys().next().value;
+    if (firstKey) angelAdapterCache.delete(firstKey);
+  }
+  return adapter;
+}
 
 function isInvalidTokenResponse(resp: any) {
   const body = resp?.data || resp || {};
@@ -119,7 +133,7 @@ export function startMarketStream(server: any) {
 
               if (!angelSession.apiKey) throw new Error(`API Key missing for ${angelSession.clientcode}`);
               const sessionApiKey = decrypt(angelSession.apiKey, `market_stream_${angelSession.clientcode}`);
-              const angelAdapter = new AngelOneAdapter(sessionApiKey);
+              const angelAdapter = getCachedAngelAdapter(sessionApiKey);
 
               let resp = await angelAdapter.getMarketData(jwtToken, "FULL", resolvedMap);
 

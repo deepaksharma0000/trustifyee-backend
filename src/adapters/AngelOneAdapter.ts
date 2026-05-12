@@ -14,6 +14,7 @@ export type AngelSessionResp = {
 };
 
 export class AngelOneAdapter {
+  private static shouldLogInit = process.env.LOG_ADAPTER_INIT === "true";
   private apiKey: string;
   private client: AxiosInstance;
   private outgoingIp?: string;
@@ -41,11 +42,13 @@ export class AngelOneAdapter {
       httpsAgent: ipv4Agent,
     });
 
-    log.info("[ADAPTER_INIT] AngelOne adapter initialized", {
-      mode: isDataAccount ? "DEDICATED_DATA" : "USER_SESSION",
-      outgoingIp: this.outgoingIp || "",
-      hasAgent: Boolean(this.agentUrl),
-    });
+    if (AngelOneAdapter.shouldLogInit) {
+      log.debug("[ADAPTER_INIT] AngelOne adapter initialized", {
+        mode: isDataAccount ? "DEDICATED_DATA" : "USER_SESSION",
+        outgoingIp: this.outgoingIp || "",
+        hasAgent: Boolean(this.agentUrl),
+      });
+    }
 
     if (config.genPath) this.tokenPath = config.genPath;
     if (config.refreshPath) this.refreshTokenPath = config.refreshPath;

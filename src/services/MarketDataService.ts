@@ -15,6 +15,25 @@ function getUpstoxAdapter() {
     if (!_upstoxAdapter) _upstoxAdapter = new UpstoxAdapter();
     return _upstoxAdapter;
 }
+
+const angelAdapterCache = new Map<string, AngelOneAdapter>();
+const MAX_ANGEL_ADAPTER_CACHE = 50;
+
+function getCachedAngelAdapter(apiKey: string) {
+    const cacheKey = apiKey;
+    const cached = angelAdapterCache.get(cacheKey);
+    if (cached) return cached;
+
+    const adapter = new AngelOneAdapter(apiKey);
+    angelAdapterCache.set(cacheKey, adapter);
+
+    if (angelAdapterCache.size > MAX_ANGEL_ADAPTER_CACHE) {
+        const firstKey = angelAdapterCache.keys().next().value;
+        if (firstKey) angelAdapterCache.delete(firstKey);
+    }
+
+    return adapter;
+}
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
 const warningCache = new Map<string, number>();
 const CACHE_MS = 1500; // 1.5s for real-time feel
@@ -111,7 +130,7 @@ async function refreshAngelSession(session: any) {
 
 async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string, apiKey: string) {
     const key = `${exchange}:${symbol}:${token}`;
-    const dynamicAdapter = new AngelOneAdapter(apiKey);
+    const dynamicAdapter = getCachedAngelAdapter(apiKey);
     return await throttledFetch(key, () => dynamicAdapter.getLtp(jwtToken, exchange, symbol, token));
 }
 
@@ -330,7 +349,7 @@ export async function getMultipleInstrumentsLtp(payload: Record<string, string[]
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', 'batch_ltp_val');
                 const sessionApiKey = await ensureEncrypted(session, 'apiKey', 'batch_ltp');
                 
-                const dynamicAdapter = new AngelOneAdapter(sessionApiKey);
+                const dynamicAdapter = getCachedAngelAdapter(sessionApiKey);
                 const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));
                 
                 if (resp && resp.status === 200 && resp.data && resp.data.data) {
