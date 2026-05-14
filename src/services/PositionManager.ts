@@ -112,7 +112,11 @@ async function checkAndManagePositions() {
                         }
                     } else {
                         // 😇 [DEFAULT / ANGELONE FLOW]
-                        const tokens = await AngelTokensModel.findOne(p.userId ? { userId: p.userId, clientcode: p.clientcode } : { clientcode: p.clientcode }).lean() as any;
+                        if (!p.userId) {
+                            log.warn(`[POSITION_MANAGER] Skipping auto-exit broker call due to missing userId for ${p.clientcode}`);
+                            continue;
+                        }
+                        const tokens = await AngelTokensModel.findOne({ userId: p.userId, clientcode: p.clientcode }).lean() as any;
                         if (tokens?.jwtToken) {
                             await executeExit(p, tokens.jwtToken, exitReason);
                         } else {

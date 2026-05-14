@@ -29,6 +29,9 @@ const MIN_INTERVAL_MS = 350; // Balanced for approx 2.8 req/sec (staying under 3
 
 const pendingRequests = new Map<string, Promise<any>>();
 const SYSTEM_DATA_CLIENTCODE = String(config.dataClientCode || "").trim();
+const tokenRepairCooldown = new Map<string, number>();
+const TOKEN_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
+const TOKEN_REPAIR_AUTH_COOLDOWN_MS = 30 * 60 * 1000;
 
 export type SessionHint = {
     userId?: string;
@@ -87,7 +90,35 @@ async function resolveSessionApiKey(session: any, context: string): Promise<stri
     }
 
     const userId = String(session?.userId || "").trim();
+    const sessionClientcode = String(session?.clientcode || "").trim();
     if (!userId) {
+        if (sessionClientcode) {
+            const sameClientSession = await AngelTokensModel.findOne({
+                clientcode: sessionClientcode,
+                apiKey: { $exists: true, $ne: "" },
+            })
+                .sort({ updatedAt: -1 })
+                .lean() as any;
+            if (sameClientSession?.apiKey) {
+                const sameClientApiKey = await ensureEncrypted(
+                    sameClientSession,
+                    "apiKey",
+                    `${context}_same_client_api_${sessionClientcode}`
+                );
+                if (sameClientApiKey) {
+                    return sameClientApiKey;
+                }
+            }
+        }
+
+        if (
+            SYSTEM_DATA_CLIENTCODE &&
+            sessionClientcode === SYSTEM_DATA_CLIENTCODE &&
+            String(config.dataApiKey || "").trim().length > 4
+        ) {
+            return String(config.dataApiKey).trim();
+        }
+
         return "";
     }
 
@@ -95,6 +126,39 @@ async function resolveSessionApiKey(session: any, context: string): Promise<stri
     const adminDoc = !userDoc ? await Admin.findById(userId).select("api_key").lean() as any : null;
     const profile = userDoc || adminDoc;
     if (!profile?.api_key) {
+        const siblingSession = await AngelTokensModel.findOne({
+            userId,
+            apiKey: { $exists: true, $ne: "" },
+        })
+            .sort({ updatedAt: -1 })
+            .lean() as any;
+        if (siblingSession?.apiKey) {
+            const siblingApiKey = await ensureEncrypted(
+                siblingSession,
+                "apiKey",
+                `${context}_sibling_api_${userId}`
+            );
+            if (siblingApiKey) {
+                try {
+                    await AngelTokensModel.updateMany(
+                        { userId, clientcode: session?.clientcode },
+                        { $set: { apiKey: siblingSession.apiKey } }
+                    );
+                } catch {
+                    // best effort
+                }
+                return siblingApiKey;
+            }
+        }
+
+        if (
+            SYSTEM_DATA_CLIENTCODE &&
+            String(session?.clientcode || "").trim() === SYSTEM_DATA_CLIENTCODE &&
+            String(config.dataApiKey || "").trim().length > 4
+        ) {
+            return String(config.dataApiKey).trim();
+        }
+
         return "";
     }
 
@@ -242,45 +306,70 @@ function isSymbolCacheMissResponse(resp: any) {
     return errorCode === "AB4046" || normalizedMessage.includes("symbol token not found in scrip master cache");
 }
 
+function isDataClientSession(session: any) {
+    const clientcode = String(session?.clientcode || "").trim();
+    return Boolean(SYSTEM_DATA_CLIENTCODE) && clientcode === SYSTEM_DATA_CLIENTCODE;
+}
+
 async function attemptLiveTokenRepair(
     sessionApiKey: string,
     jwtToken: string,
     exchange: string,
     tradingsymbol: string
 ) {
+    const normalizedExchange = String(exchange || "").trim().toUpperCase();
+    const normalizedSymbol = String(tradingsymbol || "").trim().toUpperCase();
+    const repairKey = `${normalizedExchange}:${normalizedSymbol}`;
+    const now = Date.now();
+    const cooldownUntil = tokenRepairCooldown.get(repairKey) || 0;
+    if (cooldownUntil > now) {
+        return "";
+    }
+
     try {
         const adapter = getOrCreateAngelAdapter(sessionApiKey);
         const response = await adapter.searchScrip(jwtToken, exchange, tradingsymbol);
         const body = response?.data || {};
         const payload = body?.data || body;
         const list = Array.isArray(payload) ? payload : Array.isArray(payload?.fetched) ? payload.fetched : [];
-        const normalizedSymbol = String(tradingsymbol || "").trim().toUpperCase();
         const exact = list.find((item: any) => String(item?.tradingsymbol || "").trim().toUpperCase() === normalizedSymbol);
         const candidate = exact || list[0];
         const repairedToken = String(candidate?.symboltoken || candidate?.symbolToken || "").trim();
 
         if (!repairedToken) {
+            tokenRepairCooldown.set(repairKey, now + TOKEN_REPAIR_COOLDOWN_MS);
             return "";
         }
 
         await InstrumentModel.updateOne(
-            { exchange: String(exchange || "").trim().toUpperCase(), tradingsymbol: normalizedSymbol },
+            { exchange: normalizedExchange, tradingsymbol: normalizedSymbol },
             { $set: { symboltoken: repairedToken } },
             { upsert: false }
         );
 
+        tokenRepairCooldown.set(repairKey, now + TOKEN_REPAIR_COOLDOWN_MS);
         log.warn("[MARKET_DATA_TOKEN_REPAIRED]", {
-            exchange: String(exchange || "").trim().toUpperCase(),
+            exchange: normalizedExchange,
             tradingsymbol: normalizedSymbol,
             symboltoken: repairedToken,
         });
         return repairedToken;
     } catch (err: any) {
-        log.warn("[MARKET_DATA_TOKEN_REPAIR_FAILED]", {
-            exchange: String(exchange || "").trim().toUpperCase(),
-            tradingsymbol: String(tradingsymbol || "").trim().toUpperCase(),
-            message: err?.message,
-        });
+        const status = Number(err?.response?.status || 0);
+        const isAuthOrForbidden = status === 401 || status === 403;
+        tokenRepairCooldown.set(
+            repairKey,
+            now + (isAuthOrForbidden ? TOKEN_REPAIR_AUTH_COOLDOWN_MS : TOKEN_REPAIR_COOLDOWN_MS)
+        );
+
+        if (shouldLogWarning(`TOKEN_REPAIR_FAIL:${repairKey}`, 5 * 60 * 1000)) {
+            log.warn("[MARKET_DATA_TOKEN_REPAIR_FAILED]", {
+                exchange: normalizedExchange,
+                tradingsymbol: normalizedSymbol,
+                status: status || undefined,
+                message: err?.message,
+            });
+        }
         return "";
     }
 }
@@ -312,7 +401,17 @@ export async function getLiveIndexLtp(
                 };
                 const index = indexConfig[indexName];
                 const sessionApiKey = await resolveSessionApiKey(session, `market_data_index_${indexName}`);
-                if (!sessionApiKey) throw new Error("User API Key missing for index fetching");
+                if (!sessionApiKey) {
+                    if (shouldLogWarning(`INDEX_APIKEY_MISSING:${session?.userId || "UNKNOWN"}:${session?.clientcode || "UNKNOWN"}:${indexName}`)) {
+                        log.warn("[MARKET_DATA_APIKEY_MISSING]", {
+                            context: "index",
+                            indexName,
+                            userId: String(session?.userId || ""),
+                            clientcode: session?.clientcode || "",
+                        });
+                    }
+                    return cached?.ltp || 0;
+                }
                 
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', `market_data_index_val_${indexName}`);
                 
@@ -445,7 +544,18 @@ export async function getInstrumentLtp(
                         session,
                         `market_data_instrument_${normalizedExchange}_${angelToken || requestedToken}`
                     );
-                    if (!sessionApiKey) throw new Error("User API Key missing for instrument fetching");
+                    if (!sessionApiKey) {
+                        if (shouldLogWarning(`INSTRUMENT_APIKEY_MISSING:${session?.userId || "UNKNOWN"}:${session?.clientcode || "UNKNOWN"}:${normalizedSymbol}`)) {
+                            log.warn("[MARKET_DATA_APIKEY_MISSING]", {
+                                context: "instrument",
+                                exchange: normalizedExchange,
+                                tradingsymbol: normalizedSymbol,
+                                userId: String(session?.userId || ""),
+                                clientcode: session?.clientcode || "",
+                            });
+                        }
+                        return cached?.ltp || 0;
+                    }
                     
                     const decJwtToken = await ensureEncrypted(
                         session,
@@ -481,21 +591,32 @@ export async function getInstrumentLtp(
                     }
 
                     if (isSymbolCacheMissResponse(resp)) {
-                        const repairedToken = await attemptLiveTokenRepair(
-                            sessionApiKey,
-                            jwtForRequest,
-                            normalizedExchange,
-                            normalizedSymbol
-                        );
-                        if (repairedToken && repairedToken !== tokenForRequest) {
-                            tokenForRequest = repairedToken;
-                            resp = await getLtpInternal(
+                        if (isDataClientSession(session)) {
+                            if (shouldLogWarning(`TOKEN_REPAIR_SKIPPED_DATA:${normalizedExchange}:${normalizedSymbol}`, 10 * 60 * 1000)) {
+                                log.warn("[MARKET_DATA_TOKEN_REPAIR_SKIPPED]", {
+                                    reason: "DATA_CLIENT_SESSION",
+                                    exchange: normalizedExchange,
+                                    tradingsymbol: normalizedSymbol,
+                                    clientcode: String(session?.clientcode || ""),
+                                });
+                            }
+                        } else {
+                            const repairedToken = await attemptLiveTokenRepair(
+                                sessionApiKey,
                                 jwtForRequest,
                                 normalizedExchange,
-                                normalizedSymbol,
-                                tokenForRequest,
-                                sessionApiKey
+                                normalizedSymbol
                             );
+                            if (repairedToken && repairedToken !== tokenForRequest) {
+                                tokenForRequest = repairedToken;
+                                resp = await getLtpInternal(
+                                    jwtForRequest,
+                                    normalizedExchange,
+                                    normalizedSymbol,
+                                    tokenForRequest,
+                                    sessionApiKey
+                                );
+                            }
                         }
                     }
 
@@ -585,7 +706,14 @@ export async function getMultipleInstrumentsLtp(
             if (session && session.jwtToken) {
                 const sessionApiKey = await resolveSessionApiKey(session, "market_data_batch_ltp");
                 if (!sessionApiKey) {
-                    throw new Error("User API Key missing for batch LTP");
+                    if (shouldLogWarning(`BATCH_APIKEY_MISSING:${session?.userId || "UNKNOWN"}:${session?.clientcode || "UNKNOWN"}`)) {
+                        log.warn("[MARKET_DATA_APIKEY_MISSING]", {
+                            context: "batch",
+                            userId: String(session?.userId || ""),
+                            clientcode: session?.clientcode || "",
+                        });
+                    }
+                    return results;
                 }
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', 'batch_ltp_val');
                 
