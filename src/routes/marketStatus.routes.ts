@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { config } from "../config";
 import { MarketStatusService } from "../services/MarketStatusService";
 import InstrumentModel from "../models/Instrument";
 import log from "../utils/logger";
@@ -25,6 +26,9 @@ router.get("/full-quote", async (req, res) => {
   }
 
   try {
+    const sessionUserId = typeof req.query.userId === "string" ? req.query.userId.trim() : "";
+    const sessionClientcode = typeof req.query.clientcode === "string" ? req.query.clientcode.trim() : "";
+
     let symb = (symbol as string || "").toUpperCase();
     let exch = (exchange as string || "NSE").toUpperCase();
 
@@ -71,7 +75,9 @@ router.get("/full-quote", async (req, res) => {
     // 2. Get Admin/Recent Token
     const tokens = await resolveAngelSessionContext({
       purpose: "market_status_full_quote",
-      allowGlobalFallback: true,
+      userId: sessionUserId || undefined,
+      clientcode: sessionClientcode || config.dataClientCode || undefined,
+      allowGlobalFallback: false,
       requireJwt: true,
     });
     if (!tokens?.jwtToken) {
@@ -108,6 +114,9 @@ router.get("/historical", async (req, res) => {
   if (!symb) return res.status(400).json({ ok: false, error: "symbol is required" });
 
   try {
+    const sessionUserId = typeof req.query.userId === "string" ? req.query.userId.trim() : "";
+    const sessionClientcode = typeof req.query.clientcode === "string" ? req.query.clientcode.trim() : "";
+
     // 1. Resolve Token (Index or DB)
     let symboltoken = "";
     if (symb === "NIFTY" || symb === "NIFTY50") {
@@ -129,7 +138,9 @@ router.get("/historical", async (req, res) => {
     // 2. Token Check
     const tokens = await resolveAngelSessionContext({
       purpose: "market_status_historical",
-      allowGlobalFallback: true,
+      userId: sessionUserId || undefined,
+      clientcode: sessionClientcode || config.dataClientCode || undefined,
+      allowGlobalFallback: false,
       requireJwt: true,
     });
     if (!tokens?.jwtToken) return res.status(403).json({ ok: false, error: "Broker session inactive" });

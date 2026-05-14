@@ -2,6 +2,7 @@ import { Server as WebSocketServer, WebSocket } from "ws";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
+import { config } from "../config";
 import log from "../utils/logger";
 import { getUpstoxAdapter } from "../utils/upstox";
 import { decrypt } from "../utils/encryption";
@@ -72,7 +73,8 @@ export function startMarketStream(server: any) {
           const [angelSession, upstoxSession] = await Promise.all([
             resolveAngelSessionContext({
               purpose: "market_stream",
-              allowGlobalFallback: true,
+              clientcode: config.dataClientCode || undefined,
+              allowGlobalFallback: false,
               requireJwt: true,
             }) as any,
             UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean() as any

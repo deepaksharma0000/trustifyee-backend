@@ -16,6 +16,8 @@ type CachedSession = {
 
 const SESSION_CACHE_TTL_MS = 10_000;
 const sessionCache = new Map<string, CachedSession>();
+const GLOBAL_FALLBACK_ENABLED = process.env.ALLOW_GLOBAL_SESSION_FALLBACK === "true";
+const fallbackWarnedPurposes = new Set<string>();
 
 const normalize = (value?: string) => (value || "").toString().trim();
 
@@ -88,7 +90,8 @@ export async function resolveAngelSessionContext(input: SessionLookupInput): Pro
   const userId = normalize(lookup.userId);
   const clientcode = normalize(lookup.clientcode);
   const requireJwt = lookup.requireJwt !== false;
-  const allowGlobalFallback = Boolean(lookup.allowGlobalFallback);
+  const requestedGlobalFallback = Boolean(lookup.allowGlobalFallback);
+  const allowGlobalFallback = requestedGlobalFallback && GLOBAL_FALLBACK_ENABLED;
 
   let session: any = null;
 
@@ -108,6 +111,18 @@ export async function resolveAngelSessionContext(input: SessionLookupInput): Pro
     session = await AngelTokensModel.findOne(withJwtFilter({ clientcode }, requireJwt))
       .sort({ updatedAt: -1 })
       .lean();
+  }
+
+  if (!session && requestedGlobalFallback && !GLOBAL_FALLBACK_ENABLED) {
+    const key = `${lookup.purpose || "unknown"}:${userId}:${clientcode}`;
+    if (!fallbackWarnedPurposes.has(key)) {
+      fallbackWarnedPurposes.add(key);
+      log.warn("[SESSION_CONTEXT] Global fallback is disabled by env. Returning no session.", {
+        purpose: lookup.purpose,
+        requestedUserId: userId || undefined,
+        requestedClientcode: clientcode || undefined,
+      });
+    }
   }
 
   if (!session && allowGlobalFallback) {

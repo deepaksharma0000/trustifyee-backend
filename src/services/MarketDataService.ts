@@ -1,5 +1,8 @@
 import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
+import InstrumentModel from "../models/Instrument";
+import User from "../models/User";
+import Admin from "../models/Admin";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { config } from "../config";
 import log from "../utils/logger";
@@ -25,20 +28,128 @@ let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 350; // Balanced for approx 2.8 req/sec (staying under 3/sec limit)
 
 const pendingRequests = new Map<string, Promise<any>>();
+const SYSTEM_DATA_CLIENTCODE = String(config.dataClientCode || "").trim();
 
 export type SessionHint = {
     userId?: string;
     clientcode?: string;
 };
 
-async function resolveSessionForMarket(purpose: string, hint?: SessionHint, allowGlobalFallback = true) {
+async function resolveSessionForMarket(purpose: string, hint?: SessionHint) {
+    const hintedUserId = hint?.userId ? String(hint.userId).trim() : "";
+    const hintedClientcode = hint?.clientcode ? String(hint.clientcode).trim() : "";
+    const clientcode = hintedClientcode || SYSTEM_DATA_CLIENTCODE;
+
+    if (!hintedUserId && !clientcode) {
+        return null;
+    }
+
     return resolveAngelSessionContext({
-        userId: hint?.userId ? String(hint.userId) : undefined,
-        clientcode: hint?.clientcode ? String(hint.clientcode) : undefined,
-        allowGlobalFallback,
+        userId: hintedUserId || undefined,
+        clientcode: clientcode || undefined,
+        allowGlobalFallback: false,
         requireJwt: true,
         purpose,
     });
+}
+
+function extractAngelPayload(response: any) {
+    const body = response?.data ?? response ?? {};
+    const payload =
+        body?.data && typeof body.data === "object" && !Array.isArray(body.data)
+            ? body.data
+            : body;
+    const errorCode = String(
+        body?.errorCode || body?.errorcode || payload?.errorCode || payload?.errorcode || ""
+    ).toUpperCase();
+    const message = String(body?.message || payload?.message || "");
+    return { body, payload, errorCode, message };
+}
+
+function extractAngelLtp(response: any) {
+    const { body, payload, errorCode, message } = extractAngelPayload(response);
+    const ltp = Number(payload?.ltp || payload?.lastPrice || payload?.close || 0);
+    const token = String(payload?.symboltoken || payload?.symbolToken || "").trim();
+    const symbol = String(payload?.tradingsymbol || payload?.tradingSymbol || "").trim().toUpperCase();
+    return { body, payload, errorCode, message, ltp, token, symbol };
+}
+
+async function resolveSessionApiKey(session: any, context: string): Promise<string> {
+    let sessionApiKey = await ensureEncrypted(session, "apiKey", `${context}_session_api_${session?.clientcode || "UNKNOWN"}`);
+    if (sessionApiKey) return sessionApiKey;
+
+    if (session?._id) {
+        const latestSession = await AngelTokensModel.findById(session._id);
+        if (latestSession) {
+            sessionApiKey = await ensureEncrypted(latestSession, "apiKey", `${context}_latest_api_${session?.clientcode || "UNKNOWN"}`);
+            if (sessionApiKey) return sessionApiKey;
+        }
+    }
+
+    const userId = String(session?.userId || "").trim();
+    if (!userId) {
+        return "";
+    }
+
+    const userDoc = await User.findById(userId).select("api_key").lean() as any;
+    const adminDoc = !userDoc ? await Admin.findById(userId).select("api_key").lean() as any : null;
+    const profile = userDoc || adminDoc;
+    if (!profile?.api_key) {
+        return "";
+    }
+
+    const profileApiKey = await ensureEncrypted(profile, "api_key", `${context}_profile_api_${userId}`);
+    if (!profileApiKey) {
+        return "";
+    }
+
+    try {
+        await AngelTokensModel.updateMany(
+            { userId, clientcode: session?.clientcode },
+            { $set: { apiKey: profile.api_key } }
+        );
+    } catch (err: any) {
+        log.warn("[MARKET_DATA] Failed to backfill apiKey into AngelTokens", {
+            userId,
+            clientcode: session?.clientcode,
+            message: err?.message,
+        });
+    }
+
+    return profileApiKey;
+}
+
+async function resolveCanonicalAngelToken(exchange: string, tradingsymbol: string, requestedToken: string) {
+    const normalizedExchange = String(exchange || "").trim().toUpperCase();
+    const normalizedSymbol = String(tradingsymbol || "").trim().toUpperCase();
+    const requested = String(requestedToken || "").trim();
+
+    if (!normalizedExchange || !normalizedSymbol) {
+        return requested;
+    }
+
+    const instrument = await InstrumentModel.findOne({
+        exchange: normalizedExchange,
+        tradingsymbol: normalizedSymbol,
+    })
+        .select("symboltoken")
+        .lean() as any;
+
+    const masterToken = String(instrument?.symboltoken || "").trim();
+    if (!masterToken) {
+        return requested;
+    }
+
+    if (requested && requested !== masterToken) {
+        log.warn("[MARKET_DATA_TOKEN_CORRECTED]", {
+            exchange: normalizedExchange,
+            tradingsymbol: normalizedSymbol,
+            requestedToken: requested,
+            masterToken,
+        });
+    }
+
+    return masterToken;
 }
 
 function shouldLogWarning(key: string, windowMs = 60000) {
@@ -79,10 +190,9 @@ async function throttledFetch<T>(key: string, fn: () => Promise<T>): Promise<T> 
 }
 
 function isInvalidTokenResponse(resp: any) {
-    const body = resp?.data || resp || {};
-    const code = body?.errorCode || body?.errorcode || body?.code || resp?.errorCode || resp?.errorcode;
-    const msg = String(body?.message || resp?.message || "").toLowerCase();
-    return String(code || "").toUpperCase() === "AG8001" || msg.includes("invalid token");
+    const { errorCode, message } = extractAngelPayload(resp);
+    const msg = String(message || "").toLowerCase();
+    return errorCode === "AG8001" || msg.includes("invalid token");
 }
 
 function isInvalidTokenError(err: any) {
@@ -111,13 +221,7 @@ async function refreshAngelSession(session: any) {
     }
 
     // Ensure API key is available after recovery (refresh or fresh login)
-    let sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_refresh_${session.clientcode}`);
-    if (!sessionApiKey) {
-        const latestSession = await AngelTokensModel.findById(session._id);
-        if (latestSession) {
-            sessionApiKey = await ensureEncrypted(latestSession, 'apiKey', `market_data_refresh_latest_${session.clientcode}`);
-        }
-    }
+    const sessionApiKey = await resolveSessionApiKey(session, "market_data_refresh");
 
     if (!sessionApiKey) {
         throw new Error("API Key missing after session recovery");
@@ -130,6 +234,55 @@ async function getLtpInternal(jwtToken: string, exchange: string, symbol: string
     const key = `${exchange}:${symbol}:${token}`;
     const dynamicAdapter = getOrCreateAngelAdapter(apiKey);
     return await throttledFetch(key, () => dynamicAdapter.getLtp(jwtToken, exchange, symbol, token));
+}
+
+function isSymbolCacheMissResponse(resp: any) {
+    const { errorCode, message } = extractAngelPayload(resp);
+    const normalizedMessage = String(message || "").toLowerCase();
+    return errorCode === "AB4046" || normalizedMessage.includes("symbol token not found in scrip master cache");
+}
+
+async function attemptLiveTokenRepair(
+    sessionApiKey: string,
+    jwtToken: string,
+    exchange: string,
+    tradingsymbol: string
+) {
+    try {
+        const adapter = getOrCreateAngelAdapter(sessionApiKey);
+        const response = await adapter.searchScrip(jwtToken, exchange, tradingsymbol);
+        const body = response?.data || {};
+        const payload = body?.data || body;
+        const list = Array.isArray(payload) ? payload : Array.isArray(payload?.fetched) ? payload.fetched : [];
+        const normalizedSymbol = String(tradingsymbol || "").trim().toUpperCase();
+        const exact = list.find((item: any) => String(item?.tradingsymbol || "").trim().toUpperCase() === normalizedSymbol);
+        const candidate = exact || list[0];
+        const repairedToken = String(candidate?.symboltoken || candidate?.symbolToken || "").trim();
+
+        if (!repairedToken) {
+            return "";
+        }
+
+        await InstrumentModel.updateOne(
+            { exchange: String(exchange || "").trim().toUpperCase(), tradingsymbol: normalizedSymbol },
+            { $set: { symboltoken: repairedToken } },
+            { upsert: false }
+        );
+
+        log.warn("[MARKET_DATA_TOKEN_REPAIRED]", {
+            exchange: String(exchange || "").trim().toUpperCase(),
+            tradingsymbol: normalizedSymbol,
+            symboltoken: repairedToken,
+        });
+        return repairedToken;
+    } catch (err: any) {
+        log.warn("[MARKET_DATA_TOKEN_REPAIR_FAILED]", {
+            exchange: String(exchange || "").trim().toUpperCase(),
+            tradingsymbol: String(tradingsymbol || "").trim().toUpperCase(),
+            message: err?.message,
+        });
+        return "";
+    }
 }
 
 export async function getLiveIndexLtp(
@@ -149,7 +302,7 @@ export async function getLiveIndexLtp(
     // 2. Refresh logic
     try {
         if (now >= cooldownUntil && !config.disableLiveLtp) {
-            const session = await resolveSessionForMarket(`market_data_index_${indexName}`, sessionHint, true);
+            const session = await resolveSessionForMarket(`market_data_index_${indexName}`, sessionHint);
 
             if (session && session.jwtToken) {
                 const indexConfig: Record<string, { symbol: string, token: string }> = {
@@ -158,10 +311,10 @@ export async function getLiveIndexLtp(
                     "FINNIFTY": { symbol: config.angelIndexSymbolFinNifty, token: config.angelIndexTokenFinNifty }
                 };
                 const index = indexConfig[indexName];
-                if (!session.apiKey) throw new Error("User API Key missing for index fetching");
+                const sessionApiKey = await resolveSessionApiKey(session, `market_data_index_${indexName}`);
+                if (!sessionApiKey) throw new Error("User API Key missing for index fetching");
                 
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', `market_data_index_val_${indexName}`);
-                const sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_index_${indexName}`);
                 
                 let resp = await getLtpInternal(decJwtToken, "NSE", index.symbol, index.token, sessionApiKey);
 
@@ -177,7 +330,7 @@ export async function getLiveIndexLtp(
                 }
 
                 if (resp && resp.status === 200 && resp.data) {
-                    const ltp = Number(resp.data.ltp || resp.data.lastPrice || 0);
+                    const { ltp } = extractAngelLtp(resp);
                     if (!Number.isNaN(ltp) && ltp > 0) {
                         ltpCache.set(cacheKey, { ltp, ts: now });
                         return ltp;
@@ -248,22 +401,30 @@ export async function getInstrumentLtp(
     symboltoken: string,
     sessionHint?: SessionHint
 ): Promise<number> {
-    const cacheKey = `${exchange}:${symboltoken}`;
+    const normalizedExchange = String(exchange || "").trim().toUpperCase();
+    const normalizedSymbol = String(tradingsymbol || "").trim().toUpperCase();
+    const requestedToken = String(symboltoken || "").trim();
+    const isUpstox = requestedToken.includes("|") || normalizedExchange === "NSE_FO" || requestedToken.length > 20;
+
+    let angelToken = requestedToken;
+    if (!isUpstox) {
+        angelToken = await resolveCanonicalAngelToken(normalizedExchange, normalizedSymbol, requestedToken);
+    }
+
+    const cacheKey = `${normalizedExchange}:${angelToken || requestedToken}`;
     const now = Date.now();
     const cached = ltpCache.get(cacheKey);
 
     if (cached && (now - cached.ts < CACHE_MS)) return cached.ltp;
     try {
-        const isUpstox = symboltoken.includes("|") || exchange === "NSE_FO" || symboltoken.length > 20;
-
         if (isUpstox) {
             const upstoxDoc = await UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean();
             if (upstoxDoc?.accessToken) {
-                const apiResp = await getUpstoxAdapter().getLtp(upstoxDoc.accessToken, symboltoken);
+                const apiResp = await getUpstoxAdapter().getLtp(upstoxDoc.accessToken, requestedToken);
                 const data = apiResp?.data || {};
-                let entry = data[symboltoken as keyof typeof data];
+                let entry = data[requestedToken as keyof typeof data];
                 if (!entry) {
-                    const altKey = symboltoken.replace("|", ":");
+                    const altKey = requestedToken.replace("|", ":");
                     entry = data[altKey as keyof typeof data];
                 }
                 const ltp = entry?.last_price;
@@ -276,40 +437,103 @@ export async function getInstrumentLtp(
             // Only try Angel if not in cooldown
             if (now >= cooldownUntil) {
                 const session = await resolveSessionForMarket(
-                    `market_data_instrument_${exchange}_${symboltoken}`,
-                    sessionHint,
-                    true
+                    `market_data_instrument_${normalizedExchange}_${angelToken || requestedToken}`,
+                    sessionHint
                 );
                 if (session && session.jwtToken) {
-                    if (!session.apiKey) throw new Error("User API Key missing for instrument fetching");
+                    const sessionApiKey = await resolveSessionApiKey(
+                        session,
+                        `market_data_instrument_${normalizedExchange}_${angelToken || requestedToken}`
+                    );
+                    if (!sessionApiKey) throw new Error("User API Key missing for instrument fetching");
                     
-                    const decJwtToken = await ensureEncrypted(session, 'jwtToken', `market_data_instrument_val_${symboltoken}`);
-                    const sessionApiKey = await ensureEncrypted(session, 'apiKey', `market_data_instrument_${symboltoken}`);
+                    const decJwtToken = await ensureEncrypted(
+                        session,
+                        'jwtToken',
+                        `market_data_instrument_val_${angelToken || requestedToken}`
+                    );
+                    let jwtForRequest = decJwtToken;
                     
-                    let resp = await getLtpInternal(decJwtToken, exchange, tradingsymbol, symboltoken, sessionApiKey);
+                    let tokenForRequest = angelToken || requestedToken;
+                    let resp = await getLtpInternal(
+                        jwtForRequest,
+                        normalizedExchange,
+                        normalizedSymbol,
+                        tokenForRequest,
+                        sessionApiKey
+                    );
                     if (isInvalidTokenResponse(resp)) {
                         try {
                             const refreshed = await refreshAngelSession(session);
-                            resp = await getLtpInternal(refreshed.jwtToken, exchange, tradingsymbol, symboltoken, refreshed.apiKey);
+                            jwtForRequest = refreshed.jwtToken;
+                            resp = await getLtpInternal(
+                                jwtForRequest,
+                                normalizedExchange,
+                                normalizedSymbol,
+                                tokenForRequest,
+                                refreshed.apiKey
+                            );
                         } catch (reErr) {
-                            if (shouldLogWarning(`REFRESH_FAIL_SYMBOL:${session?.clientcode || "UNKNOWN"}:${tradingsymbol}`)) {
-                                log.warn(`Angel refresh failed for ${tradingsymbol} LTP:`, reErr);
+                            if (shouldLogWarning(`REFRESH_FAIL_SYMBOL:${session?.clientcode || "UNKNOWN"}:${normalizedSymbol}`)) {
+                                log.warn(`Angel refresh failed for ${normalizedSymbol} LTP:`, reErr);
                             }
                         }
                     }
 
+                    if (isSymbolCacheMissResponse(resp)) {
+                        const repairedToken = await attemptLiveTokenRepair(
+                            sessionApiKey,
+                            jwtForRequest,
+                            normalizedExchange,
+                            normalizedSymbol
+                        );
+                        if (repairedToken && repairedToken !== tokenForRequest) {
+                            tokenForRequest = repairedToken;
+                            resp = await getLtpInternal(
+                                jwtForRequest,
+                                normalizedExchange,
+                                normalizedSymbol,
+                                tokenForRequest,
+                                sessionApiKey
+                            );
+                        }
+                    }
+
                     if (resp && resp.status === 200 && resp.data) {
-                        const ltp = Number(resp.data.ltp || resp.data.lastPrice || 0);
+                        const parsed = extractAngelLtp(resp);
+                        const ltp = parsed.ltp;
+
+                        const tokenMismatch =
+                            Boolean(parsed.token) &&
+                            parsed.token !== String(tokenForRequest);
+                        const symbolMismatch =
+                            Boolean(parsed.symbol) &&
+                            parsed.symbol !== normalizedSymbol;
+
+                        if (tokenMismatch || symbolMismatch) {
+                            if (shouldLogWarning(`LTP_MISMATCH:${normalizedExchange}:${normalizedSymbol}:${tokenForRequest}`)) {
+                                log.error("[MARKET_DATA_LTP_MISMATCH]", {
+                                    exchange: normalizedExchange,
+                                    requestedSymbol: normalizedSymbol,
+                                    requestedToken: tokenForRequest,
+                                    brokerSymbol: parsed.symbol || undefined,
+                                    brokerToken: parsed.token || undefined,
+                                    raw: parsed.body,
+                                });
+                            }
+                            return cached?.ltp || 0;
+                        }
+
                         if (!Number.isNaN(ltp) && ltp > 0) {
                             ltpCache.set(cacheKey, { ltp, ts: now });
                             return ltp;
-                        } else if (ltp === 0 && shouldLogWarning(`INSTRUMENT_ZERO:${tradingsymbol}:${symboltoken}`)) {
+                        } else if (ltp === 0 && shouldLogWarning(`INSTRUMENT_ZERO:${normalizedSymbol}:${tokenForRequest}`)) {
                             log.warn(`[INSTRUMENT_ZERO_LTP] Received 0 for ${tradingsymbol}. Raw: ${JSON.stringify(resp.data)}`);
                         }
                     }
                     if (resp && isRateLimitError(resp)) {
                         cooldownUntil = now + 60000;
-                        log.warn(`Instrument LTP Rate limited (${tradingsymbol}). Cooling down 60s.`);
+                        log.warn(`Instrument LTP Rate limited (${normalizedSymbol}). Cooling down 60s.`);
                     }
                 }
             }
@@ -357,10 +581,13 @@ export async function getMultipleInstrumentsLtp(
     const remainingCount = Object.values(payload).flat().length;
     if (remainingCount > 0 && now >= cooldownUntil) {
         try {
-            const session = await resolveSessionForMarket("market_data_batch_ltp", sessionHint, true);
-            if (session && session.jwtToken && session.apiKey) {
+            const session = await resolveSessionForMarket("market_data_batch_ltp", sessionHint);
+            if (session && session.jwtToken) {
+                const sessionApiKey = await resolveSessionApiKey(session, "market_data_batch_ltp");
+                if (!sessionApiKey) {
+                    throw new Error("User API Key missing for batch LTP");
+                }
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', 'batch_ltp_val');
-                const sessionApiKey = await ensureEncrypted(session, 'apiKey', 'batch_ltp');
                 
                 const dynamicAdapter = getOrCreateAngelAdapter(sessionApiKey);
                 const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));

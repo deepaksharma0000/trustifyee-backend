@@ -18,6 +18,7 @@
    - `PUBLIC_IP=<YOUR_VPS_STATIC_IPV4>`
    - `ANGEL_ENABLE_LOCAL_BINDING=false`
    - `ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK=false`
+   - `ALLOW_GLOBAL_SESSION_FALLBACK=false`
 8. Verify post-deploy:
    - `GET /health`
    - Admin login

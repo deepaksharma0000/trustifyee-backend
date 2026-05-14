@@ -156,7 +156,15 @@ export class AngelOneAdapter {
   }
 
   async authPost(jwtToken: string, path: string, body?: any) {
-    if (this.apiKey === config.dataApiKey && path.includes("/order")) {
+    const normalizedPath = String(path || "").toLowerCase();
+    const usingDataAccount =
+      this.isDataAccount || (Boolean(config.dataApiKey) && this.apiKey === config.dataApiKey);
+    const isTradeMutationPath =
+      normalizedPath.includes("/order/v1/placeorder") ||
+      normalizedPath.includes("/order/v1/modifyorder") ||
+      normalizedPath.includes("/order/v1/cancelorder");
+
+    if (usingDataAccount && isTradeMutationPath) {
       throw new Error("DATA_ACCOUNT_CANNOT_TRADE");
     }
 
