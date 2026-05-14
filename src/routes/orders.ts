@@ -82,7 +82,13 @@ router.post("/place", async (req, res, next) => {
     try {
       const { createAngelAdapter } = await import('../utils/broker');
       const adapter = await createAngelAdapter(targetUser._id.toString());
-      const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean();
+      const tokens = await AngelTokensModel.findOne({
+        userId: targetUser._id,
+        clientcode,
+        jwtToken: { $exists: true, $ne: "" }
+      })
+        .sort({ updatedAt: -1 })
+        .lean();
       if (tokens?.jwtToken && symboltoken) {
         const ltpResp = await adapter.getLtp(tokens.jwtToken, "NFO", orderPayload.tradingsymbol, symboltoken);
         broadcastLtp = (ltpResp as any)?.data?.ltp || (ltpResp as any)?.ltp || 0;
@@ -377,11 +383,13 @@ router.get("/active-positions/:clientcode", auth, async (req, res) => {
     const positions = await Position.find({ clientcode, status: "OPEN" }).sort({ createdAt: -1 }).lean();
     if (positions.length === 0) return res.json({ ok: true, data: [] });
 
-    // Try to get user's session, fallback to any active session for Demo users
-    let tokens = await AngelTokensModel.findOne({ clientcode });
-    if (!tokens?.jwtToken && user.licence === "Demo") {
-      tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+    // Strict user/client scoped session to avoid cross-user token mix.
+    const tokenQuery: any = { clientcode };
+    if (userType === "user") {
+      tokenQuery.userId = user._id;
     }
+
+    let tokens = await AngelTokensModel.findOne(tokenQuery);
 
     if (!tokens?.jwtToken) {
       // For Live users, this is a hard error. For Demo, we might have failed fallback too.

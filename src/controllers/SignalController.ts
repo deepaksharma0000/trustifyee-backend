@@ -4,7 +4,7 @@ import InstrumentModel from '../models/Instrument';
 import UpstoxInstrumentModel from '../models/UpstoxInstrument';
 import { Signal } from '../models/Signal';
 import { SignalExecutionResult } from '../models/SignalExecutionResult';
-import { tradeQueue } from '../utils/tradeQueue';
+import { getTradeQueueForBroker } from '../utils/tradeQueue';
 import { decrypt } from '../utils/encryption';
 import { SignalBroadcastService } from '../services/SignalBroadcastService';
 import log from '../utils/logger';
@@ -91,7 +91,10 @@ export const queueExecution = async (req: Request, res: Response) => {
             { upsert: true, new: true, setDefaultsOnInsert: true }
         );
 
-        await tradeQueue.add(`exec-${clientOrderId}`, {
+        const broker = String(user.broker || "ANGELONE").toUpperCase();
+        const queue = getTradeQueueForBroker(broker);
+
+        await queue.add(`exec-${clientOrderId}`, {
             userId,
             signalId,
             clientOrderId,
@@ -172,5 +175,102 @@ export const getExecutionStatus = async (req: Request, res: Response) => {
         res.json({ status: true, data: result });
     } catch (err: any) {
         res.status(500).json({ status: false, error: err.message });
+    }
+};
+
+export const getExecutionSummary = async (req: Request, res: Response) => {
+    try {
+        const { signalId } = req.params;
+        if (!signalId) {
+            return res.status(400).json({ status: false, error: "Signal ID is required" });
+        }
+
+        const signal = await Signal.findById(signalId).lean() as any;
+        if (!signal) {
+            return res.status(404).json({ status: false, error: "Signal not found" });
+        }
+
+        const rows = await SignalExecutionResult.find({ signalId }).sort({ createdAt: 1 }).lean() as any[];
+        const userIds = rows.map((r) => String(r.userId || "")).filter(Boolean);
+
+        const users = await User.find({ _id: { $in: userIds } })
+            .select("user_name email broker")
+            .lean() as any[];
+        const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+        const summary = {
+            totalUsers: Number(signal.totalExecutions || rows.length || 0),
+            successCount: 0,
+            failedCount: 0,
+            pendingCount: 0,
+            queuedCount: 0,
+            unknownCount: 0,
+            brokerWise: {} as Record<string, { total: number; success: number; failed: number; pending: number; queued: number }>,
+        };
+
+        const details = rows.map((row) => {
+            const status = String(row.status || "").toUpperCase();
+            const broker = String(row.broker || userMap.get(String(row.userId))?.broker || "UNKNOWN").toUpperCase();
+
+            if (!summary.brokerWise[broker]) {
+                summary.brokerWise[broker] = { total: 0, success: 0, failed: 0, pending: 0, queued: 0 };
+            }
+
+            summary.brokerWise[broker].total += 1;
+
+            if (status === "SUCCESS") {
+                summary.successCount += 1;
+                summary.brokerWise[broker].success += 1;
+            } else if (status === "FAILED") {
+                summary.failedCount += 1;
+                summary.brokerWise[broker].failed += 1;
+            } else if (status === "PENDING") {
+                summary.pendingCount += 1;
+                summary.brokerWise[broker].pending += 1;
+            } else if (status === "QUEUED") {
+                summary.queuedCount += 1;
+                summary.brokerWise[broker].queued += 1;
+            } else {
+                summary.unknownCount += 1;
+            }
+
+            const user = userMap.get(String(row.userId));
+            return {
+                userId: String(row.userId || ""),
+                userName: user?.user_name || null,
+                email: user?.email || null,
+                broker,
+                status,
+                errorMessage: row.errorMessage || null,
+                orderId: row.orderId || null,
+                clientOrderId: row.clientOrderId || null,
+                correlationId: row.correlationId || null,
+                executedAt: row.executedAt || null,
+                updatedAt: row.updatedAt || null,
+            };
+        });
+
+        const accounted = summary.successCount + summary.failedCount + summary.pendingCount + summary.queuedCount + summary.unknownCount;
+        const notAttempted = Math.max(0, summary.totalUsers - accounted);
+
+        return res.json({
+            status: true,
+            signal: {
+                signalId: String(signal._id),
+                strategy: signal.strategy || null,
+                tradingsymbol: signal.tradingsymbol || null,
+                side: signal.side || null,
+                signalStatus: signal.status || null,
+                createdAt: signal.createdAt || null,
+            },
+            summary: {
+                ...summary,
+                notAttemptedCount: notAttempted,
+            },
+            details,
+        });
+    } catch (err: any) {
+        log.error("[SignalController] getExecutionSummary error", err);
+        return res.status(500).json({ status: false, error: err.message || "Failed to fetch execution summary" });
     }
 };

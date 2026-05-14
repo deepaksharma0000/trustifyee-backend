@@ -15,6 +15,8 @@ export type AngelSessionResp = {
 
 export class AngelOneAdapter {
   private static shouldLogInit = process.env.LOG_ADAPTER_INIT === "true";
+  private static localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
+  private static bindAgentCache = new Map<string, https.Agent>();
   private apiKey: string;
   private client: AxiosInstance;
   private outgoingIp?: string;
@@ -245,13 +247,21 @@ export class AngelOneAdapter {
       }
     }
 
-    if (isIpValid && this.outgoingIp) {
-      const bindingAgent = new https.Agent({
-        family: 4,
-        localAddress: this.outgoingIp,
-        keepAlive: true,
-        timeout: 60000,
-      });
+    const shouldAttemptLocalBind = AngelOneAdapter.localBindingEnabled && isIpValid && this.outgoingIp;
+
+    if (shouldAttemptLocalBind && this.outgoingIp) {
+      const bindKey = this.outgoingIp.trim();
+      let bindingAgent = AngelOneAdapter.bindAgentCache.get(bindKey);
+
+      if (!bindingAgent) {
+        bindingAgent = new https.Agent({
+          family: 4,
+          localAddress: bindKey,
+          keepAlive: true,
+          timeout: 60000,
+        });
+        AngelOneAdapter.bindAgentCache.set(bindKey, bindingAgent);
+      }
 
       try {
         return await axios.post(
@@ -276,7 +286,9 @@ export class AngelOneAdapter {
       }
     }
 
-    if (!isIpValid && !hasAgent && !this.isDataAccount) {
+    if (!hasAgent && !this.isDataAccount && !AngelOneAdapter.localBindingEnabled) {
+      log.debug("[ORDER_NETWORK] Local address binding disabled. Using VPS default route.");
+    } else if (!isIpValid && !hasAgent && !this.isDataAccount) {
       log.warn("[ORDER_NETWORK_FALLBACK] No dedicated IP/agent provided. Using server network route.");
     }
 

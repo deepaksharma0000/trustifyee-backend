@@ -6,6 +6,7 @@ import { CircuitBreakerService } from "../services/CircuitBreakerService";
 import { AlertService } from "../services/AlertService";
 import User from "../models/User";
 import log from "../utils/logger";
+import { getAllTradeQueueNames } from "../utils/tradeQueue";
 
 const toSafeMessage = (error: unknown) => {
   if (!error) return "Unknown execution failure";
@@ -15,9 +16,10 @@ const toSafeMessage = (error: unknown) => {
 };
 
 export const initTradeExecutionWorker = () => {
-  const worker = new Worker(
-    "trade-execution",
-    async (job) => {
+  const startWorkerForQueue = (queueName: string) => {
+    const worker = new Worker(
+      queueName,
+      async (job) => {
       const startedAt = Date.now();
       const {
         userId,
@@ -32,6 +34,7 @@ export const initTradeExecutionWorker = () => {
 
       const logger = log.child({
         worker: "trade-execution",
+        queueName,
         queueJobId: job.id,
         jobName: job.name,
         attempt: job.attemptsMade + 1,
@@ -228,31 +231,39 @@ export const initTradeExecutionWorker = () => {
       } finally {
         logger.info("Trade execution job finished", { durationMs: Date.now() - startedAt });
       }
-    },
-    {
-      connection: redisBullConnection as any,
-      concurrency: 5,
-      limiter: { max: 9, duration: 1000 },
-    }
-  );
+      },
+      {
+        connection: redisBullConnection as any,
+        concurrency: 5,
+        limiter: { max: 9, duration: 1000 },
+      }
+    );
 
-  worker.on("error", (err) => {
-    log.error("[TradeExecutionWorker] Worker error", err);
-  });
-
-  worker.on("failed", (job, err) => {
-    log.error("[TradeExecutionWorker] Job failed", {
-      queueJobId: job?.id,
-      name: job?.name,
-      attemptsMade: job?.attemptsMade,
-      error: err?.message,
+    worker.on("error", (err) => {
+      log.error("[TradeExecutionWorker] Worker error", { queueName, err });
     });
-  });
 
-  worker.on("completed", (job) => {
-    log.info("[TradeExecutionWorker] Job completed", {
-      queueJobId: job.id,
-      name: job.name,
+    worker.on("failed", (job, err) => {
+      log.error("[TradeExecutionWorker] Job failed", {
+        queueName,
+        queueJobId: job?.id,
+        name: job?.name,
+        attemptsMade: job?.attemptsMade,
+        error: err?.message,
+      });
     });
-  });
+
+    worker.on("completed", (job) => {
+      log.info("[TradeExecutionWorker] Job completed", {
+        queueName,
+        queueJobId: job.id,
+        name: job.name,
+      });
+    });
+
+    log.info("[TradeExecutionWorker] Worker started", { queueName });
+  };
+
+  const queueNames = getAllTradeQueueNames();
+  queueNames.forEach((queueName) => startWorkerForQueue(queueName));
 };

@@ -1,6 +1,6 @@
 // src/services/OutboxService.ts
 import { TradeOutbox } from "../models/TradeOutbox";
-import tradeQueue from "../utils/tradeQueue";
+import { getTradeQueueForBroker, getTotalTradeQueueWaitingCount } from "../utils/tradeQueue";
 import log from "../utils/logger";
 import redlock from "../utils/redlock";
 import { AlertService } from "./AlertService";
@@ -26,7 +26,7 @@ export class OutboxService {
 
                 try {
                     // 🛡️ 2. CHECK QUEUE SIZE (Backpressure)
-                    const queueSize = await tradeQueue.getWaitingCount();
+                    const queueSize = await getTotalTradeQueueWaitingCount();
                     if (queueSize > 5000) {
                         await AlertService.trigger("QUEUE_OVERFLOW", "Trade queue exceeding 5000 jobs. Throttling outbox.", "HIGH");
                         outbox.status = "PENDING"; // Back off
@@ -35,7 +35,9 @@ export class OutboxService {
                     }
 
                     // 🛡️ 3. PUSH TO QUEUE
-                    await tradeQueue.add(`trade-${outbox.correlationId}`, outbox.payload, {
+                    const broker = outbox.payload?.orderData?.broker;
+                    const queue = getTradeQueueForBroker(broker);
+                    await queue.add(`trade-${outbox.correlationId}`, outbox.payload, {
                         jobId: `outbox-${outbox._id.toString()}`
                     });
 

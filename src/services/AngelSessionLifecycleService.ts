@@ -4,6 +4,8 @@ import Admin from "../models/Admin";
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { ensureEncrypted, encrypt, decrypt } from "../utils/encryption";
 import log from "../utils/logger";
+import { invalidateAngelSessionCache, primeAngelSessionCache } from "./AngelSessionContextService";
+import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 
 type RecoveryMode = "REFRESH" | "RELOGIN";
 
@@ -45,17 +47,25 @@ const extractTokenPayload = (response: any) => {
 };
 
 const persistRecoveredTokens = async (sessionDoc: any, tokens: { jwtToken: string; refreshToken?: string; feedToken?: string }) => {
+  const updatedPayload = {
+    jwtToken: encrypt(tokens.jwtToken),
+    refreshToken: tokens.refreshToken ? encrypt(tokens.refreshToken) : sessionDoc.refreshToken,
+    feedToken: tokens.feedToken ? encrypt(tokens.feedToken) : sessionDoc.feedToken,
+    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  };
+
   await AngelTokensModel.updateOne(
     { _id: sessionDoc._id },
     {
-      $set: {
-        jwtToken: encrypt(tokens.jwtToken),
-        refreshToken: tokens.refreshToken ? encrypt(tokens.refreshToken) : sessionDoc.refreshToken,
-        feedToken: tokens.feedToken ? encrypt(tokens.feedToken) : sessionDoc.feedToken,
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
+      $set: updatedPayload,
     }
   );
+
+  invalidateAngelSessionCache(String(sessionDoc?.userId || ""), String(sessionDoc?.clientcode || ""));
+  primeAngelSessionCache({
+    ...sessionDoc,
+    ...updatedPayload,
+  });
 };
 
 const getProfileWithSecrets = async (userId: string) => {
@@ -90,7 +100,7 @@ async function attemptRefresh(sessionDoc: any, context: string): Promise<Session
     return { ok: false, reason: "REFRESH_MISSING_API_OR_TOKEN" };
   }
 
-  const adapter = new AngelOneAdapter(sessionApiKey);
+  const adapter = getOrCreateAngelAdapter(sessionApiKey);
   const response = await adapter.generateTokensUsingRefresh(refreshToken);
   const parsed = extractTokenPayload(response);
 
@@ -158,7 +168,10 @@ async function attemptFreshLogin(sessionDoc: any, context: string): Promise<Sess
     };
   }
 
-  const adapter = new AngelOneAdapter(apiKey, profile?.outgoing_ip || undefined, false, profile?.agent_url || undefined);
+  const adapter = getOrCreateAngelAdapter(apiKey, {
+    outgoingIp: profile?.outgoing_ip || undefined,
+    agentUrl: profile?.agent_url || undefined,
+  });
   const loginResponse = await adapter.generateSession({
     clientcode: clientCode,
     password,

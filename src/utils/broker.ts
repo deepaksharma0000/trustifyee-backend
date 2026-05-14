@@ -4,6 +4,7 @@ import User, { IUser } from "../models/User";
 import Admin, { IAdmin } from "../models/Admin";
 import { decrypt } from "./encryption";
 import log from "./logger";
+import { getOrCreateAngelAdapter } from "../services/AngelAdapterRegistry";
 
 /**
  * Safe conversion of ID to string
@@ -59,5 +60,8 @@ export async function createAngelAdapter(userIdOrDoc: string | Types.ObjectId | 
         throw new Error("Invalid Decrypted API Key. Please reconnect broker in your profile.");
     }
 
-    return new AngelOneAdapter(decKey, user.outgoing_ip);
+    return getOrCreateAngelAdapter(decKey, {
+        outgoingIp: user.outgoing_ip,
+        agentUrl: (user as any).agent_url,
+    });
 }

@@ -1,5 +1,5 @@
 import express from 'express';
-import { getAllSignals, getActiveSignals, queueExecution, getExecutionStatus, broadcastSignal } from '../controllers/SignalController';
+import { getAllSignals, getActiveSignals, queueExecution, getExecutionStatus, getExecutionSummary, broadcastSignal } from '../controllers/SignalController';
 import { executeSignal, recordExecutionResult } from '../controllers/SignalComplianceController';
 import { auth, adminAuth } from '../middleware/auth.middleware';
 import { SignalService } from '../services/SignalService';
@@ -9,6 +9,7 @@ const router = express.Router();
 router.get('/all', adminAuth, getAllSignals);
 router.get('/active', auth, getActiveSignals);
 router.get('/execution-status/:signalId', auth, getExecutionStatus);
+router.get('/execution-summary/:signalId', adminAuth, getExecutionSummary);
 router.post('/execute', auth, executeSignal); // Keep legacy blocked route
 router.post('/queue-execution', auth, queueExecution);
 

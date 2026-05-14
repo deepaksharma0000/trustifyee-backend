@@ -1,6 +1,5 @@
 import { Position } from "../models/Position.model";
 import { getInstrumentLtp } from "./MarketDataService";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import log from "../utils/logger";
 import InstrumentModel from "../models/Instrument";
 import AngelTokensModel from "../models/AngelTokens";
@@ -44,7 +43,15 @@ async function checkAndManagePositions() {
             if (!currentSymbolToken) continue;
 
             // Fetch LTP (Throttled & Cached via MarketDataService)
-            const ltp = await getInstrumentLtp(p.exchange, p.tradingsymbol, currentSymbolToken);
+            const ltp = await getInstrumentLtp(
+                p.exchange,
+                p.tradingsymbol,
+                currentSymbolToken,
+                {
+                    userId: String((p as any).userId || ""),
+                    clientcode: String((p as any).clientcode || ""),
+                }
+            );
 
             if (!ltp || ltp <= 0) continue;
 

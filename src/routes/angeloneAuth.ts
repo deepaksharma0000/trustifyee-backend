@@ -7,6 +7,7 @@ import User from '../models/User';
 import Admin from '../models/Admin';
 import { encrypt, decrypt, ensureEncrypted } from '../utils/encryption';
 import { auth } from '../middleware/auth.middleware';
+import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
 
 const router = express.Router();
 
@@ -52,6 +53,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
         // Step 4: Resolve API Key (Request Body > User Profile > Env Config)
         let resolvedApiKey = "";
         let keySource = 'None';
+        const allowEnvApiKeyFallback = process.env.ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK === "true";
 
         const bodyApiKey = typeof req.body.api_key === 'string' ? req.body.api_key.trim() : "";
         const profileApiKey = profile.api_key ? await ensureEncrypted(profile, 'api_key', `user_${userId}`) : "";
@@ -63,7 +65,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
         } else if (profileApiKey) {
             resolvedApiKey = profileApiKey;
             keySource = 'USER';
-        } else if (envApiKey) {
+        } else if (allowEnvApiKeyFallback && envApiKey) {
             resolvedApiKey = envApiKey;
             keySource = 'SYSTEM';
             log.info(`[API_KEY_SOURCE] SYSTEM | Injecting global key for ${client_code}`);
@@ -171,6 +173,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
             },
             { upsert: true, new: true }
         );
+        invalidateAngelSessionCache(String(userId), String(client_code));
 
         // Step 9: Build and save profile update
         const updatePayload: any = {

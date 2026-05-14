@@ -54,9 +54,10 @@ export const config = {
   aliceContractMasterPath: process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
 
   encryptionKey: process.env.ENCRYPTION_SECRET || "",
-  publicIp: process.env.PUBLIC_IP || "106.193.147.98", 
+  publicIp: process.env.PUBLIC_IP || "",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8080",
   executionMode: process.env.EXECUTION_MODE || "USER_ONLY",
+  forceSharedVpsRoute: process.env.FORCE_SHARED_VPS_ROUTE !== "false",
 
   // Dedicated Data Feed
   dataClientCode: process.env.DATA_CLIENT_CODE || "",
@@ -69,6 +70,8 @@ export const config = {
 
 // --- STARTUP VALIDATION ---
 export const validateConfig = () => {
+  const isValidIpv4 = (ip: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+
   const allowedModes = ["USER_ONLY", "SERVER_AUTO"];
   if (!allowedModes.includes(config.executionMode)) {
     throw new Error(`FATAL: EXECUTION_MODE must be one of ${allowedModes.join(", ")}`);
@@ -78,6 +81,10 @@ export const validateConfig = () => {
   }
   if (config.encryptionKey.length < 32) {
     throw new Error("FATAL: ENCRYPTION_SECRET must be at least 32 characters long for security.");
+  }
+
+  if (config.nodeEnv === "production" && !isValidIpv4(config.publicIp || "")) {
+    throw new Error("FATAL: PUBLIC_IP must be a valid IPv4 address in production.");
   }
 
   // Notice: We don't throw for angelApiKey here because it should be per-user now.

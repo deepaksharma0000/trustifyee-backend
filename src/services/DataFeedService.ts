@@ -1,12 +1,12 @@
 // src/services/DataFeedService.ts
 import axios, { AxiosInstance } from "axios";
-import https from "https";
 import redis from "../utils/redis";
 import { getInstrumentLtp, getMultipleInstrumentsLtp } from "./MarketDataService";
 import log from "../utils/logger";
 import { config } from "../config";
 import InstrumentModel from "../models/Instrument";
 import UpstoxInstrumentModel from "../models/UpstoxInstrument";
+import { ipv4Agent } from "../utils/httpAgent";
 
 export class DataFeedService {
     private static instance: DataFeedService;
@@ -15,15 +15,9 @@ export class DataFeedService {
 
     private constructor() {
         // 🛡️ FIX 4: Dedicated Agent with Static IP binding for Data Feed
-        const feedAgent = new https.Agent({
-            family: 4,
-            keepAlive: true,
-            localAddress: config.publicIp || undefined
-        });
-
         this.client = axios.create({
             baseURL: config.angelBaseUrl || "https://apiconnect.angelone.in",
-            httpsAgent: feedAgent,
+            httpsAgent: ipv4Agent,
             timeout: 30000
         });
     }

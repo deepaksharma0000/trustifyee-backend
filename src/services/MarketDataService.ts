@@ -1,4 +1,3 @@
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
@@ -6,6 +5,8 @@ import { config } from "../config";
 import log from "../utils/logger";
 import { ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
+import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { resolveAngelSessionContext } from "./AngelSessionContextService";
 
 // Removed global adapters to enforce per-user keys
 // const adapter = new AngelOneAdapter();
@@ -16,24 +17,6 @@ function getUpstoxAdapter() {
     return _upstoxAdapter;
 }
 
-const angelAdapterCache = new Map<string, AngelOneAdapter>();
-const MAX_ANGEL_ADAPTER_CACHE = 50;
-
-function getCachedAngelAdapter(apiKey: string) {
-    const cacheKey = apiKey;
-    const cached = angelAdapterCache.get(cacheKey);
-    if (cached) return cached;
-
-    const adapter = new AngelOneAdapter(apiKey);
-    angelAdapterCache.set(cacheKey, adapter);
-
-    if (angelAdapterCache.size > MAX_ANGEL_ADAPTER_CACHE) {
-        const firstKey = angelAdapterCache.keys().next().value;
-        if (firstKey) angelAdapterCache.delete(firstKey);
-    }
-
-    return adapter;
-}
 const ltpCache = new Map<string, { ltp: number, ts: number }>();
 const warningCache = new Map<string, number>();
 const CACHE_MS = 1500; // 1.5s for real-time feel
@@ -42,6 +25,21 @@ let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 350; // Balanced for approx 2.8 req/sec (staying under 3/sec limit)
 
 const pendingRequests = new Map<string, Promise<any>>();
+
+export type SessionHint = {
+    userId?: string;
+    clientcode?: string;
+};
+
+async function resolveSessionForMarket(purpose: string, hint?: SessionHint, allowGlobalFallback = true) {
+    return resolveAngelSessionContext({
+        userId: hint?.userId ? String(hint.userId) : undefined,
+        clientcode: hint?.clientcode ? String(hint.clientcode) : undefined,
+        allowGlobalFallback,
+        requireJwt: true,
+        purpose,
+    });
+}
 
 function shouldLogWarning(key: string, windowMs = 60000) {
     const now = Date.now();
@@ -130,11 +128,14 @@ async function refreshAngelSession(session: any) {
 
 async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string, apiKey: string) {
     const key = `${exchange}:${symbol}:${token}`;
-    const dynamicAdapter = getCachedAngelAdapter(apiKey);
+    const dynamicAdapter = getOrCreateAngelAdapter(apiKey);
     return await throttledFetch(key, () => dynamicAdapter.getLtp(jwtToken, exchange, symbol, token));
 }
 
-export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY"): Promise<number> {
+export async function getLiveIndexLtp(
+    indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = "NIFTY",
+    sessionHint?: SessionHint
+): Promise<number> {
     log.info(`[LTP_FLOW_TRIGGERED] Fetching index LTP for ${indexName}`);
     const cacheKey = `INDEX:${indexName}`;
     const now = Date.now();
@@ -148,7 +149,7 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
     // 2. Refresh logic
     try {
         if (now >= cooldownUntil && !config.disableLiveLtp) {
-            const session = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+            const session = await resolveSessionForMarket(`market_data_index_${indexName}`, sessionHint, true);
 
             if (session && session.jwtToken) {
                 const indexConfig: Record<string, { symbol: string, token: string }> = {
@@ -241,7 +242,12 @@ export async function getLiveIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIF
     return cached?.ltp || 0;
 }
 
-export async function getInstrumentLtp(exchange: string, tradingsymbol: string, symboltoken: string): Promise<number> {
+export async function getInstrumentLtp(
+    exchange: string,
+    tradingsymbol: string,
+    symboltoken: string,
+    sessionHint?: SessionHint
+): Promise<number> {
     const cacheKey = `${exchange}:${symboltoken}`;
     const now = Date.now();
     const cached = ltpCache.get(cacheKey);
@@ -269,7 +275,11 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
         } else {
             // Only try Angel if not in cooldown
             if (now >= cooldownUntil) {
-                const session = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+                const session = await resolveSessionForMarket(
+                    `market_data_instrument_${exchange}_${symboltoken}`,
+                    sessionHint,
+                    true
+                );
                 if (session && session.jwtToken) {
                     if (!session.apiKey) throw new Error("User API Key missing for instrument fetching");
                     
@@ -323,7 +333,10 @@ export async function getInstrumentLtp(exchange: string, tradingsymbol: string, 
  * 🚀 [BATCH LTP] Fetch live prices for multiple tokens at once.
  * Reduces API hits and improves Option Chain performance.
  */
-export async function getMultipleInstrumentsLtp(payload: Record<string, string[]>): Promise<Record<string, number>> {
+export async function getMultipleInstrumentsLtp(
+    payload: Record<string, string[]>,
+    sessionHint?: SessionHint
+): Promise<Record<string, number>> {
     const results: Record<string, number> = {};
     const now = Date.now();
     
@@ -344,12 +357,12 @@ export async function getMultipleInstrumentsLtp(payload: Record<string, string[]
     const remainingCount = Object.values(payload).flat().length;
     if (remainingCount > 0 && now >= cooldownUntil) {
         try {
-            const session = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+            const session = await resolveSessionForMarket("market_data_batch_ltp", sessionHint, true);
             if (session && session.jwtToken && session.apiKey) {
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', 'batch_ltp_val');
                 const sessionApiKey = await ensureEncrypted(session, 'apiKey', 'batch_ltp');
                 
-                const dynamicAdapter = getCachedAngelAdapter(sessionApiKey);
+                const dynamicAdapter = getOrCreateAngelAdapter(sessionApiKey);
                 const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));
                 
                 if (resp && resp.status === 200 && resp.data && resp.data.data) {
@@ -365,7 +378,9 @@ export async function getMultipleInstrumentsLtp(payload: Record<string, string[]
                         const token = item.symbolToken || item.symboltoken; // Handle both casings from broker
 
                         if (finalLtp > 0 && token) {
-                            results[token.toLowerCase()] = finalLtp;
+                            const tokenKey = String(token);
+                            results[tokenKey] = finalLtp;
+                            results[tokenKey.toLowerCase()] = finalLtp;
                             ltpCache.set(`${item.exchange}:${token}`, { ltp: finalLtp, ts: now });
                         }
                     });
@@ -383,6 +398,6 @@ export function getLastIndexLtp(indexName: "NIFTY" | "BANKNIFTY" | "FINNIFTY" = 
     return ltpCache.get(`INDEX:${indexName}`)?.ltp || 0;
 }
 
-export async function getLiveNiftyLtp(): Promise<number> {
-    return getLiveIndexLtp("NIFTY");
+export async function getLiveNiftyLtp(sessionHint?: SessionHint): Promise<number> {
+    return getLiveIndexLtp("NIFTY", sessionHint);
 }

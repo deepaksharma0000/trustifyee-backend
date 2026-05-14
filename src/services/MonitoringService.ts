@@ -1,15 +1,29 @@
 // src/services/MonitoringService.ts
-import { tradeQueue, riskQueue } from "../utils/tradeQueue";
+import {
+    getAllTradeQueueNames,
+    getTradeQueueByName,
+    getTotalTradeQueueFailedCount,
+    getTotalTradeQueueWaitingCount,
+    riskQueue
+} from "../utils/tradeQueue";
 import log from "../utils/logger";
 import redis from "../utils/redis";
 
 export class MonitoringService {
     static async logSystemMetrics() {
         try {
-            const [tradeWaiting, tradeFailed, riskWaiting] = await Promise.all([
-                tradeQueue.getWaitingCount(),
-                tradeQueue.getFailedCount(),
-                riskQueue.getWaitingCount()
+            const queueNames = getAllTradeQueueNames();
+            const [tradeWaiting, tradeFailed, riskWaiting, perQueueWaiting] = await Promise.all([
+                getTotalTradeQueueWaitingCount(),
+                getTotalTradeQueueFailedCount(),
+                riskQueue.getWaitingCount(),
+                Promise.all(
+                    queueNames.map(async (name) => ({
+                        name,
+                        waiting: await getTradeQueueByName(name).getWaitingCount().catch(() => 0),
+                        failed: await getTradeQueueByName(name).getFailedCount().catch(() => 0),
+                    }))
+                )
             ]);
 
             const activeBrokers = ["ANGELONE", "UPSTOX"];
@@ -24,7 +38,7 @@ export class MonitoringService {
             log.info({
                 type: "SYSTEM_METRICS",
                 queues: {
-                    trade: { waiting: tradeWaiting, failed: tradeFailed },
+                    trade: { waiting: tradeWaiting, failed: tradeFailed, byQueue: perQueueWaiting },
                     risk: { waiting: riskWaiting }
                 },
                 circuitBreakers: cbStates,

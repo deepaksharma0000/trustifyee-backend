@@ -1,13 +1,13 @@
 import { Server as WebSocketServer, WebSocket } from "ws";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
-import { config } from "../config";
 import log from "../utils/logger";
 import { getUpstoxAdapter } from "../utils/upstox";
 import { decrypt } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
+import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { resolveAngelSessionContext } from "./AngelSessionContextService";
 
 type QuoteRequestItem = {
   exchange: string;
@@ -28,20 +28,6 @@ const quoteCache = new Map<
   string,
   { ltp: number; oi: number | null; ts: number }
 >();
-const angelAdapterCache = new Map<string, AngelOneAdapter>();
-
-function getCachedAngelAdapter(apiKey: string) {
-  const cacheKey = apiKey;
-  const cached = angelAdapterCache.get(cacheKey);
-  if (cached) return cached;
-  const adapter = new AngelOneAdapter(apiKey);
-  angelAdapterCache.set(cacheKey, adapter);
-  if (angelAdapterCache.size > 20) {
-    const firstKey = angelAdapterCache.keys().next().value;
-    if (firstKey) angelAdapterCache.delete(firstKey);
-  }
-  return adapter;
-}
 
 function isInvalidTokenResponse(resp: any) {
   const body = resp?.data || resp || {};
@@ -50,7 +36,7 @@ function isInvalidTokenResponse(resp: any) {
   return String(code || "").toUpperCase() === "AG8001" || msg.includes("invalid token");
 }
 
-async function refreshAngelSession(session: any, adapter: AngelOneAdapter) {
+async function refreshAngelSession(session: any) {
   const sessionDoc = await AngelTokensModel.findById(session?._id);
   if (!sessionDoc) {
     throw new Error("Session not found for refresh");
@@ -84,7 +70,11 @@ export function startMarketStream(server: any) {
         try {
           // Fetch both sessions
           const [angelSession, upstoxSession] = await Promise.all([
-            AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 }).lean() as any,
+            resolveAngelSessionContext({
+              purpose: "market_stream",
+              allowGlobalFallback: true,
+              requireJwt: true,
+            }) as any,
             UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean() as any
           ]);
 
@@ -133,7 +123,7 @@ export function startMarketStream(server: any) {
 
               if (!angelSession.apiKey) throw new Error(`API Key missing for ${angelSession.clientcode}`);
               const sessionApiKey = decrypt(angelSession.apiKey, `market_stream_${angelSession.clientcode}`);
-              const angelAdapter = getCachedAngelAdapter(sessionApiKey);
+              const angelAdapter = getOrCreateAngelAdapter(sessionApiKey);
 
               let resp = await angelAdapter.getMarketData(jwtToken, "FULL", resolvedMap);
 
@@ -144,7 +134,7 @@ export function startMarketStream(server: any) {
 
               if (isInvalidTokenResponse(resp)) {
                 log.info(`[MarketStream] Token invalid for ${angelSession.clientcode}, refreshing...`);
-                const refreshed = await refreshAngelSession(angelSession, angelAdapter);
+                const refreshed = await refreshAngelSession(angelSession);
                 jwtToken = refreshed.jwtToken;
                 resp = await angelAdapter.getMarketData(jwtToken, "FULL", resolvedMap);
               }

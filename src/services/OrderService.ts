@@ -2,7 +2,6 @@ import AngelTokensModel from "../models/AngelTokens";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import InstrumentModel from "../models/Instrument";
 import UpstoxInstrumentModel from "../models/UpstoxInstrument";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
 import { config } from "../config";
 import log from "../utils/logger";
@@ -11,6 +10,7 @@ import { RiskManagementService } from "./RiskManagementService";
 import User from "../models/User";
 import { decrypt, ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
+import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
@@ -42,6 +42,17 @@ function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
   const fromPayloadAgent = typeof orderInput.agentUrl === "string" ? orderInput.agentUrl.trim() : "";
   const fromProfileAgent = typeof user?.agent_url === "string" ? String(user.agent_url).trim() : "";
 
+  if (config.forceSharedVpsRoute) {
+    if (fromPayloadIp || fromProfileIp || fromPayloadAgent || fromProfileAgent) {
+      log.debug("[ORDER_NETWORK] FORCE_SHARED_VPS_ROUTE active. Ignoring user-level outgoing_ip/agent_url.");
+    }
+    return {
+      outgoingIp: "",
+      agentUrl: "",
+      usingServerNetworkFallback: true,
+    };
+  }
+
   const outgoingIp = fromPayloadIp || fromProfileIp || "";
   const agentUrl = fromPayloadAgent || fromProfileAgent || "";
 
@@ -61,6 +72,43 @@ function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
   };
 }
 
+async function resolveOrderSymbolToken(orderInput: PlaceOrderInput): Promise<string> {
+  const exchange = String(orderInput.exchange || "NFO").toUpperCase().trim();
+  const tradingsymbol = String(orderInput.tradingsymbol || "").toUpperCase().trim();
+  const requestedToken = String(orderInput.symboltoken || "").trim();
+
+  if (!exchange || !tradingsymbol) {
+    throw new Error("Exchange and tradingsymbol are required");
+  }
+
+  const instrument = await InstrumentModel.findOne({
+    exchange,
+    tradingsymbol,
+  })
+    .select("symboltoken")
+    .lean() as any;
+
+  if (!instrument?.symboltoken) {
+    throw new Error(`SYMBOL_NOT_FOUND_IN_SCRIP_MASTER: ${exchange}:${tradingsymbol}`);
+  }
+
+  const masterToken = String(instrument.symboltoken).trim();
+  if (!masterToken) {
+    throw new Error(`INVALID_MASTER_SYMBOL_TOKEN: ${exchange}:${tradingsymbol}`);
+  }
+
+  if (requestedToken && requestedToken !== masterToken) {
+    log.warn("[ORDER_SYMBOL_TOKEN_CORRECTED]", {
+      exchange,
+      tradingsymbol,
+      requestedToken,
+      masterToken,
+    });
+  }
+
+  return masterToken;
+}
+
 /**
  * Robust Pre-Trade Validation Wrapper
  */
@@ -71,7 +119,7 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
   // 🔄 [ISSUE 1 FIX] - Handle Token Expiry during validation
   if (!profileRes.status && (profileRes.message.toLowerCase().includes("invalid token") || profileRes.message.includes("AG8001")) && retryCount < 1) {
       log.info(`[OrderService] Token expired during validation for ${clientcode}. Attempting refresh...`);
-      const refreshed = await attemptTokenRefresh(userId, clientcode, orderInput.outgoingIp);
+      const refreshed = await attemptTokenRefresh(userId, clientcode);
       if (refreshed) {
           log.info(`[OrderService] Validation retry after refresh for ${clientcode}`);
           return runPreTradeValidation(userId, clientcode, orderInput, retryCount + 1);
@@ -79,6 +127,9 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
   }
 
   if (!profileRes.status) return profileRes;
+
+  // Validate and normalize symboltoken against local live scrip master.
+  orderInput.symboltoken = await resolveOrderSymbolToken(orderInput);
 
   // 2. Risk Management (Margin Check)
   const marginRes = await RiskManagementService.getAvailableMargin(userId, clientcode);
@@ -97,7 +148,7 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
           const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_ltp_val`);
           const userApiKey = await ensureEncrypted(tokens, 'apiKey', `user_${userId}_ltp_check`);
           
-          const ltpAdapter = new AngelOneAdapter(userApiKey);
+          const ltpAdapter = getOrCreateAngelAdapter(userApiKey);
           const ltpRes = await ltpAdapter.getLtp(decJwtToken, orderInput.exchange || "NFO", orderInput.tradingsymbol, orderInput.symboltoken || "");
           const ltp = Number(ltpRes?.data?.ltp || 0);
           
@@ -269,13 +320,12 @@ export async function placeOrderForClient(
       }
 
       // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
-      const dynamicAdapter = new AngelOneAdapter(
-          userApiKey, 
-          currentIp, 
-          false, 
-          currentAgentUrl
-      );
+      const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, {
+        outgoingIp: currentIp,
+        agentUrl: currentAgentUrl,
+      });
 
+      orderInput.symboltoken = await resolveOrderSymbolToken(orderInput);
 
       // 3. Place Order
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
@@ -340,7 +390,7 @@ export async function placeOrderForClient(
       
       if (isInvalidToken && retryCount < 1) {
           log.info(`[OrderService] Token expired for ${clientcode}. Attempting auto-refresh...`);
-          const refreshed = await attemptTokenRefresh(userId, clientcode, currentIp);
+          const refreshed = await attemptTokenRefresh(userId, clientcode);
           if (refreshed) {
               log.info(`[OrderService] Token refreshed successfully for ${clientcode}. Retrying order...`);
               return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
@@ -371,7 +421,7 @@ export async function placeOrderForClient(
 /**
  * 🔄 Helper to attempt token refresh
  */
-async function attemptTokenRefresh(userId: string, clientcode: string, outgoingIp?: string): Promise<boolean> {
+async function attemptTokenRefresh(userId: string, clientcode: string): Promise<boolean> {
     try {
         const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
         if (!angelTokens) return false;
@@ -399,7 +449,7 @@ export async function getOrderStatusForClient(
   if (angelTokens?.jwtToken) {
     if (!angelTokens.apiKey) throw new Error("User API Key missing in session");
     const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_status_check`);
-    const dynamicAdapter = new AngelOneAdapter(userApiKey, outgoingIp);
+    const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, { outgoingIp });
     const orderBookResp = await dynamicAdapter.getOrderBook(angelTokens.jwtToken);
     if (orderBookResp && orderBookResp.status === 200 && Array.isArray(orderBookResp.data)) {
       // 1. Try exact Match
@@ -421,9 +471,7 @@ export async function getOrderStatusForClient(
     // If exact ID lookup is possible (not our UUID)
     if (!orderId.startsWith("BROKER-")) {
         // Reuse dynamicAdapter created above (it's in scope if we refactor slightly, but for now just use the one we have or create new)
-        const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_single_status_check`);
-        const lookupAdapter = new AngelOneAdapter(userApiKey, outgoingIp);
-        return await lookupAdapter.getOrderStatus(angelTokens.jwtToken, orderId);
+        return await dynamicAdapter.getOrderStatus(angelTokens.jwtToken, orderId);
     }
     
     return { status: false, message: "Order not found in broker book" };

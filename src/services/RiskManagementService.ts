@@ -1,10 +1,10 @@
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import { config } from "../config";
 import log from "../utils/logger";
 import { decrypt, ensureEncrypted } from "../utils/encryption";
 import User from "../models/User";
 import Admin from "../models/Admin";
+import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 
 export interface MarginInfo {
     availablecash: number;
@@ -42,7 +42,9 @@ export class RiskManagementService {
             
             const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_rms_val`);
             const userApiKey = await ensureEncrypted(tokens, 'apiKey', `user_${userId}_rms_check`);
-            const dynamicAdapter = new AngelOneAdapter(userApiKey, user?.outgoing_ip);
+            const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, {
+                outgoingIp: user?.outgoing_ip,
+            });
 
             const rmsRes = await dynamicAdapter.getRMS(decJwtToken);
             if (rmsRes && rmsRes.status === 200) {

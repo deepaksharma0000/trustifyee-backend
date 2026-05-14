@@ -1,9 +1,8 @@
 import { Router } from "express";
 import { MarketStatusService } from "../services/MarketStatusService";
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
-import AngelTokensModel from "../models/AngelTokens";
 import InstrumentModel from "../models/Instrument";
 import log from "../utils/logger";
+import { resolveAngelSessionContext } from "../services/AngelSessionContextService";
 
 const router = Router();
 
@@ -70,7 +69,11 @@ router.get("/full-quote", async (req, res) => {
     }
 
     // 2. Get Admin/Recent Token
-    const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+    const tokens = await resolveAngelSessionContext({
+      purpose: "market_status_full_quote",
+      allowGlobalFallback: true,
+      requireJwt: true,
+    });
     if (!tokens?.jwtToken) {
       return res.status(403).json({ ok: false, error: "No active broker session found. Please login to AngelOne." });
     }
@@ -124,7 +127,11 @@ router.get("/historical", async (req, res) => {
     }
 
     // 2. Token Check
-    const tokens = await AngelTokensModel.findOne({ jwtToken: { $exists: true, $ne: "" } }).sort({ updatedAt: -1 });
+    const tokens = await resolveAngelSessionContext({
+      purpose: "market_status_historical",
+      allowGlobalFallback: true,
+      requireJwt: true,
+    });
     if (!tokens?.jwtToken) return res.status(403).json({ ok: false, error: "Broker session inactive" });
 
     // 3. Fetch from AngelOne

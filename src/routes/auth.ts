@@ -12,6 +12,7 @@ import User from "../models/User";
 import Admin from "../models/Admin";
 import mongoose from "mongoose";
 import { loginUser, loginAdmin } from "../controllers/AuthController";
+import { invalidateAngelSessionCache } from "../services/AngelSessionContextService";
 
 const router = express.Router();
 // Removed global adapter to prevent startup crash. Adapters are now created lazily per request.
@@ -174,6 +175,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
+    invalidateAngelSessionCache(String(userId), String(clientcode));
 
     if (req.user) {
       req.user.broker_connected = true;
@@ -212,6 +214,7 @@ router.post("/logout", auth, async (req: any, res) => {
       UpstoxTokensModel.deleteMany({ userId }).exec(),
       AliceTokensModel.deleteMany({ userId }).exec()
     ]);
+    invalidateAngelSessionCache(String(userId));
 
     // 2. Update the User/Admin profile flags
     const ProfileModel = userType === 'admin' ? Admin : User;
@@ -273,6 +276,7 @@ router.post("/validate-session", auth, async (req: any, res) => {
               },
               { new: true }
             );
+            invalidateAngelSessionCache(String(userId), String(clientcode));
             return res.json({ ok: true, refreshed: true });
           }
         } catch (e) {

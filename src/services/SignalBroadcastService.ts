@@ -8,6 +8,29 @@ import { decrypt } from "../utils/encryption";
 import { v4 as uuidv4 } from "uuid";
 
 const BATCH_SIZE = 50;
+const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX"]);
+
+function normalizeBroker(input: any): string {
+  return String(input || "ANGELONE").trim().toUpperCase();
+}
+
+function checkUserEligibility(user: any, now: Date): { eligible: boolean; reason?: string } {
+  if (!user) return { eligible: false, reason: "User not found" };
+
+  const broker = normalizeBroker(user.broker);
+  if (!SUPPORTED_BROKERS.has(broker)) {
+    return { eligible: false, reason: `Broker not supported: ${broker || "UNKNOWN"}` };
+  }
+
+  const licence = String(user.licence || "Live").toLowerCase();
+  const endDate = user.end_date ? new Date(user.end_date) : null;
+
+  if (licence === "live" && endDate && !Number.isNaN(endDate.getTime()) && endDate.getTime() < now.getTime()) {
+    return { eligible: false, reason: "Subscription expired" };
+  }
+
+  return { eligible: true };
+}
 
 export class SignalBroadcastService {
   static async broadcast(signalId: string) {
@@ -72,7 +95,7 @@ export class SignalBroadcastService {
       broker_connected: true,
       ...strategyQuery,
     })
-      .select("user_name email client_key licence broker outgoing_ip agent_url")
+      .select("user_name email client_key licence end_date broker outgoing_ip agent_url")
       .lean();
 
     if (session) usersQuery.session(session);
@@ -112,6 +135,64 @@ export class SignalBroadcastService {
     let demoCount = 0;
     let queuedCount = 0;
     let failedCount = 0;
+    const now = new Date();
+
+    const markFailure = async (
+      user: any,
+      clientOrderId: string,
+      correlationId: string,
+      reason: string
+    ) => {
+      await SignalExecutionResult.findOneAndUpdate(
+        { signalId, userId: user?._id },
+        {
+          signalId,
+          userId: user?._id,
+          clientOrderId,
+          broker: user?.broker || "ANGELONE",
+          status: "FAILED",
+          errorMessage: reason,
+          correlationId,
+          source: "SERVER_QUEUE",
+          executedAt: new Date(),
+        },
+        {
+          upsert: true,
+          new: true,
+          session,
+          setDefaultsOnInsert: true,
+        }
+      );
+
+      try {
+        const { BrokerResponse } = await import("../models/BrokerResponse");
+        const doc = {
+          userId: String(user?._id || ""),
+          clientcode: "UNKNOWN",
+          tradingsymbol: signal?.tradingsymbol || "UNKNOWN",
+          orderid: "SKIPPED",
+          action: "SKIP_EXECUTION",
+          status: "REJECTED",
+          message: reason,
+          brokerError: {
+            reason,
+            signalId: String(signalId),
+          },
+        };
+
+        if (session) {
+          await BrokerResponse.create([doc], { session });
+        } else {
+          await BrokerResponse.create(doc);
+        }
+      } catch (logErr: any) {
+        log.warn("[SignalBroadcastService] Failed to write BrokerResponse for skip", {
+          userId: String(user?._id || ""),
+          signalId: String(signalId),
+          message: logErr?.message,
+        });
+      }
+    };
 
     const processUser = async (user: any, index: number) => {
       const clientOrderId = `AUTO-${String(signalId).slice(-4)}-${String(user._id).slice(-4)}-${Date.now()
@@ -122,29 +203,20 @@ export class SignalBroadcastService {
 
       const userLicence = String(user.licence || "Live").toLowerCase();
       const isLive = userLicence === "live";
+      const eligibility = checkUserEligibility(user, now);
+
+      if (!eligibility.eligible) {
+        failedCount += 1;
+        const reason = eligibility.reason || "User not eligible for execution";
+        await markFailure(user, clientOrderId, correlationId, reason);
+        executions.push({ userName, licence: user.licence || "Live", status: "FAILED", message: reason });
+        return;
+      }
 
       const rawClientCode = user.client_key ? decrypt(user.client_key) : "";
       if (!rawClientCode || rawClientCode.trim().length < 3) {
         failedCount += 1;
-        await SignalExecutionResult.findOneAndUpdate(
-          { signalId, userId: user._id },
-          {
-            signalId,
-            userId: user._id,
-            clientOrderId,
-            broker: user.broker || "ANGELONE",
-            status: "FAILED",
-            errorMessage: "Client code missing or invalid",
-            correlationId,
-          },
-          {
-            upsert: true,
-            new: true,
-            session,
-            setDefaultsOnInsert: true,
-          }
-        );
-
+        await markFailure(user, clientOrderId, correlationId, "Client code missing or invalid");
         executions.push({ userName, licence: user.licence || "Live", status: "FAILED", message: "Client code missing or invalid" });
         return;
       }
