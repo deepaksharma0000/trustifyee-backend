@@ -10,6 +10,7 @@ import { ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 import { resolveAngelSessionContext } from "./AngelSessionContextService";
+import { validateInstrumentFromMaster } from "./InstrumentValidationService";
 
 // Removed global adapters to enforce per-user keys
 // const adapter = new AngelOneAdapter();
@@ -32,6 +33,7 @@ const SYSTEM_DATA_CLIENTCODE = String(config.dataClientCode || "").trim();
 const tokenRepairCooldown = new Map<string, number>();
 const TOKEN_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
 const TOKEN_REPAIR_AUTH_COOLDOWN_MS = 30 * 60 * 1000;
+const ENABLE_LIVE_TOKEN_REPAIR = process.env.ENABLE_LIVE_TOKEN_REPAIR === "true";
 
 export type SessionHint = {
     userId?: string;
@@ -51,6 +53,7 @@ async function resolveSessionForMarket(purpose: string, hint?: SessionHint) {
         userId: hintedUserId || undefined,
         clientcode: clientcode || undefined,
         allowGlobalFallback: false,
+        strictIdentity: true,
         requireJwt: true,
         purpose,
     });
@@ -181,39 +184,6 @@ async function resolveSessionApiKey(session: any, context: string): Promise<stri
     }
 
     return profileApiKey;
-}
-
-async function resolveCanonicalAngelToken(exchange: string, tradingsymbol: string, requestedToken: string) {
-    const normalizedExchange = String(exchange || "").trim().toUpperCase();
-    const normalizedSymbol = String(tradingsymbol || "").trim().toUpperCase();
-    const requested = String(requestedToken || "").trim();
-
-    if (!normalizedExchange || !normalizedSymbol) {
-        return requested;
-    }
-
-    const instrument = await InstrumentModel.findOne({
-        exchange: normalizedExchange,
-        tradingsymbol: normalizedSymbol,
-    })
-        .select("symboltoken")
-        .lean() as any;
-
-    const masterToken = String(instrument?.symboltoken || "").trim();
-    if (!masterToken) {
-        return requested;
-    }
-
-    if (requested && requested !== masterToken) {
-        log.warn("[MARKET_DATA_TOKEN_CORRECTED]", {
-            exchange: normalizedExchange,
-            tradingsymbol: normalizedSymbol,
-            requestedToken: requested,
-            masterToken,
-        });
-    }
-
-    return masterToken;
 }
 
 function shouldLogWarning(key: string, windowMs = 60000) {
@@ -507,7 +477,29 @@ export async function getInstrumentLtp(
 
     let angelToken = requestedToken;
     if (!isUpstox) {
-        angelToken = await resolveCanonicalAngelToken(normalizedExchange, normalizedSymbol, requestedToken);
+        const validation = await validateInstrumentFromMaster({
+            exchange: normalizedExchange,
+            tradingsymbol: normalizedSymbol,
+            requestedToken,
+            allowExpired: false,
+        });
+
+        if (!validation.valid || !validation.symboltoken) {
+            if (shouldLogWarning(`INSTRUMENT_BLOCKED:${normalizedExchange}:${normalizedSymbol}`, 5 * 60 * 1000)) {
+                log.warn("[MARKET_DATA_INSTRUMENT_BLOCKED]", {
+                    exchange: normalizedExchange,
+                    tradingsymbol: normalizedSymbol,
+                    requestedToken: requestedToken || undefined,
+                    reason: validation.reason || "INVALID_INSTRUMENT",
+                    metadata: validation.metadata,
+                });
+            }
+            const staleCacheKey = `${normalizedExchange}:${requestedToken}`;
+            const stale = ltpCache.get(staleCacheKey);
+            return stale?.ltp || 0;
+        }
+
+        angelToken = String(validation.symboltoken).trim();
     }
 
     const cacheKey = `${normalizedExchange}:${angelToken || requestedToken}`;
@@ -591,7 +583,15 @@ export async function getInstrumentLtp(
                     }
 
                     if (isSymbolCacheMissResponse(resp)) {
-                        if (isDataClientSession(session)) {
+                        if (!ENABLE_LIVE_TOKEN_REPAIR) {
+                            if (shouldLogWarning(`TOKEN_REPAIR_DISABLED:${normalizedExchange}:${normalizedSymbol}`, 10 * 60 * 1000)) {
+                                log.warn("[MARKET_DATA_TOKEN_REPAIR_SKIPPED]", {
+                                    reason: "TOKEN_REPAIR_DISABLED",
+                                    exchange: normalizedExchange,
+                                    tradingsymbol: normalizedSymbol,
+                                });
+                            }
+                        } else if (isDataClientSession(session)) {
                             if (shouldLogWarning(`TOKEN_REPAIR_SKIPPED_DATA:${normalizedExchange}:${normalizedSymbol}`, 10 * 60 * 1000)) {
                                 log.warn("[MARKET_DATA_TOKEN_REPAIR_SKIPPED]", {
                                     reason: "DATA_CLIENT_SESSION",

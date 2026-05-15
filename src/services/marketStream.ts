@@ -75,6 +75,7 @@ export function startMarketStream(server: any) {
               purpose: "market_stream",
               clientcode: config.dataClientCode || undefined,
               allowGlobalFallback: false,
+              strictIdentity: true,
               requireJwt: true,
             }) as any,
             UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean() as any

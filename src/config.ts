@@ -25,9 +25,9 @@ export const config = {
 
   // -------- ANGEL ONE ----------
   angelApiKey: process.env.ANGEL_API_KEY || "",
-  angelBaseUrl: process.env.ANGEL_BASE_URL || "https://smartapi.angelbroking.com",
+  angelBaseUrl: process.env.ANGEL_BASE_URL || "https://apiconnect.angelone.in",
   genPath: process.env.ANGEL_GENERATE_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/generateTokens",
-  refreshPath: process.env.ANGEL_REFRESH_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/refreshToken",
+  refreshPath: process.env.ANGEL_REFRESH_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/generateTokens",
   angelRedirectUrl: process.env.ANGEL_REDIRECT_URL || "http://localhost:3000/api/auth/angel/callback",
 
   // -------- UPSTOX ----------
@@ -85,6 +85,22 @@ export const validateConfig = () => {
 
   if (config.nodeEnv === "production" && !isValidIpv4(config.publicIp || "")) {
     throw new Error("FATAL: PUBLIC_IP must be a valid IPv4 address in production.");
+  }
+
+  if (config.nodeEnv === "production" && config.forceSharedVpsRoute !== true) {
+    throw new Error("FATAL: FORCE_SHARED_VPS_ROUTE must remain enabled in production.");
+  }
+
+  if (config.nodeEnv === "production" && process.env.ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK === "true") {
+    throw new Error("FATAL: ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK must be false in production.");
+  }
+
+  if (config.nodeEnv === "production" && process.env.ALLOW_GLOBAL_SESSION_FALLBACK === "true") {
+    throw new Error("FATAL: ALLOW_GLOBAL_SESSION_FALLBACK must be false in production.");
+  }
+
+  if (config.nodeEnv === "production" && process.env.ANGEL_ENABLE_LOCAL_BINDING === "true") {
+    throw new Error("FATAL: ANGEL_ENABLE_LOCAL_BINDING must be false in production shared VPS mode.");
   }
 
   // Notice: We don't throw for angelApiKey here because it should be per-user now.

@@ -11,6 +11,7 @@ import User from "../models/User";
 import { decrypt, ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { validateInstrumentFromMaster } from "./InstrumentValidationService";
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
@@ -81,18 +82,18 @@ async function resolveOrderSymbolToken(orderInput: PlaceOrderInput): Promise<str
     throw new Error("Exchange and tradingsymbol are required");
   }
 
-  const instrument = await InstrumentModel.findOne({
+  const validation = await validateInstrumentFromMaster({
     exchange,
     tradingsymbol,
-  })
-    .select("symboltoken")
-    .lean() as any;
+    requestedToken,
+    allowExpired: false,
+  });
 
-  if (!instrument?.symboltoken) {
-    throw new Error(`SYMBOL_NOT_FOUND_IN_SCRIP_MASTER: ${exchange}:${tradingsymbol}`);
+  if (!validation.valid || !validation.symboltoken) {
+    throw new Error(`${validation.reason || "SYMBOL_NOT_FOUND_IN_SCRIP_MASTER"}: ${exchange}:${tradingsymbol}`);
   }
 
-  const masterToken = String(instrument.symboltoken).trim();
+  const masterToken = String(validation.symboltoken).trim();
   if (!masterToken) {
     throw new Error(`INVALID_MASTER_SYMBOL_TOKEN: ${exchange}:${tradingsymbol}`);
   }

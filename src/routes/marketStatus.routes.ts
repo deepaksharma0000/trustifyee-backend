@@ -78,6 +78,7 @@ router.get("/full-quote", async (req, res) => {
       userId: sessionUserId || undefined,
       clientcode: sessionClientcode || config.dataClientCode || undefined,
       allowGlobalFallback: false,
+      strictIdentity: true,
       requireJwt: true,
     });
     if (!tokens?.jwtToken) {
@@ -141,6 +142,7 @@ router.get("/historical", async (req, res) => {
       userId: sessionUserId || undefined,
       clientcode: sessionClientcode || config.dataClientCode || undefined,
       allowGlobalFallback: false,
+      strictIdentity: true,
       requireJwt: true,
     });
     if (!tokens?.jwtToken) return res.status(403).json({ ok: false, error: "Broker session inactive" });

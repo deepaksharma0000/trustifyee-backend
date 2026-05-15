@@ -7,6 +7,7 @@ import { config } from "../config";
 import InstrumentModel from "../models/Instrument";
 import UpstoxInstrumentModel from "../models/UpstoxInstrument";
 import { ipv4Agent } from "../utils/httpAgent";
+import type { SessionHint } from "./MarketDataService";
 
 export class DataFeedService {
     private static instance: DataFeedService;
@@ -32,13 +33,16 @@ export class DataFeedService {
     /**
      * Legacy static-style access for NiftyOptionService
      */
-    public static async getLTPBySymbols(symbolGroups: Record<string, string[]>): Promise<Record<string, number>> {
+    public static async getLTPBySymbols(
+        symbolGroups: Record<string, string[]>,
+        sessionHint?: SessionHint
+    ): Promise<Record<string, number>> {
         const instance = DataFeedService.getInstance();
         const results: Record<string, number> = {};
         
         for (const [exchange, symbols] of Object.entries(symbolGroups)) {
             await Promise.all(symbols.map(async (symbol) => {
-                results[symbol] = await instance.getCachedLtp(exchange, symbol, ""); 
+                results[symbol] = await instance.getCachedLtp(exchange, symbol, "", sessionHint); 
             }));
         }
         return results;
@@ -98,7 +102,12 @@ export class DataFeedService {
     /**
      * Get LTP with Redis Caching
      */
-    async getCachedLtp(exchange: string, tradingsymbol: string, symboltoken: string): Promise<number> {
+    async getCachedLtp(
+        exchange: string,
+        tradingsymbol: string,
+        symboltoken: string,
+        sessionHint?: SessionHint
+    ): Promise<number> {
         const cacheKey = `LTP:${exchange}:${tradingsymbol}`;
         
         try {
@@ -107,7 +116,7 @@ export class DataFeedService {
 
             if (!symboltoken) return 0;
 
-            const ltp = await getInstrumentLtp(exchange, tradingsymbol, symboltoken);
+            const ltp = await getInstrumentLtp(exchange, tradingsymbol, symboltoken, sessionHint);
             if (ltp > 0) {
                 await redis.setex(cacheKey, this.TTL, ltp.toString());
             }
@@ -118,7 +127,10 @@ export class DataFeedService {
         }
     }
 
-    async getBulkLtp(instruments: { exchange: string; tradingsymbol: string; symboltoken: string }[]): Promise<Record<string, number>> {
+    async getBulkLtp(
+        instruments: { exchange: string; tradingsymbol: string; symboltoken: string }[],
+        sessionHint?: SessionHint
+    ): Promise<Record<string, number>> {
         const results: Record<string, number> = {};
         const missingByExch: Record<string, string[]> = {};
 
@@ -136,7 +148,7 @@ export class DataFeedService {
 
         if (Object.keys(missingByExch).length > 0) {
             try {
-                const batchResults = await getMultipleInstrumentsLtp(missingByExch);
+                const batchResults = await getMultipleInstrumentsLtp(missingByExch, sessionHint);
                 
                 for (const ins of instruments) {
                     if (batchResults[ins.symboltoken]) {

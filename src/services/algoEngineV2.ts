@@ -62,7 +62,15 @@ async function runRiskCycle(run: any, correlationId: string) {
     if (openPositions.length === 0) return;
 
     for (const p of openPositions) {
-        const ltp = await dataFeedService.getCachedLtp(p.exchange, p.tradingsymbol, p.symboltoken || "");
+        const ltp = await dataFeedService.getCachedLtp(
+            p.exchange,
+            p.tradingsymbol,
+            p.symboltoken || "",
+            {
+                userId: String((p as any).userId || ""),
+                clientcode: String((p as any).clientcode || ""),
+            }
+        );
         if (ltp <= 0) continue;
 
         const slPrice = p.side === "BUY" ? p.entryPrice * (1 - run.stopLossPercent / 100) : p.entryPrice * (1 + run.stopLossPercent / 100);

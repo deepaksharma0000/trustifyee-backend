@@ -5,6 +5,7 @@ import { config } from "../config";
 import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { ipv4Agent } from "../utils/httpAgent";
+import { getAngelNetworkIdentity } from "../utils/angelNetworkIdentity";
 
 export type AngelSessionResp = {
   status?: boolean | string | number;
@@ -22,7 +23,8 @@ export class AngelOneAdapter {
   private outgoingIp?: string;
   private agentUrl?: string;
   private tokenPath = "/rest/auth/angelbroking/jwt/v1/generateTokens";
-  private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
+  private refreshTokenPath = "/rest/auth/angelbroking/jwt/v1/generateTokens";
+  private legacyRefreshTokenPath = "/rest/auth/angelbroking/jwt/v1/refreshToken";
   private isDataAccount: boolean;
 
   private forcedBaseUrl = "https://apiconnect.angelone.in";
@@ -58,6 +60,7 @@ export class AngelOneAdapter {
 
   private baseHeaders(jwtToken?: string) {
     const { safeDecrypt } = require("../utils/encryption");
+    const identity = getAngelNetworkIdentity();
 
     const decApiKey = safeDecrypt(this.apiKey, "angel_adapter_headers");
     if (!decApiKey) throw new Error("Invalid decryption key. Access Denied.");
@@ -65,11 +68,11 @@ export class AngelOneAdapter {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
-      "X-UserType": "USER",
-      "X-SourceID": "WEB",
-      "X-ClientLocalIP": "127.0.0.1",
-      "X-ClientPublicIP": config.publicIp || "127.0.0.1",
-      "X-MACAddress": "00:00:00:00:00:00",
+      "X-UserType": identity.userType,
+      "X-SourceID": identity.sourceId,
+      "X-ClientLocalIP": identity.localIp,
+      "X-ClientPublicIP": identity.publicIp,
+      "X-MACAddress": identity.macAddress,
       "X-PrivateKey": decApiKey,
       "X-Api-Key": decApiKey,
     };
@@ -201,9 +204,29 @@ export class AngelOneAdapter {
 
   async generateTokensUsingRefresh(refreshToken: string) {
     const body = { refreshToken: decrypt(refreshToken) };
-    return this.client.post(this.refreshTokenPath, body, {
-      headers: this.baseHeaders(),
-    });
+    try {
+      return await this.client.post(this.refreshTokenPath, body, {
+        headers: this.baseHeaders(),
+      });
+    } catch (err: any) {
+      const status = Number(err?.response?.status || 0);
+      if (!status || status < 500) {
+        try {
+          log.warn("[ANGEL_REFRESH_PATH_FALLBACK] Primary refresh path failed, trying legacy path", {
+            primaryPath: this.refreshTokenPath,
+            legacyPath: this.legacyRefreshTokenPath,
+            status: status || undefined,
+            message: err?.response?.data?.message || err?.message,
+          });
+          return await this.client.post(this.legacyRefreshTokenPath, body, {
+            headers: this.baseHeaders(),
+          });
+        } catch {
+          // preserve original error below
+        }
+      }
+      throw err;
+    }
   }
 
   async getProfile(jwtToken: string) {

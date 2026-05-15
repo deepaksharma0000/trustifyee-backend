@@ -7,6 +7,7 @@ type SessionLookupInput = {
   purpose: string;
   allowGlobalFallback?: boolean;
   requireJwt?: boolean;
+  strictIdentity?: boolean;
 };
 
 type CachedSession = {
@@ -26,7 +27,8 @@ const cacheKeyFor = (input: SessionLookupInput) => {
   const clientcode = normalize(input.clientcode);
   const requireJwt = input.requireJwt !== false;
   const fallback = Boolean(input.allowGlobalFallback);
-  return `${userId}|${clientcode}|${requireJwt ? "JWT" : "ANY"}|${fallback ? "GF" : "NGF"}`;
+  const strict = input.strictIdentity !== false;
+  return `${userId}|${clientcode}|${requireJwt ? "JWT" : "ANY"}|${fallback ? "GF" : "NGF"}|${strict ? "STRICT" : "FLEX"}`;
 };
 
 const isFresh = (entry?: CachedSession) => Boolean(entry && entry.expiresAt > Date.now());
@@ -92,6 +94,7 @@ export async function resolveAngelSessionContext(input: SessionLookupInput): Pro
   const requireJwt = lookup.requireJwt !== false;
   const requestedGlobalFallback = Boolean(lookup.allowGlobalFallback);
   const allowGlobalFallback = requestedGlobalFallback && GLOBAL_FALLBACK_ENABLED;
+  const strictIdentity = lookup.strictIdentity !== false;
 
   let session: any = null;
 
@@ -99,18 +102,27 @@ export async function resolveAngelSessionContext(input: SessionLookupInput): Pro
     session = await AngelTokensModel.findOne(withJwtFilter({ userId, clientcode }, requireJwt))
       .sort({ updatedAt: -1 })
       .lean();
+    if (strictIdentity && !session) {
+      return null;
+    }
   }
 
   if (!session && userId) {
     session = await AngelTokensModel.findOne(withJwtFilter({ userId }, requireJwt))
       .sort({ updatedAt: -1 })
       .lean();
+    if (strictIdentity && !session) {
+      return null;
+    }
   }
 
   if (!session && clientcode) {
     session = await AngelTokensModel.findOne(withJwtFilter({ clientcode }, requireJwt))
       .sort({ updatedAt: -1 })
       .lean();
+    if (strictIdentity && !session) {
+      return null;
+    }
   }
 
   if (!session && requestedGlobalFallback && !GLOBAL_FALLBACK_ENABLED) {
