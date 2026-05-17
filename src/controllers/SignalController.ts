@@ -245,6 +245,7 @@ export const getExecutionSummary = async (req: Request, res: Response) => {
                 orderId: row.orderId || null,
                 clientOrderId: row.clientOrderId || null,
                 correlationId: row.correlationId || null,
+                usedIp: row.ipAddress || null,
                 executedAt: row.executedAt || null,
                 updatedAt: row.updatedAt || null,
             };

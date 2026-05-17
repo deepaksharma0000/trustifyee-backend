@@ -7,12 +7,83 @@ import { AlertService } from "../services/AlertService";
 import User from "../models/User";
 import log from "../utils/logger";
 import { getAllTradeQueueNames } from "../utils/tradeQueue";
+import { config } from "../config";
 
 const toSafeMessage = (error: unknown) => {
   if (!error) return "Unknown execution failure";
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return JSON.stringify(error);
+};
+
+const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
+
+const normalizeIpv4 = (value?: string): string => {
+  const trimmed = String(value || "").trim();
+  return IPV4_REGEX.test(trimmed) ? trimmed : "";
+};
+
+const resolveNetworkMeta = (outgoingIp?: string, agentUrl?: string) => {
+  const normalizedOutgoingIp = normalizeIpv4(outgoingIp);
+  const normalizedPublicIp = normalizeIpv4(config.publicIp);
+  const normalizedAgentUrl = String(agentUrl || "").trim();
+
+  if (config.forceSharedVpsRoute) {
+    return {
+      usedIp: normalizedPublicIp || null,
+      usedIpLabel: normalizedPublicIp || "UNKNOWN",
+      routeType: "SERVER_SHARED_IP",
+      agentUrl: null,
+    };
+  }
+
+  if (normalizedAgentUrl) {
+    return {
+      usedIp: normalizedOutgoingIp || null,
+      usedIpLabel: normalizedOutgoingIp || "AGENT_ROUTE",
+      routeType: "AGENT_ROUTE",
+      agentUrl: normalizedAgentUrl,
+    };
+  }
+
+  if (normalizedOutgoingIp) {
+    return {
+      usedIp: normalizedOutgoingIp,
+      usedIpLabel: normalizedOutgoingIp,
+      routeType: "USER_STATIC_IP",
+      agentUrl: null,
+    };
+  }
+
+  if (normalizedPublicIp) {
+    return {
+      usedIp: normalizedPublicIp,
+      usedIpLabel: normalizedPublicIp,
+      routeType: "SERVER_SHARED_IP",
+      agentUrl: null,
+    };
+  }
+
+  return {
+    usedIp: null,
+    usedIpLabel: "UNKNOWN",
+    routeType: "UNKNOWN",
+    agentUrl: null,
+  };
+};
+
+const withIpHint = (message: string, usedIpLabel: string) => {
+  const baseMessage = String(message || "").trim() || "Order rejected by broker";
+  const lowered = baseMessage.toLowerCase();
+  const isIpRelatedRejection =
+    lowered.includes("unregistered ip") ||
+    lowered.includes("register your ip") ||
+    lowered.includes("static ip");
+
+  if (!isIpRelatedRejection) return baseMessage;
+  if (lowered.includes("used ip:")) return baseMessage;
+
+  return `${baseMessage} | Used IP: ${usedIpLabel}`;
 };
 
 export const initTradeExecutionWorker = () => {
@@ -82,6 +153,16 @@ export const initTradeExecutionWorker = () => {
           jobAgentUrl && String(jobAgentUrl).trim() !== ""
             ? String(jobAgentUrl).trim()
             : (userDoc as any).agent_url || undefined;
+        const networkMeta = resolveNetworkMeta(outgoingIp, agentUrl);
+
+        await SignalExecutionResult.updateOne(
+          { clientOrderId },
+          {
+            $set: {
+              ipAddress: networkMeta.usedIpLabel,
+            },
+          }
+        );
 
         if (!outgoingIp && !agentUrl) {
           logger.warn(
@@ -116,6 +197,7 @@ export const initTradeExecutionWorker = () => {
                 orderId: existingOrder.orderid,
                 executedAt: new Date(),
                 errorMessage: undefined,
+                ipAddress: networkMeta.usedIpLabel,
               }
             );
             return;
@@ -146,6 +228,10 @@ export const initTradeExecutionWorker = () => {
           !isRejectedMessage;
 
         const { BrokerResponse } = await import("../models/BrokerResponse");
+        const rejectedMessage = withIpHint(
+          brokerMessage || "Order rejected by broker",
+          networkMeta.usedIpLabel
+        );
         await BrokerResponse.create({
           userId,
           clientcode: clientCode || "UNKNOWN",
@@ -153,12 +239,21 @@ export const initTradeExecutionWorker = () => {
           orderid: orderId || "REJECTED",
           action: "PLACE_ORDER",
           status: isRealSuccess ? "SUCCESS" : "REJECTED",
-          message: isRealSuccess ? "Order placed successfully" : brokerMessage || "Order rejected by broker",
-          brokerError: isRealSuccess ? undefined : resp?.data || resp,
+          message: isRealSuccess ? "Order placed successfully" : rejectedMessage,
+          usedIp: networkMeta.usedIp,
+          networkRoute: networkMeta.routeType,
+          brokerError: isRealSuccess
+            ? undefined
+            : {
+                ...(resp?.data || resp || {}),
+                usedIp: networkMeta.usedIpLabel,
+                networkRoute: networkMeta.routeType,
+                agentUrl: networkMeta.agentUrl,
+              },
         });
 
         if (!isRealSuccess) {
-          throw new Error(brokerMessage || "Order failed at broker");
+          throw new Error(rejectedMessage);
         }
 
         await SignalExecutionResult.updateOne(
@@ -168,6 +263,7 @@ export const initTradeExecutionWorker = () => {
             orderId,
             executedAt: new Date(),
             errorMessage: undefined,
+            ipAddress: networkMeta.usedIpLabel,
           }
         );
 
@@ -175,6 +271,7 @@ export const initTradeExecutionWorker = () => {
         logger.info("Trade execution successful", { orderId });
       } catch (error: any) {
         const message = toSafeMessage(error);
+        const failureNetworkMeta = resolveNetworkMeta(jobOutgoingIp, jobAgentUrl);
 
         logger.error("Trade execution failed", {
           error: message,
@@ -190,6 +287,7 @@ export const initTradeExecutionWorker = () => {
               errorMessage: message,
               executedAt: new Date(),
               correlationId,
+              ipAddress: failureNetworkMeta.usedIpLabel,
             },
           }
         ).catch((updateErr) => {
@@ -206,9 +304,14 @@ export const initTradeExecutionWorker = () => {
             action: "PLACE_ORDER",
             status: "REJECTED",
             message,
+            usedIp: failureNetworkMeta.usedIp,
+            networkRoute: failureNetworkMeta.routeType,
             brokerError: {
               error: message,
               stack: error?.stack,
+              usedIp: failureNetworkMeta.usedIpLabel,
+              networkRoute: failureNetworkMeta.routeType,
+              agentUrl: failureNetworkMeta.agentUrl,
             },
           });
         } catch (brokerLogErr) {

@@ -6,9 +6,60 @@ import { TradeOutbox } from "../models/TradeOutbox";
 import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { v4 as uuidv4 } from "uuid";
+import { config } from "../config";
 
 const BATCH_SIZE = 50;
 const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX"]);
+const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
+
+function normalizeIpv4(value?: string) {
+  const trimmed = String(value || "").trim();
+  return IPV4_REGEX.test(trimmed) ? trimmed : "";
+}
+
+function resolveUserNetworkMeta(user: any) {
+  const profileIp = normalizeIpv4(user?.outgoing_ip);
+  const publicIp = normalizeIpv4(config.publicIp);
+  const agentUrl = String(user?.agent_url || "").trim();
+
+  if (config.forceSharedVpsRoute) {
+    return {
+      usedIp: publicIp || null,
+      usedIpLabel: publicIp || "UNKNOWN",
+      networkRoute: "SERVER_SHARED_IP",
+    };
+  }
+
+  if (agentUrl) {
+    return {
+      usedIp: profileIp || null,
+      usedIpLabel: profileIp || "AGENT_ROUTE",
+      networkRoute: "AGENT_ROUTE",
+    };
+  }
+
+  if (profileIp) {
+    return {
+      usedIp: profileIp,
+      usedIpLabel: profileIp,
+      networkRoute: "USER_STATIC_IP",
+    };
+  }
+
+  if (publicIp) {
+    return {
+      usedIp: publicIp,
+      usedIpLabel: publicIp,
+      networkRoute: "SERVER_SHARED_IP",
+    };
+  }
+
+  return {
+    usedIp: null,
+    usedIpLabel: "UNKNOWN",
+    networkRoute: "UNKNOWN",
+  };
+}
 
 function normalizeBroker(input: any): string {
   return String(input || "ANGELONE").trim().toUpperCase();
@@ -143,6 +194,8 @@ export class SignalBroadcastService {
       correlationId: string,
       reason: string
     ) => {
+      const networkMeta = resolveUserNetworkMeta(user);
+
       await SignalExecutionResult.findOneAndUpdate(
         { signalId, userId: user?._id },
         {
@@ -155,6 +208,7 @@ export class SignalBroadcastService {
           correlationId,
           source: "SERVER_QUEUE",
           executedAt: new Date(),
+          ipAddress: networkMeta.usedIpLabel,
         },
         {
           upsert: true,
@@ -174,9 +228,13 @@ export class SignalBroadcastService {
           action: "SKIP_EXECUTION",
           status: "REJECTED",
           message: reason,
+          usedIp: networkMeta.usedIp,
+          networkRoute: networkMeta.networkRoute,
           brokerError: {
             reason,
             signalId: String(signalId),
+            usedIp: networkMeta.usedIpLabel,
+            networkRoute: networkMeta.networkRoute,
           },
         };
 
@@ -200,6 +258,7 @@ export class SignalBroadcastService {
         .slice(-4)}-${index}`;
       const correlationId = `${batchCorrelationId}:${index}`;
       const userName = user.user_name || user.email || String(user._id);
+      const networkMeta = resolveUserNetworkMeta(user);
 
       const userLicence = String(user.licence || "Live").toLowerCase();
       const isLive = userLicence === "live";
@@ -209,7 +268,14 @@ export class SignalBroadcastService {
         failedCount += 1;
         const reason = eligibility.reason || "User not eligible for execution";
         await markFailure(user, clientOrderId, correlationId, reason);
-        executions.push({ userName, licence: user.licence || "Live", status: "FAILED", message: reason });
+        executions.push({
+          userName,
+          licence: user.licence || "Live",
+          status: "FAILED",
+          message: reason,
+          usedIp: networkMeta.usedIpLabel,
+          networkRoute: networkMeta.networkRoute,
+        });
         return;
       }
 
@@ -217,7 +283,14 @@ export class SignalBroadcastService {
       if (!rawClientCode || rawClientCode.trim().length < 3) {
         failedCount += 1;
         await markFailure(user, clientOrderId, correlationId, "Client code missing or invalid");
-        executions.push({ userName, licence: user.licence || "Live", status: "FAILED", message: "Client code missing or invalid" });
+        executions.push({
+          userName,
+          licence: user.licence || "Live",
+          status: "FAILED",
+          message: "Client code missing or invalid",
+          usedIp: networkMeta.usedIpLabel,
+          networkRoute: networkMeta.networkRoute,
+        });
         return;
       }
 
@@ -277,6 +350,8 @@ export class SignalBroadcastService {
         licence: user.licence || "Live",
         status: "QUEUED",
         correlationId,
+        usedIp: networkMeta.usedIpLabel,
+        networkRoute: networkMeta.networkRoute,
       });
     };
 
@@ -292,9 +367,17 @@ export class SignalBroadcastService {
         const user = batch[settledIndex];
         const userName = user?.user_name || user?.email || String(user?._id || "UNKNOWN");
         const reason = item.reason?.message || "Broadcast queueing failed";
+        const networkMeta = resolveUserNetworkMeta(user);
 
         failedCount += 1;
-        executions.push({ userName, licence: user?.licence || "Live", status: "FAILED", message: reason });
+        executions.push({
+          userName,
+          licence: user?.licence || "Live",
+          status: "FAILED",
+          message: reason,
+          usedIp: networkMeta.usedIpLabel,
+          networkRoute: networkMeta.networkRoute,
+        });
 
         SignalExecutionResult.findOneAndUpdate(
           { signalId, userId: user?._id },
@@ -303,6 +386,7 @@ export class SignalBroadcastService {
               status: "FAILED",
               errorMessage: reason,
               executedAt: new Date(),
+              ipAddress: networkMeta.usedIpLabel,
             },
             $setOnInsert: {
               signalId,
