@@ -208,12 +208,28 @@ router.post("/angel/login", auth, async (req: any, res) => {
       );
     }
 
-    if (req.user) {
-      req.user.broker_connected = true;
-      // [FIX] Reset circuit breaker on successful login
-      req.user.trading_paused = false;
-      req.user.consecutive_failures = 0;
-      await req.user.save();
+    if (endUserProfile) {
+      await User.updateOne(
+        { _id: userId },
+        {
+          $set: {
+            broker_connected: true,
+            broker_verified: true,
+            trading_paused: false,
+            consecutive_failures: 0,
+          },
+        }
+      );
+    } else if (adminProfile) {
+      await Admin.updateOne(
+        { _id: userId },
+        {
+          $set: {
+            broker_connected: true,
+            broker_verified: true,
+          },
+        }
+      );
     }
 
     log.info(`[ANGEL_LOGIN] ✅ Session successfully created for User ID: ${userId}, Client: ${clientcode}`);
