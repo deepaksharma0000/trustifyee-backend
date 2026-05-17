@@ -1,7 +1,3 @@
-// src/services/signalStream.ts
-// FIX #1 — Signal WebSocket Server on /ws/signals
-// Handles: auth via JWT query param, signal push, ping, reconnect heartbeat
-
 import { Server as WebSocketServer, WebSocket } from "ws";
 import log from "../utils/logger";
 import {
@@ -10,18 +6,55 @@ import {
   removeUserSocket,
 } from "./UserSocketService";
 
-const HEARTBEAT_INTERVAL_MS = 25000; // 25s ping to detect dead connections
+const HEARTBEAT_INTERVAL_MS = 25000;
+
+function extractSocketToken(req: any): string {
+  const url = new URL(req.url || "", `http://${req.headers.host}`);
+  const queryToken =
+    url.searchParams.get("token") ||
+    url.searchParams.get("access_token") ||
+    url.searchParams.get("x-access-token") ||
+    "";
+
+  const authHeader = String(req?.headers?.authorization || "").trim();
+  const bearerHeaderToken = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const rawHeaderToken = bearerHeaderToken ? "" : authHeader;
+  const xAccessTokenHeader = String(req?.headers?.["x-access-token"] || "").trim();
+
+  const protocolHeader = String(req?.headers?.["sec-websocket-protocol"] || "").trim();
+  const protocolParts = protocolHeader
+    .split(",")
+    .map((p: string) => p.trim())
+    .filter(Boolean);
+
+  let protocolToken = "";
+  if (protocolParts.length >= 2) {
+    const first = protocolParts[0].toLowerCase();
+    if (first === "bearer" || first === "token") {
+      protocolToken = protocolParts[1];
+    }
+  } else if (protocolParts.length === 1 && protocolParts[0].split(".").length === 3) {
+    protocolToken = protocolParts[0];
+  }
+
+  return queryToken || bearerHeaderToken || rawHeaderToken || xAccessTokenHeader || protocolToken;
+}
 
 export function startSignalStream(server: any): void {
   const wss = new WebSocketServer({ server, path: "/ws/signals" });
 
   wss.on("connection", (ws: WebSocket, req: any) => {
-    // ── 1. Authenticate via token in query string ────────────────────────────
-    //    Client connects: new WebSocket("ws://host/ws/signals?token=YOUR_JWT")
-    const url = new URL(req.url || "", `http://${req.headers.host}`);
-    const token = url.searchParams.get("token");
+    const token = extractSocketToken(req);
 
     if (!token) {
+      log.warn("[SignalStream] Socket rejected: missing auth token", {
+        path: req?.url,
+        hasAuthorizationHeader: Boolean(req?.headers?.authorization),
+        hasXAccessTokenHeader: Boolean(req?.headers?.["x-access-token"]),
+        hasProtocolHeader: Boolean(req?.headers?.["sec-websocket-protocol"]),
+      });
       ws.send(JSON.stringify({ type: "error", message: "AUTH_REQUIRED" }));
       ws.close();
       return;
@@ -29,20 +62,21 @@ export function startSignalStream(server: any): void {
 
     const userId = extractUserIdFromToken(token);
     if (!userId) {
+      log.warn("[SignalStream] Socket rejected: invalid token", {
+        path: req?.url,
+      });
       ws.send(JSON.stringify({ type: "error", message: "INVALID_TOKEN" }));
       ws.close();
       return;
     }
 
-    // ── 2. Register socket ───────────────────────────────────────────────────
     registerUserSocket(userId, ws);
-
-    // Confirm connection to client
     ws.send(JSON.stringify({ type: "connected", userId, message: "Signal stream ready" }));
 
-    // ── 3. Heartbeat (detect dead connections) ───────────────────────────────
     (ws as any).isAlive = true;
-    ws.on("pong", () => { (ws as any).isAlive = true; });
+    ws.on("pong", () => {
+      (ws as any).isAlive = true;
+    });
 
     const heartbeat = setInterval(() => {
       if ((ws as any).isAlive === false) {
@@ -55,31 +89,28 @@ export function startSignalStream(server: any): void {
       ws.ping();
     }, HEARTBEAT_INTERVAL_MS);
 
-    // ── 4. Message handler ───────────────────────────────────────────────────
     ws.on("message", (raw) => {
       try {
         const msg = JSON.parse(String(raw));
-        // Client can send ping to keep alive
         if (msg?.type === "ping") {
           ws.send(JSON.stringify({ type: "pong" }));
         }
-      } catch (_) {
-        // Ignore malformed messages
+      } catch {
+        // ignore malformed messages
       }
     });
 
-    // ── 5. Cleanup on disconnect ─────────────────────────────────────────────
     ws.on("close", () => {
       clearInterval(heartbeat);
       removeUserSocket(userId);
     });
 
-    ws.on("error", (err) => {
-      log.error(`[SignalStream] WS error for user ${userId}:`, err.message);
+    ws.on("error", (err: any) => {
+      log.error(`[SignalStream] WS error for user ${userId}:`, err?.message || err);
       clearInterval(heartbeat);
       removeUserSocket(userId);
     });
   });
 
-  log.info("📡 Signal stream WS running on /ws/signals");
+  log.info("Signal stream WS running on /ws/signals");
 }

@@ -89,3 +89,14 @@ export function broadcastToAllUsers(payload: object): number {
 export function getConnectedUserCount(): number {
   return userSockets.size;
 }
+
+export function isUserSocketConnected(userId: string): boolean {
+  const ws = userSockets.get(String(userId));
+  return Boolean(ws && ws.readyState === WebSocket.OPEN);
+}
+
+export function getConnectedUserIds(): string[] {
+  return Array.from(userSockets.entries())
+    .filter(([, ws]) => ws.readyState === WebSocket.OPEN)
+    .map(([userId]) => userId);
+}

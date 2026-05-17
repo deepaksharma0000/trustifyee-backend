@@ -22,6 +22,7 @@ import {
 import moment from "moment-timezone";
 import { findUserByClientCode } from "../utils/clientCodeLookup";
 import { config } from "../config";
+import { isUserSocketConnected } from "../services/UserSocketService";
 
 const router = express.Router();
 
@@ -183,16 +184,24 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const BroadcastSvc = (await import("../services/SignalBroadcastService")).SignalBroadcastService;
     const readiness = await BroadcastSvc.getBroadcastReadinessReport(targetStrategy);
     const blockedDetails = (readiness.details || []).filter((d: any) => d.ready === false);
-    const executionRows = (readiness.details || []).map((d: any) => ({
-      userId: d.userId || null,
-      userName: d.userName || d.email || null,
-      licence: d.licence || "Live",
-      broker: d.broker || null,
-      status: "QUEUED",
-      message: "Signal dispatched for user-side execution.",
-      usedIp: d.usedIp || null,
-      networkRoute: d.routeType || null,
-    }));
+    const executionRows = (readiness.details || []).map((d: any) => {
+      const online = Boolean(d?.userId && isUserSocketConnected(String(d.userId)));
+      return {
+        userId: d.userId || null,
+        userName: d.userName || d.email || null,
+        licence: d.licence || "Live",
+        broker: d.broker || null,
+        online,
+        status: online ? "QUEUED" : "OFFLINE",
+        message: online
+          ? "Signal dispatched for user-side execution."
+          : "User device is offline. Signal will execute when user reconnects and polls pending signals.",
+        usedIp: d.usedIp || null,
+        networkRoute: d.routeType || null,
+      };
+    });
+    const onlineUsers = executionRows.filter((r: any) => r.online === true).length;
+    const offlineUsers = executionRows.length - onlineUsers;
     const liveUsers = (readiness.details || []).filter(
       (d: any) => String(d.licence || "Live").toLowerCase() === "live"
     ).length;
@@ -229,6 +238,13 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const { SignalService } = await import("../services/SignalService");
 
     if (forceClientDispatch) {
+      log.info("[PLACE_ALL_CLIENT_DISPATCH]", {
+        strategy: targetStrategy,
+        totalUsers: readiness.totalUsers,
+        onlineUsers,
+        offlineUsers,
+      });
+
       const signal = await SignalService.createSignal({
         symbol: orderPayload.tradingsymbol,
         exchange: orderPayload.exchange,
@@ -248,8 +264,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         message: "Signal dispatched for user-side execution.",
         signalId: signal?._id,
         totalUsers: readiness.totalUsers,
-        queued: readiness.totalUsers,
+        queued: onlineUsers,
         failed: 0,
+        offlineSkipped: offlineUsers,
         livePlaced: liveUsers,
         demoPlaced: demoUsers,
         executions: executionRows,
@@ -270,6 +287,14 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         "No broker-ready users for this strategy. Broadcast skipped.";
 
       if (allowClientFallbackOnBlocked) {
+        log.warn("[PLACE_ALL_CLIENT_FALLBACK]", {
+          strategy: targetStrategy,
+          totalUsers: readiness.totalUsers,
+          onlineUsers,
+          offlineUsers,
+          blockedReason,
+        });
+
         const signal = await SignalService.createSignal({
           symbol: orderPayload.tradingsymbol,
           exchange: orderPayload.exchange,
@@ -290,8 +315,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           message: "Server-side broker route blocked. Signal dispatched for user-side execution.",
           signalId: signal?._id,
           totalUsers: readiness.totalUsers,
-          queued: readiness.totalUsers,
+          queued: onlineUsers,
           failed: 0,
+          offlineSkipped: offlineUsers,
           livePlaced: liveUsers,
           demoPlaced: demoUsers,
           executions: executionRows,
