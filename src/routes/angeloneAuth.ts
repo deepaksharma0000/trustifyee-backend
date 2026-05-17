@@ -8,6 +8,7 @@ import Admin from '../models/Admin';
 import { encrypt, decrypt, ensureEncrypted } from '../utils/encryption';
 import { auth } from '../middleware/auth.middleware';
 import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
+import { buildApiKeyRouteBinding } from '../utils/apiKeyRouteBinding';
 
 const router = express.Router();
 
@@ -110,6 +111,11 @@ router.post('/generate-session', auth, async (req: any, res) => {
 
         const rawIp = profile.outgoing_ip || config.publicIp;
         const outgoingIp = isValidIPv4(rawIp) ? rawIp : config.publicIp;
+        const binding = buildApiKeyRouteBinding(decryptedApiKey, {
+            outgoingIp: (profile as any).outgoing_ip,
+            agentUrl: (profile as any).agent_url,
+            dedicatedIpEnabled: Boolean((profile as any).dedicated_ip_enabled === true),
+        });
 
         log.info(`[BROKER_AUTH] Final IP: ${outgoingIp} (raw was: ${rawIp})`);
 
@@ -184,6 +190,14 @@ router.post('/generate-session', auth, async (req: any, res) => {
             client_key: encrypt(client_code),
             broker: 'AngelOne'
         };
+
+        if (userType !== 'admin') {
+            updatePayload.api_key_ip_pair_verified = true;
+            updatePayload.validated_api_key_fingerprint = binding.apiKeyFingerprint;
+            updatePayload.validated_route_ip = binding.routeIp || null;
+            updatePayload.validated_route_type = binding.routeType;
+            updatePayload.validated_pair_at = new Date();
+        }
 
         // Always save credentials from request body for future auto-login
         if (req.body.password) {

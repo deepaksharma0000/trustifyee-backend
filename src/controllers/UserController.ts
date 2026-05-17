@@ -29,6 +29,11 @@ const updateUserSchema = Joi.object({
     outgoing_ip: Joi.string().allow('', null).optional(),
     agent_url: Joi.string().uri().allow('', null).optional(),
     dedicated_ip_enabled: Joi.boolean().optional(),
+    api_key_ip_pair_verified: Joi.boolean().optional(),
+    validated_api_key_fingerprint: Joi.string().allow('', null).optional(),
+    validated_route_ip: Joi.string().allow('', null).optional(),
+    validated_route_type: Joi.string().valid('USER_STATIC_IP', 'SERVER_SHARED_IP', 'AGENT_ROUTE', 'UNKNOWN').optional(),
+    validated_pair_at: Joi.date().optional(),
 }).unknown(true);
 
 export const updateUser = async (req: any, res: Response) => {
@@ -51,6 +56,20 @@ export const updateUser = async (req: any, res: Response) => {
 
         if (req.body.client_key) updateData.client_key = encrypt(req.body.client_key);
         if (req.body.api_key) updateData.api_key = encrypt(req.body.api_key);
+
+        const shouldResetKeyIpValidation =
+            Object.prototype.hasOwnProperty.call(req.body, "api_key") ||
+            Object.prototype.hasOwnProperty.call(req.body, "outgoing_ip") ||
+            Object.prototype.hasOwnProperty.call(req.body, "agent_url") ||
+            Object.prototype.hasOwnProperty.call(req.body, "dedicated_ip_enabled");
+
+        if (shouldResetKeyIpValidation) {
+            updateData.api_key_ip_pair_verified = false;
+            updateData.validated_api_key_fingerprint = undefined;
+            updateData.validated_route_ip = undefined;
+            updateData.validated_route_type = undefined;
+            updateData.validated_pair_at = undefined;
+        }
 
         if (actor.role === 'sub-admin' || actor.role === 'subadmin') {
             if (!actor.all_permission) {
@@ -102,6 +121,11 @@ export const updateUserBroker = async (req: Request, res: Response) => {
 
         updateData.broker_verified = false;
         updateData.broker_connected = false;
+        updateData.api_key_ip_pair_verified = false;
+        updateData.validated_api_key_fingerprint = undefined;
+        updateData.validated_route_ip = undefined;
+        updateData.validated_route_type = undefined;
+        updateData.validated_pair_at = undefined;
 
         await User.updateOne({ _id: id }, updateData);
         const updatedUser = await User.findById(id);

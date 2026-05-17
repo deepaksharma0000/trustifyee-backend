@@ -12,6 +12,7 @@ import { decrypt, ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 import { validateInstrumentFromMaster } from "./InstrumentValidationService";
+import { apiKeyFingerprint, buildApiKeyRouteBinding } from "../utils/apiKeyRouteBinding";
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
@@ -115,11 +116,52 @@ function clientcodeMask(encryptedClientCode: string) {
   }
 }
 
-function keyFingerprint(key?: string) {
-  const raw = String(key || "").trim();
-  if (!raw) return "EMPTY";
-  if (raw.length <= 4) return `${raw}(${raw.length})`;
-  return `${raw.slice(0, 2)}***${raw.slice(-2)}(${raw.length})`;
+function enforceApiKeyRoutePairValidation(user: any, apiKey: string, routing: any, clientcode: string) {
+  const licence = String(user?.licence || "").toLowerCase();
+  const isExplicitDemo = licence === "demo";
+  if (isExplicitDemo) return;
+
+  const binding = buildApiKeyRouteBinding(apiKey, {
+    outgoingIp: routing?.outgoingIp,
+    agentUrl: routing?.agentUrl,
+    dedicatedIpEnabled: Boolean(routing?.dedicatedRoutingEnabled || user?.dedicated_ip_enabled),
+  });
+
+  const isVerified = Boolean(user?.api_key_ip_pair_verified === true);
+  const expectedKeyFp = String(user?.validated_api_key_fingerprint || "").trim();
+  const expectedRouteIp = String(user?.validated_route_ip || "").trim();
+  const expectedRouteType = String(user?.validated_route_type || "").trim();
+
+  if (!isVerified || !expectedKeyFp || !expectedRouteIp) {
+    throw new Error(
+      "API_KEY_ROUTE_NOT_VERIFIED: Reconnect broker once to verify API key and route IP before placing live trades."
+    );
+  }
+
+  if (expectedKeyFp !== binding.apiKeyFingerprint) {
+    throw new Error(
+      `API_KEY_ROUTE_MISMATCH: API key fingerprint mismatch. expected=${expectedKeyFp}, current=${binding.apiKeyFingerprint}`
+    );
+  }
+
+  if (expectedRouteIp !== binding.routeIp) {
+    throw new Error(
+      `API_KEY_ROUTE_MISMATCH: Route IP mismatch. expected=${expectedRouteIp}, current=${binding.routeIp || "UNKNOWN"}`
+    );
+  }
+
+  if (expectedRouteType && expectedRouteType !== binding.routeType) {
+    throw new Error(
+      `API_KEY_ROUTE_MISMATCH: Route type mismatch. expected=${expectedRouteType}, current=${binding.routeType}`
+    );
+  }
+
+  log.info("[ORDER_PRECHECK_PASS] API key/IP pair validated", {
+    clientcode,
+    apiKey: binding.apiKeyFingerprint,
+    routeIp: binding.routeIp || "UNKNOWN",
+    routeType: binding.routeType,
+  });
 }
 
 async function resolveOrderSymbolToken(orderInput: PlaceOrderInput): Promise<string> {
@@ -250,6 +292,7 @@ export async function placeOrderForClient(
 
 
   let user = await User.findById(userId);
+  const isEndUser = Boolean(user);
   
   if (!user) {
     // If not in User collection, check Admin collection (for admin broadcast)
@@ -367,28 +410,55 @@ export async function placeOrderForClient(
       let resolvedApiKey = tokenApiKey || profileApiKey;
 
       if (profileApiKey && tokenApiKey && profileApiKey !== tokenApiKey) {
-          log.warn("[ORDER_API_KEY_MISMATCH] Profile api_key differs from AngelTokens.apiKey. Using profile key and syncing token store.", {
-            clientcode,
-            tokenApiKey: keyFingerprint(tokenApiKey),
-            profileApiKey: keyFingerprint(profileApiKey),
-          });
-          resolvedApiKey = profileApiKey;
+          const tokenUpdatedAt = new Date((angelTokens as any)?.updatedAt || 0).getTime();
+          const profileUpdatedAt = new Date((user as any)?.updated_at || (user as any)?.updatedAt || 0).getTime();
+          const profileLooksNewer = profileUpdatedAt > tokenUpdatedAt + 1000;
 
-          try {
-            const profileEncryptedKey = String((user as any)?.api_key || "").trim();
-            const tokenEncryptedKey = String((angelTokens as any)?.apiKey || "").trim();
-            if (profileEncryptedKey && profileEncryptedKey !== tokenEncryptedKey) {
-              await AngelTokensModel.updateOne(
-                { _id: (angelTokens as any)._id },
-                { $set: { apiKey: profileEncryptedKey } }
-              );
-              (angelTokens as any).apiKey = profileEncryptedKey;
+          log.warn("[ORDER_API_KEY_MISMATCH] Profile api_key differs from AngelTokens.apiKey. Resolving by recency.", {
+            clientcode,
+            tokenApiKey: apiKeyFingerprint(tokenApiKey),
+            profileApiKey: apiKeyFingerprint(profileApiKey),
+            tokenUpdatedAt: Number.isFinite(tokenUpdatedAt) ? new Date(tokenUpdatedAt).toISOString() : "UNKNOWN",
+            profileUpdatedAt: Number.isFinite(profileUpdatedAt) ? new Date(profileUpdatedAt).toISOString() : "UNKNOWN",
+            chosenSource: profileLooksNewer ? "PROFILE" : "TOKEN",
+          });
+
+          if (profileLooksNewer) {
+            resolvedApiKey = profileApiKey;
+            try {
+              const profileEncryptedKey = String((user as any)?.api_key || "").trim();
+              const tokenEncryptedKey = String((angelTokens as any)?.apiKey || "").trim();
+              if (profileEncryptedKey && profileEncryptedKey !== tokenEncryptedKey) {
+                await AngelTokensModel.updateOne(
+                  { _id: (angelTokens as any)._id },
+                  { $set: { apiKey: profileEncryptedKey } }
+                );
+                (angelTokens as any).apiKey = profileEncryptedKey;
+              }
+            } catch (syncErr: any) {
+              log.warn("[ORDER_API_KEY_SYNC_WARN] Failed syncing profile api_key to AngelTokens.", {
+                clientcode,
+                message: syncErr?.message,
+              });
             }
-          } catch (syncErr: any) {
-            log.warn("[ORDER_API_KEY_SYNC_WARN] Failed syncing profile api_key to AngelTokens.", {
-              clientcode,
-              message: syncErr?.message,
-            });
+          } else {
+            resolvedApiKey = tokenApiKey;
+            try {
+              const tokenEncryptedKey = String((angelTokens as any)?.apiKey || "").trim();
+              const profileEncryptedKey = String((user as any)?.api_key || "").trim();
+              if (tokenEncryptedKey && tokenEncryptedKey !== profileEncryptedKey) {
+                await User.updateOne(
+                  { _id: userId },
+                  { $set: { api_key: tokenEncryptedKey } }
+                );
+                (user as any).api_key = tokenEncryptedKey;
+              }
+            } catch (syncErr: any) {
+              log.warn("[ORDER_API_KEY_SYNC_WARN] Failed syncing AngelTokens.apiKey to profile.", {
+                clientcode,
+                message: syncErr?.message,
+              });
+            }
           }
       } else if (!tokenApiKey && profileApiKey) {
           resolvedApiKey = profileApiKey;
@@ -416,6 +486,10 @@ export async function placeOrderForClient(
       if (!decJwtToken || decJwtToken.length < 20) {
           log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid session token for ${clientcode}`);
           throw new Error("Invalid session. Please login to your broker again.");
+      }
+
+      if (isEndUser) {
+        enforceApiKeyRoutePairValidation(user, resolvedApiKey, routing, clientcode);
       }
 
       // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
@@ -462,10 +536,40 @@ export async function placeOrderForClient(
       // Reset failures on success
       if (resp && resp.status === 200 && (brokerSuccess || brokerData?.data?.orderid || brokerData?.orderid)) {
           // [ISSUE 2 FIX] Atomic reset in DB + In-memory update
-          await User.updateOne({ _id: userId }, { $set: { consecutive_failures: 0, trading_paused: false } });
+          const successUpdate: any = {
+            consecutive_failures: 0,
+            trading_paused: false,
+          };
+
+          if (isEndUser) {
+            const successBinding = buildApiKeyRouteBinding(resolvedApiKey, {
+              outgoingIp: routing?.outgoingIp,
+              agentUrl: routing?.agentUrl,
+              dedicatedIpEnabled: Boolean(routing?.dedicatedRoutingEnabled || (user as any)?.dedicated_ip_enabled),
+            });
+            successUpdate.api_key_ip_pair_verified = true;
+            successUpdate.validated_api_key_fingerprint = successBinding.apiKeyFingerprint;
+            successUpdate.validated_route_ip = successBinding.routeIp || null;
+            successUpdate.validated_route_type = successBinding.routeType;
+            successUpdate.validated_pair_at = new Date();
+          }
+
+          await User.updateOne({ _id: userId }, { $set: successUpdate });
           if (user) {
               user.consecutive_failures = 0;
               user.trading_paused = false;
+              if (isEndUser) {
+                const successBinding = buildApiKeyRouteBinding(resolvedApiKey, {
+                  outgoingIp: routing?.outgoingIp,
+                  agentUrl: routing?.agentUrl,
+                  dedicatedIpEnabled: Boolean(routing?.dedicatedRoutingEnabled || (user as any)?.dedicated_ip_enabled),
+                });
+                (user as any).api_key_ip_pair_verified = true;
+                (user as any).validated_api_key_fingerprint = successBinding.apiKeyFingerprint;
+                (user as any).validated_route_ip = successBinding.routeIp || null;
+                (user as any).validated_route_type = successBinding.routeType;
+                (user as any).validated_pair_at = new Date();
+              }
           }
           log.info(`PLACE_ORDER_BROKER_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
           return resp;
@@ -489,6 +593,9 @@ export async function placeOrderForClient(
       const isApiKeyIpMismatch = /api key mismatch against app found with static ip in request/i.test(
         String(err.message || "")
       );
+      const isApiKeyRoutePrecheck = /^API_KEY_ROUTE_(NOT_VERIFIED|MISMATCH)/i.test(
+        String(err.message || "")
+      );
       
       if (isInvalidToken && retryCount < 1) {
           log.info(`[OrderService] Token expired for ${clientcode}. Attempting auto-refresh...`);
@@ -500,7 +607,32 @@ export async function placeOrderForClient(
       }
 
       if (isApiKeyIpMismatch) {
+          if (isEndUser) {
+            try {
+              await User.updateOne(
+                { _id: userId },
+                {
+                  $set: {
+                    api_key_ip_pair_verified: false,
+                  },
+                }
+              );
+              (user as any).api_key_ip_pair_verified = false;
+            } catch (stateErr: any) {
+              log.warn("[ORDER_PRECHECK_STATE_WARN] Failed to mark api_key_ip_pair_verified=false after broker static IP mismatch.", {
+                clientcode,
+                message: stateErr?.message,
+              });
+            }
+          }
           log.error(`[ORDER_NO_RETRY] API key/static IP mismatch for ${clientcode}. Blocking retries until key/IP mapping is fixed.`);
+          return { status: false, message: err.message };
+      }
+
+      if (isApiKeyRoutePrecheck) {
+          log.error(`[ORDER_NO_RETRY] API key/route precheck failed for ${clientcode}.`, {
+            message: err.message,
+          });
           return { status: false, message: err.message };
       }
 

@@ -32,6 +32,11 @@ export interface IUser extends Document {
     outgoing_ip?: string; // Binding IP for requests
     agent_url?: string; // [NEW] VPS Agent URL for isolated routing
     dedicated_ip_enabled?: boolean; // Explicit opt-in for per-user static IP/agent routing
+    api_key_ip_pair_verified?: boolean; // strict guard: key + route pair verified for live trading
+    validated_api_key_fingerprint?: string; // masked fingerprint of verified api key
+    validated_route_ip?: string; // verified effective route IP
+    validated_route_type?: 'USER_STATIC_IP' | 'SERVER_SHARED_IP' | 'AGENT_ROUTE' | 'UNKNOWN';
+    validated_pair_at?: Date;
     strategy_id_map?: Map<string, string>; // { 'Alpha': 'STRAT_001', 'IronCondor': 'STRAT_002' }
 
     created_at: Date;
@@ -71,7 +76,12 @@ const UserSchema: Schema = new Schema({
     agent_url: { type: String }, // URL of the VPS agent (e.g. http://ip:3001)
     strategy_id_map: { type: Map, of: String, default: {} },
     execution_node_id: { type: String }, // Docker container ID or Node name
-    dedicated_ip_enabled: { type: Boolean, default: false } // Whether user has a dedicated IP environment
+    dedicated_ip_enabled: { type: Boolean, default: false }, // Whether user has a dedicated IP environment
+    api_key_ip_pair_verified: { type: Boolean, default: false },
+    validated_api_key_fingerprint: { type: String },
+    validated_route_ip: { type: String },
+    validated_route_type: { type: String, enum: ['USER_STATIC_IP', 'SERVER_SHARED_IP', 'AGENT_ROUTE', 'UNKNOWN'] },
+    validated_pair_at: { type: Date }
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);

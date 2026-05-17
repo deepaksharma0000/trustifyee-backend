@@ -13,6 +13,7 @@ import Admin from "../models/Admin";
 import mongoose from "mongoose";
 import { loginUser, loginAdmin } from "../controllers/AuthController";
 import { invalidateAngelSessionCache } from "../services/AngelSessionContextService";
+import { buildApiKeyRouteBinding } from "../utils/apiKeyRouteBinding";
 
 const router = express.Router();
 // Removed global adapter to prevent startup crash. Adapters are now created lazily per request.
@@ -126,7 +127,9 @@ router.post("/angel/login", auth, async (req: any, res) => {
     }
 
     // 🚀 [LAZY ADAPTER]
-    const user = await User.findById(userId) || await Admin.findById(userId);
+    const endUserProfile = await User.findById(userId);
+    const adminProfile = endUserProfile ? null : await Admin.findById(userId);
+    const user = endUserProfile || adminProfile;
     const apiKey = req.body.api_key || (user ? decrypt(user.api_key || "") : "");
     if (!apiKey) return res.status(400).json({ ok: false, error: "API Key missing. Please provide it." });
 
@@ -135,6 +138,11 @@ router.post("/angel/login", auth, async (req: any, res) => {
 
     const rawIp = (user as any)?.outgoing_ip || config.publicIp;
     const outgoingIp = isValidIPv4(rawIp) ? rawIp : config.publicIp;
+    const binding = buildApiKeyRouteBinding(apiKey, {
+      outgoingIp: (user as any)?.outgoing_ip,
+      agentUrl: (user as any)?.agent_url,
+      dedicatedIpEnabled: Boolean((user as any)?.dedicated_ip_enabled === true),
+    });
 
     log.info(`[BROKER_AUTH] Final IP: ${outgoingIp} (raw was: ${rawIp})`);
     const adapter = new AngelOneAdapter(apiKey, outgoingIp);
@@ -176,6 +184,29 @@ router.post("/angel/login", auth, async (req: any, res) => {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
     invalidateAngelSessionCache(String(userId), String(clientcode));
+
+    if (endUserProfile) {
+      const userUpdate: any = {
+        api_key_ip_pair_verified: true,
+        validated_api_key_fingerprint: binding.apiKeyFingerprint,
+        validated_route_ip: binding.routeIp || null,
+        validated_route_type: binding.routeType,
+        validated_pair_at: new Date(),
+      };
+
+      if (typeof req.body.api_key === "string" && req.body.api_key.trim()) {
+        userUpdate.api_key = req.body.api_key.startsWith("enc::")
+          ? req.body.api_key
+          : encrypt(req.body.api_key);
+      }
+
+      await User.updateOne(
+        { _id: userId },
+        {
+          $set: userUpdate,
+        }
+      );
+    }
 
     if (req.user) {
       req.user.broker_connected = true;
