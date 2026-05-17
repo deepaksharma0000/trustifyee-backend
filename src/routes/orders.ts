@@ -22,7 +22,7 @@ import {
 import moment from "moment-timezone";
 import { findUserByClientCode } from "../utils/clientCodeLookup";
 import { config } from "../config";
-import { isUserSocketConnected } from "../services/UserSocketService";
+import { getConnectedUserIds, isUserSocketConnected } from "../services/UserSocketService";
 
 const router = express.Router();
 
@@ -238,11 +238,14 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const { SignalService } = await import("../services/SignalService");
 
     if (forceClientDispatch) {
+      const connectedUserIds = getConnectedUserIds();
       log.info("[PLACE_ALL_CLIENT_DISPATCH]", {
         strategy: targetStrategy,
         totalUsers: readiness.totalUsers,
         onlineUsers,
         offlineUsers,
+        connectedUsers: connectedUserIds.length,
+        connectedUserIds,
       });
 
       const signal = await SignalService.createSignal({
@@ -699,13 +702,19 @@ router.get("/broadcast-readiness", auth, adminOnly, async (req: any, res) => {
       ? (report.details || []).filter((row: any) => row.ready === false)
       : report.details;
 
+    const enrichedDetails = (details || []).map((row: any) => ({
+      ...row,
+      socketConnected: Boolean(row?.userId && isUserSocketConnected(String(row.userId))),
+    }));
+
     return res.json({
       ok: true,
       strategy: report.strategy,
       totalUsers: report.totalUsers,
       readyUsers: report.readyUsers,
       blockedUsers: report.blockedUsers,
-      details,
+      connectedUsers: getConnectedUserIds(),
+      details: enrichedDetails,
     });
   } catch (err: any) {
     return res.status(500).json({ ok: false, message: err.message || String(err) });
