@@ -21,6 +21,7 @@ import {
 } from "../controllers/order.controller";
 import moment from "moment-timezone";
 import { findUserByClientCode } from "../utils/clientCodeLookup";
+import { config } from "../config";
 
 const router = express.Router();
 
@@ -161,15 +162,77 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       req.body?.preflightOnly === true ||
       String(req.query?.preflightOnly || "").toLowerCase() === "true";
 
+    const requestedExecutionMode = String(
+      req.body?.executionMode || req.query?.executionMode || ""
+    )
+      .trim()
+      .toUpperCase();
+    const configExecutionMode = String(config.executionMode || "USER_ONLY")
+      .trim()
+      .toUpperCase();
+    const userOnlyMode = configExecutionMode === "USER_ONLY";
+    const clientDispatchRequested =
+      requestedExecutionMode === "CLIENT" ||
+      requestedExecutionMode === "USER_ONLY";
+    let forceClientDispatch = userOnlyMode || clientDispatchRequested;
+    const allowClientFallbackOnBlocked =
+      String(process.env.PLACE_ALL_CLIENT_FALLBACK_ON_BLOCK || "true").toLowerCase() !== "false";
+    const autoClientOnIpRisk =
+      String(process.env.PLACE_ALL_CLIENT_ON_IP_RISK || "true").toLowerCase() !== "false";
+
     const BroadcastSvc = (await import("../services/SignalBroadcastService")).SignalBroadcastService;
     const readiness = await BroadcastSvc.getBroadcastReadinessReport(targetStrategy);
     const blockedDetails = (readiness.details || []).filter((d: any) => d.ready === false);
+    const hasStaticIpRisk = blockedDetails.some((d: any) => {
+      const text = String(d?.reason || d?.lastBrokerMessage || "").toLowerCase();
+      return (
+        text.includes("unregistered ip") ||
+        text.includes("register your ip") ||
+        text.includes("static ip")
+      );
+    });
+
+    if (!forceClientDispatch && autoClientOnIpRisk && hasStaticIpRisk) {
+      forceClientDispatch = true;
+    }
 
     if (preflightOnly) {
       return res.json({
         ok: true,
+        status: true,
         preflightOnly: true,
         message: "Broadcast preflight report generated.",
+        preflight: {
+          strategy: readiness.strategy,
+          totalUsers: readiness.totalUsers,
+          readyUsers: readiness.readyUsers,
+          blockedUsers: readiness.blockedUsers,
+          blockedDetails,
+        },
+      });
+    }
+
+    const { SignalService } = await import("../services/SignalService");
+
+    if (forceClientDispatch) {
+      const signal = await SignalService.createSignal({
+        symbol: orderPayload.tradingsymbol,
+        exchange: orderPayload.exchange,
+        side: orderPayload.side as any,
+        tradingsymbol: orderPayload.tradingsymbol,
+        price: Number(orderPayload.price) || 0,
+        quantity: orderPayload.quantity,
+        strategy: targetStrategy,
+        signalType: req.body.signalType || "ENTRY",
+        executionMode: "CLIENT",
+      });
+
+      return res.json({
+        ok: true,
+        status: true,
+        dispatchMode: "CLIENT_ONLY",
+        message: "Signal dispatched for user-side execution.",
+        signalId: signal?._id,
         preflight: {
           strategy: readiness.strategy,
           totalUsers: readiness.totalUsers,
@@ -185,6 +248,46 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       const blockedReason =
         String(firstBlocked?.reason || "").trim() ||
         "No broker-ready users for this strategy. Broadcast skipped.";
+
+      if (allowClientFallbackOnBlocked) {
+        const signal = await SignalService.createSignal({
+          symbol: orderPayload.tradingsymbol,
+          exchange: orderPayload.exchange,
+          side: orderPayload.side as any,
+          tradingsymbol: orderPayload.tradingsymbol,
+          price: Number(orderPayload.price) || 0,
+          quantity: orderPayload.quantity,
+          strategy: targetStrategy,
+          signalType: req.body.signalType || "ENTRY",
+          executionMode: "CLIENT",
+        });
+
+        return res.status(200).json({
+          ok: true,
+          status: true,
+          dispatchMode: "CLIENT_FALLBACK",
+          warning: blockedReason,
+          message: "Server-side broker route blocked. Signal dispatched for user-side execution.",
+          signalId: signal?._id,
+          preflight: {
+            strategy: readiness.strategy,
+            totalUsers: readiness.totalUsers,
+            readyUsers: readiness.readyUsers,
+            blockedUsers: readiness.blockedUsers,
+            blockedDetails,
+            firstBlockedUser: firstBlocked
+              ? {
+                  userId: firstBlocked.userId || null,
+                  userName: firstBlocked.userName || firstBlocked.email || null,
+                  routeType: firstBlocked.routeType || null,
+                  usedIp: firstBlocked.usedIp || null,
+                  lastBrokerMessage: firstBlocked.lastBrokerMessage || null,
+                  lastBrokerUsedIp: firstBlocked.lastBrokerUsedIp || null,
+                }
+              : null,
+          },
+        });
+      }
 
       return res.status(200).json({
         ok: false,
@@ -212,9 +315,6 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       });
     }
 
-    // 🚀 [COMPLIANCE FIX] Generate ONE broadcast signal via SignalService
-    // All connected users will receive this TRADE_SIGNAL via WebSocket and execute it locally.
-    const { SignalService } = await import("../services/SignalService");
     const signal = await SignalService.createSignal({
       symbol: orderPayload.tradingsymbol,
       exchange: orderPayload.exchange,
@@ -224,14 +324,15 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       quantity: orderPayload.quantity,
       strategy: targetStrategy,
       signalType: req.body.signalType || "ENTRY",
-      executionMode: "SERVER" // 🔥 Inform frontend to skip local execution
+      executionMode: "SERVER"
     });
 
-    // 🚀 NEW: Trigger Server-Side Execution Engine (Queue + Outbox)
     const broadcastResult = await BroadcastSvc.broadcast(signal?._id.toString());
 
     return res.json({
       ok: true,
+      status: true,
+      dispatchMode: "SERVER_BROADCAST",
       message: `Broadcast initiated for ${broadcastResult.totalUsers} users.`,
       signalId: signal?._id,
       preflight: {
@@ -248,8 +349,6 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     return res.status(500).json({ error: err.message || err });
   }
 });
-
-// 🔥 [COMPLIANCE] Disabled: User must execute from their own device via the frontend engine
 router.post("/place-user", auth, async (_req, res) => {
   log.warn("[LEGACY_ROUTE_CALLED] /api/orders/place-user called. Resource is Gone.");
   return res.status(410).json({
@@ -621,4 +720,5 @@ router.post("/update-auto-exit", auth, adminOnly, async (req, res) => {
 });
 
 export default router;
+
 
