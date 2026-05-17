@@ -27,13 +27,20 @@ export function resolveRouteBinding(input: {
   const sharedIp =
     normalizeIpv4(config.publicIp) ||
     normalizeIpv4(process.env.ANGEL_CLIENT_PUBLIC_IP);
-  const dedicatedRoutingEnabled =
-    Boolean(input.dedicatedIpEnabled) || Boolean(routeIpFromProfile || routeAgentUrl);
+  const dedicatedRoutingEnabled = Boolean(input.dedicatedIpEnabled === true);
 
   if (config.forceSharedVpsRoute && !dedicatedRoutingEnabled) {
     return {
       routeIp: sharedIp || "",
       routeType: "SERVER_SHARED_IP" as RouteType,
+      agentUrl: "",
+    };
+  }
+
+  if (!dedicatedRoutingEnabled) {
+    return {
+      routeIp: sharedIp || "",
+      routeType: sharedIp ? ("SERVER_SHARED_IP" as RouteType) : ("UNKNOWN" as RouteType),
       agentUrl: "",
     };
   }

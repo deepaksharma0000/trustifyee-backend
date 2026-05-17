@@ -16,6 +16,15 @@ const toSafeMessage = (error: unknown) => {
   return JSON.stringify(error);
 };
 
+const isNoRetryRejection = (message: string) => {
+  const m = String(message || "").toLowerCase();
+  return (
+    m.includes("api key mismatch against app found with static ip in request") ||
+    m.includes("api_key_route_not_verified") ||
+    m.includes("api_key_route_mismatch")
+  );
+};
+
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 
 const normalizeIpv4 = (value?: string): string => {
@@ -28,13 +37,22 @@ const resolveNetworkMeta = (outgoingIp?: string, agentUrl?: string, dedicatedIpE
   const normalizedOutgoingIp = normalizeIpv4(outgoingIp);
   const normalizedPublicIp = normalizeIpv4(config.publicIp);
   const normalizedAgentUrl = String(agentUrl || "").trim();
-  const dedicatedRoutingEnabled = dedicatedIpEnabled || Boolean(normalizedOutgoingIp || normalizedAgentUrl);
+  const dedicatedRoutingEnabled = dedicatedIpEnabled === true;
 
   if (config.forceSharedVpsRoute && !dedicatedRoutingEnabled) {
     return {
       usedIp: normalizedPublicIp || null,
       usedIpLabel: normalizedPublicIp || "UNKNOWN",
       routeType: "SERVER_SHARED_IP",
+      agentUrl: null,
+    };
+  }
+
+  if (!dedicatedRoutingEnabled) {
+    return {
+      usedIp: normalizedPublicIp || null,
+      usedIpLabel: normalizedPublicIp || "UNKNOWN",
+      routeType: normalizedPublicIp ? "SERVER_SHARED_IP" : "UNKNOWN",
       agentUrl: null,
     };
   }
@@ -162,17 +180,28 @@ export const initTradeExecutionWorker = () => {
           throw new Error(`User ${userId} not found`);
         }
 
-        const outgoingIp =
+        const requestedOutgoingIp =
           jobOutgoingIp && String(jobOutgoingIp).trim() !== ""
             ? String(jobOutgoingIp).trim()
             : userDoc.outgoing_ip || undefined;
 
-        const agentUrl =
+        const requestedAgentUrl =
           jobAgentUrl && String(jobAgentUrl).trim() !== ""
             ? String(jobAgentUrl).trim()
             : (userDoc as any).agent_url || undefined;
         const dedicatedIpEnabled =
           Boolean(jobDedicatedIpEnabled) || Boolean((userDoc as any)?.dedicated_ip_enabled === true);
+
+        if (!dedicatedIpEnabled && (requestedOutgoingIp || requestedAgentUrl)) {
+          logger.warn("[ORDER_ROUTE_HINT_IGNORED]", {
+            reason: "dedicated_ip_enabled=false",
+            hasOutgoingIp: Boolean(requestedOutgoingIp),
+            hasAgentUrl: Boolean(requestedAgentUrl),
+          });
+        }
+
+        const outgoingIp = dedicatedIpEnabled ? requestedOutgoingIp : undefined;
+        const agentUrl = dedicatedIpEnabled ? requestedAgentUrl : undefined;
 
         networkMeta = resolveNetworkMeta(outgoingIp, agentUrl, dedicatedIpEnabled);
         logger.info("[ORDER_ROUTE_RESOLVED]", {
@@ -277,10 +306,29 @@ export const initTradeExecutionWorker = () => {
                 usedIp: networkMeta.usedIpLabel,
                 networkRoute: networkMeta.routeType,
                 agentUrl: networkMeta.agentUrl,
-              },
+            },
         });
 
         if (!isRealSuccess) {
+          if (isNoRetryRejection(rejectedMessage)) {
+            logger.warn("[ORDER_NO_RETRY] Permanent rejection detected. Skipping queue retries.", {
+              reason: rejectedMessage,
+            });
+            await SignalExecutionResult.updateOne(
+              { clientOrderId },
+              {
+                $set: {
+                  status: "FAILED",
+                  errorMessage: rejectedMessage,
+                  executedAt: new Date(),
+                  correlationId,
+                  ipAddress: networkMeta.usedIpLabel,
+                },
+              }
+            ).catch(() => undefined);
+            await CircuitBreakerService.recordFailure(broker, "ORDER").catch(() => undefined);
+            return;
+          }
           throw new Error(rejectedMessage);
         }
 

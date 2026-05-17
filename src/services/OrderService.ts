@@ -47,12 +47,12 @@ function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
   const fromProfileAgent = typeof user?.agent_url === "string" ? String(user.agent_url).trim() : "";
   const dedicatedFromProfile = Boolean(user?.dedicated_ip_enabled === true);
   const dedicatedFromPayload = Boolean((orderInput as any)?.dedicatedIpEnabled === true);
-  const dedicatedImplicit = Boolean(fromPayloadIp || fromProfileIp || fromPayloadAgent || fromProfileAgent);
-  const dedicatedRoutingEnabled = dedicatedFromPayload || dedicatedFromProfile || dedicatedImplicit;
+  const dedicatedRoutingEnabled = dedicatedFromPayload || dedicatedFromProfile;
+  const hasRouteHints = Boolean(fromPayloadIp || fromProfileIp || fromPayloadAgent || fromProfileAgent);
 
   if (config.forceSharedVpsRoute && !dedicatedRoutingEnabled) {
-    if (fromPayloadIp || fromProfileIp || fromPayloadAgent || fromProfileAgent) {
-      log.debug("[ORDER_NETWORK] FORCE_SHARED_VPS_ROUTE active. Ignoring user-level outgoing_ip/agent_url.");
+    if (hasRouteHints) {
+      log.warn("[ORDER_NETWORK] Route hints present but dedicated_ip_enabled=false. Ignoring user-level outgoing_ip/agent_url and forcing shared server route.");
     }
     return {
       outgoingIp: "",
@@ -62,8 +62,12 @@ function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
     };
   }
 
-  const outgoingIp = fromPayloadIp || fromProfileIp || "";
-  const agentUrl = fromPayloadAgent || fromProfileAgent || "";
+  if (!dedicatedRoutingEnabled && hasRouteHints) {
+    log.warn("[ORDER_NETWORK] Route hints ignored because dedicated_ip_enabled=false.");
+  }
+
+  const outgoingIp = dedicatedRoutingEnabled ? (fromPayloadIp || fromProfileIp || "") : "";
+  const agentUrl = dedicatedRoutingEnabled ? (fromPayloadAgent || fromProfileAgent || "") : "";
 
   if (config.forceSharedVpsRoute && dedicatedRoutingEnabled) {
     log.info("[ORDER_NETWORK] Dedicated user routing override active in shared VPS mode.", {

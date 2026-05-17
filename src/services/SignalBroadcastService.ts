@@ -22,8 +22,7 @@ function resolveUserNetworkMeta(user: any) {
   const profileIp = normalizeIpv4(user?.outgoing_ip);
   const publicIp = normalizeIpv4(config.publicIp);
   const agentUrl = String(user?.agent_url || "").trim();
-  const dedicatedIpEnabled =
-    Boolean(user?.dedicated_ip_enabled === true) || Boolean(profileIp || agentUrl);
+  const dedicatedIpEnabled = Boolean(user?.dedicated_ip_enabled === true);
 
   if (config.forceSharedVpsRoute && !dedicatedIpEnabled) {
     return {
@@ -334,9 +333,9 @@ export class SignalBroadcastService {
               signalId: String(signalId),
               clientOrderId,
               clientCode: rawClientCode,
-              outgoingIp: user.outgoing_ip || undefined,
-              agentUrl: user.agent_url || undefined,
-              dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled),
+              outgoingIp: Boolean(user.dedicated_ip_enabled) ? (user.outgoing_ip || undefined) : undefined,
+              agentUrl: Boolean(user.dedicated_ip_enabled) ? (user.agent_url || undefined) : undefined,
+              dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true),
               orderData: {
                 exchange: signal.exchange || "NFO",
                 tradingsymbol: signal.tradingsymbol,
