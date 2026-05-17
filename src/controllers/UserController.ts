@@ -27,6 +27,8 @@ const updateUserSchema = Joi.object({
     is_login: Joi.boolean().optional(),
     is_star: Joi.boolean().optional(),
     outgoing_ip: Joi.string().allow('', null).optional(),
+    agent_url: Joi.string().uri().allow('', null).optional(),
+    dedicated_ip_enabled: Joi.boolean().optional(),
 }).unknown(true);
 
 export const updateUser = async (req: any, res: Response) => {

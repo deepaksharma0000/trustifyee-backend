@@ -18,11 +18,14 @@ function normalizeIpv4(value?: string) {
 }
 
 function resolveUserNetworkMeta(user: any) {
+  const localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
   const profileIp = normalizeIpv4(user?.outgoing_ip);
   const publicIp = normalizeIpv4(config.publicIp);
   const agentUrl = String(user?.agent_url || "").trim();
+  const dedicatedIpEnabled =
+    Boolean(user?.dedicated_ip_enabled === true) || Boolean(profileIp || agentUrl);
 
-  if (config.forceSharedVpsRoute) {
+  if (config.forceSharedVpsRoute && !dedicatedIpEnabled) {
     return {
       usedIp: publicIp || null,
       usedIpLabel: publicIp || "UNKNOWN",
@@ -35,6 +38,14 @@ function resolveUserNetworkMeta(user: any) {
       usedIp: profileIp || null,
       usedIpLabel: profileIp || "AGENT_ROUTE",
       networkRoute: "AGENT_ROUTE",
+    };
+  }
+
+  if (profileIp && !localBindingEnabled) {
+    return {
+      usedIp: publicIp || null,
+      usedIpLabel: publicIp || "UNKNOWN",
+      networkRoute: "SERVER_SHARED_IP",
     };
   }
 
@@ -146,7 +157,7 @@ export class SignalBroadcastService {
       broker_connected: true,
       ...strategyQuery,
     })
-      .select("user_name email client_key licence end_date broker outgoing_ip agent_url")
+      .select("user_name email client_key licence end_date broker outgoing_ip agent_url dedicated_ip_enabled")
       .lean();
 
     if (session) usersQuery.session(session);
@@ -325,6 +336,7 @@ export class SignalBroadcastService {
               clientCode: rawClientCode,
               outgoingIp: user.outgoing_ip || undefined,
               agentUrl: user.agent_url || undefined,
+              dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled),
               orderData: {
                 exchange: signal.exchange || "NFO",
                 tradingsymbol: signal.tradingsymbol,

@@ -13,6 +13,7 @@ export type TradeJob = {
   correlationId: string;
   outgoingIp?: string;
   agentUrl?: string;
+  dedicatedIpEnabled?: boolean;
   orderData: {
     exchange: string;
     tradingsymbol: string;

@@ -31,6 +31,7 @@ export type PlaceOrderInput = {
   triggerPrice?: number;
   outgoingIp?: string; // [NEW] Override for isolated nodes
   agentUrl?: string; // [NEW] VPS Agent URL
+  dedicatedIpEnabled?: boolean; // [NEW] Allow per-user dedicated routing even in shared VPS mode
   // For dynamic sizing
 
   isDynamicQty?: boolean;
@@ -38,12 +39,17 @@ export type PlaceOrderInput = {
 };
 
 function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
+  const localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
   const fromPayloadIp = typeof orderInput.outgoingIp === "string" ? orderInput.outgoingIp.trim() : "";
   const fromProfileIp = typeof user?.outgoing_ip === "string" ? String(user.outgoing_ip).trim() : "";
   const fromPayloadAgent = typeof orderInput.agentUrl === "string" ? orderInput.agentUrl.trim() : "";
   const fromProfileAgent = typeof user?.agent_url === "string" ? String(user.agent_url).trim() : "";
+  const dedicatedFromProfile = Boolean(user?.dedicated_ip_enabled === true);
+  const dedicatedFromPayload = Boolean((orderInput as any)?.dedicatedIpEnabled === true);
+  const dedicatedImplicit = Boolean(fromPayloadIp || fromProfileIp || fromPayloadAgent || fromProfileAgent);
+  const dedicatedRoutingEnabled = dedicatedFromPayload || dedicatedFromProfile || dedicatedImplicit;
 
-  if (config.forceSharedVpsRoute) {
+  if (config.forceSharedVpsRoute && !dedicatedRoutingEnabled) {
     if (fromPayloadIp || fromProfileIp || fromPayloadAgent || fromProfileAgent) {
       log.debug("[ORDER_NETWORK] FORCE_SHARED_VPS_ROUTE active. Ignoring user-level outgoing_ip/agent_url.");
     }
@@ -51,11 +57,34 @@ function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
       outgoingIp: "",
       agentUrl: "",
       usingServerNetworkFallback: true,
+      dedicatedRoutingEnabled: false,
     };
   }
 
   const outgoingIp = fromPayloadIp || fromProfileIp || "";
   const agentUrl = fromPayloadAgent || fromProfileAgent || "";
+
+  if (config.forceSharedVpsRoute && dedicatedRoutingEnabled) {
+    log.info("[ORDER_NETWORK] Dedicated user routing override active in shared VPS mode.", {
+      clientcodeHint: clientcodeMask(user?.client_key || ""),
+      hasOutgoingIp: Boolean(outgoingIp),
+      hasAgentUrl: Boolean(agentUrl),
+    });
+  }
+
+  // Outgoing IP can only be enforced when local binding is enabled or when user has a dedicated agent.
+  if (!agentUrl && outgoingIp && !localBindingEnabled) {
+    log.warn("[ORDER_NETWORK] outgoing_ip is configured but ANGEL_ENABLE_LOCAL_BINDING is false. Falling back to shared server route.", {
+      hasOutgoingIp: true,
+      clientcodeHint: clientcodeMask(user?.client_key || ""),
+    });
+    return {
+      outgoingIp: "",
+      agentUrl: "",
+      usingServerNetworkFallback: true,
+      dedicatedRoutingEnabled: false,
+    };
+  }
 
   if (!outgoingIp && !agentUrl) {
     // Centralized server execution can still continue if app static IP is whitelisted at API-key level.
@@ -63,6 +92,7 @@ function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
       outgoingIp: "",
       agentUrl: "",
       usingServerNetworkFallback: true,
+      dedicatedRoutingEnabled,
     };
   }
 
@@ -70,7 +100,19 @@ function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
     outgoingIp,
     agentUrl,
     usingServerNetworkFallback: false,
+    dedicatedRoutingEnabled,
   };
+}
+
+function clientcodeMask(encryptedClientCode: string) {
+  try {
+    const raw = decrypt(encryptedClientCode);
+    if (!raw) return "UNKNOWN";
+    if (raw.length <= 4) return raw;
+    return `${raw.slice(0, 2)}***${raw.slice(-2)}`;
+  } catch {
+    return "UNKNOWN";
+  }
 }
 
 async function resolveOrderSymbolToken(orderInput: PlaceOrderInput): Promise<string> {

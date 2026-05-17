@@ -31,6 +31,7 @@ export interface IUser extends Document {
     broker_password?: string; // [NEW] Added for automated session re-sync
     outgoing_ip?: string; // Binding IP for requests
     agent_url?: string; // [NEW] VPS Agent URL for isolated routing
+    dedicated_ip_enabled?: boolean; // Explicit opt-in for per-user static IP/agent routing
     strategy_id_map?: Map<string, string>; // { 'Alpha': 'STRAT_001', 'IronCondor': 'STRAT_002' }
 
     created_at: Date;

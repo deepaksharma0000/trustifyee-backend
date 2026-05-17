@@ -23,12 +23,14 @@ const normalizeIpv4 = (value?: string): string => {
   return IPV4_REGEX.test(trimmed) ? trimmed : "";
 };
 
-const resolveNetworkMeta = (outgoingIp?: string, agentUrl?: string) => {
+const resolveNetworkMeta = (outgoingIp?: string, agentUrl?: string, dedicatedIpEnabled = false) => {
+  const localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
   const normalizedOutgoingIp = normalizeIpv4(outgoingIp);
   const normalizedPublicIp = normalizeIpv4(config.publicIp);
   const normalizedAgentUrl = String(agentUrl || "").trim();
+  const dedicatedRoutingEnabled = dedicatedIpEnabled || Boolean(normalizedOutgoingIp || normalizedAgentUrl);
 
-  if (config.forceSharedVpsRoute) {
+  if (config.forceSharedVpsRoute && !dedicatedRoutingEnabled) {
     return {
       usedIp: normalizedPublicIp || null,
       usedIpLabel: normalizedPublicIp || "UNKNOWN",
@@ -43,6 +45,15 @@ const resolveNetworkMeta = (outgoingIp?: string, agentUrl?: string) => {
       usedIpLabel: normalizedOutgoingIp || "AGENT_ROUTE",
       routeType: "AGENT_ROUTE",
       agentUrl: normalizedAgentUrl,
+    };
+  }
+
+  if (normalizedOutgoingIp && !localBindingEnabled) {
+    return {
+      usedIp: normalizedPublicIp || null,
+      usedIpLabel: normalizedPublicIp || "UNKNOWN",
+      routeType: "SERVER_SHARED_IP",
+      agentUrl: null,
     };
   }
 
@@ -101,6 +112,7 @@ export const initTradeExecutionWorker = () => {
         correlationId,
         outgoingIp: jobOutgoingIp,
         agentUrl: jobAgentUrl,
+        dedicatedIpEnabled: jobDedicatedIpEnabled,
       } = job.data;
 
       const logger = log.child({
@@ -116,6 +128,12 @@ export const initTradeExecutionWorker = () => {
       });
 
       const broker = (orderData?.broker || "ANGELONE").toString().toUpperCase();
+
+      let networkMeta = resolveNetworkMeta(
+        jobOutgoingIp,
+        jobAgentUrl,
+        Boolean(jobDedicatedIpEnabled)
+      );
 
       try {
         await SignalExecutionResult.updateOne(
@@ -137,7 +155,7 @@ export const initTradeExecutionWorker = () => {
         );
 
         const userDoc = await User.findById(userId)
-          .select("+outgoing_ip +agent_url +broker_password +broker_totp_secret")
+          .select("+outgoing_ip +agent_url +broker_password +broker_totp_secret dedicated_ip_enabled")
           .lean();
 
         if (!userDoc) {
@@ -153,7 +171,10 @@ export const initTradeExecutionWorker = () => {
           jobAgentUrl && String(jobAgentUrl).trim() !== ""
             ? String(jobAgentUrl).trim()
             : (userDoc as any).agent_url || undefined;
-        const networkMeta = resolveNetworkMeta(outgoingIp, agentUrl);
+        const dedicatedIpEnabled =
+          Boolean(jobDedicatedIpEnabled) || Boolean((userDoc as any)?.dedicated_ip_enabled === true);
+
+        networkMeta = resolveNetworkMeta(outgoingIp, agentUrl, dedicatedIpEnabled);
 
         await SignalExecutionResult.updateOne(
           { clientOrderId },
@@ -211,6 +232,7 @@ export const initTradeExecutionWorker = () => {
           clientOrderId,
           outgoingIp,
           agentUrl,
+          dedicatedIpEnabled,
         });
 
         const orderId = resp?.data?.orderid || resp?.data?.data?.orderid;
@@ -271,7 +293,6 @@ export const initTradeExecutionWorker = () => {
         logger.info("Trade execution successful", { orderId });
       } catch (error: any) {
         const message = toSafeMessage(error);
-        const failureNetworkMeta = resolveNetworkMeta(jobOutgoingIp, jobAgentUrl);
 
         logger.error("Trade execution failed", {
           error: message,
@@ -287,7 +308,7 @@ export const initTradeExecutionWorker = () => {
               errorMessage: message,
               executedAt: new Date(),
               correlationId,
-              ipAddress: failureNetworkMeta.usedIpLabel,
+              ipAddress: networkMeta.usedIpLabel,
             },
           }
         ).catch((updateErr) => {
@@ -304,14 +325,14 @@ export const initTradeExecutionWorker = () => {
             action: "PLACE_ORDER",
             status: "REJECTED",
             message,
-            usedIp: failureNetworkMeta.usedIp,
-            networkRoute: failureNetworkMeta.routeType,
+            usedIp: networkMeta.usedIp,
+            networkRoute: networkMeta.routeType,
             brokerError: {
               error: message,
               stack: error?.stack,
-              usedIp: failureNetworkMeta.usedIpLabel,
-              networkRoute: failureNetworkMeta.routeType,
-              agentUrl: failureNetworkMeta.agentUrl,
+              usedIp: networkMeta.usedIpLabel,
+              networkRoute: networkMeta.routeType,
+              agentUrl: networkMeta.agentUrl,
             },
           });
         } catch (brokerLogErr) {
