@@ -20,6 +20,8 @@ const isNoRetryRejection = (message: string) => {
   const m = String(message || "").toLowerCase();
   return (
     m.includes("api key mismatch against app found with static ip in request") ||
+    m.includes("unregistered ip") ||
+    m.includes("register your ip before retrying") ||
     m.includes("api_key_route_not_verified") ||
     m.includes("api_key_route_mismatch")
   );

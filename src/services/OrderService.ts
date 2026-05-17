@@ -707,7 +707,7 @@ export async function placeOrderForClient(
 
       // 🔄 [AUTO-REFRESH TOKEN LOGIC]
       const isInvalidToken = err.message.toLowerCase().includes("invalid token") || err.message.includes("AG8001");
-      const isApiKeyIpMismatch = /api key mismatch against app found with static ip in request/i.test(
+      const isApiKeyIpMismatch = /(api key mismatch against app found with static ip in request|unregistered ip|register your ip before retrying)/i.test(
         String(err.message || "")
       );
       const isApiKeyRoutePrecheck = /^API_KEY_ROUTE_(NOT_VERIFIED|MISMATCH)/i.test(
