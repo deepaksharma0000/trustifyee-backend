@@ -28,6 +28,7 @@ export class AngelOneAdapter {
   private isDataAccount: boolean;
 
   private forcedBaseUrl = "https://apiconnect.angelone.in";
+  private static IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 
   constructor(apiKey?: string, outgoingIp?: string, isDataAccount: boolean = false, agentUrl?: string) {
     this.apiKey = apiKey || "";
@@ -58,9 +59,27 @@ export class AngelOneAdapter {
     if (config.refreshPath) this.refreshTokenPath = config.refreshPath;
   }
 
+  private normalizeIpv4(value?: string) {
+    const ip = String(value || "").trim();
+    return AngelOneAdapter.IPV4_REGEX.test(ip) ? ip : "";
+  }
+
+  private resolveHeaderIdentity() {
+    const identity = getAngelNetworkIdentity();
+    const configuredIp = this.normalizeIpv4(this.outgoingIp);
+    const publicIp = configuredIp || identity.publicIp;
+    const localIp = configuredIp || identity.localIp || publicIp;
+
+    return {
+      ...identity,
+      publicIp,
+      localIp,
+    };
+  }
+
   private baseHeaders(jwtToken?: string) {
     const { safeDecrypt } = require("../utils/encryption");
-    const identity = getAngelNetworkIdentity();
+    const identity = this.resolveHeaderIdentity();
 
     const decApiKey = safeDecrypt(this.apiKey, "angel_adapter_headers");
     if (!decApiKey) throw new Error("Invalid decryption key. Access Denied.");
@@ -259,12 +278,18 @@ export class AngelOneAdapter {
     if (hasAgent && this.agentUrl) {
       const { safeDecrypt } = require("../utils/encryption");
       const decApiKey = safeDecrypt(this.apiKey, "agent_routing");
+      const headerIdentity = this.resolveHeaderIdentity();
 
       const agentPayload = {
         secret: config.agentSecret,
         jwtToken: decrypt(jwtToken, "agent_routing_jwt"),
         apiKey: decApiKey,
         orderPayload: payload,
+        clientPublicIp: headerIdentity.publicIp,
+        clientLocalIp: headerIdentity.localIp,
+        clientMacAddress: headerIdentity.macAddress,
+        sourceId: headerIdentity.sourceId,
+        userType: headerIdentity.userType,
       };
 
       try {

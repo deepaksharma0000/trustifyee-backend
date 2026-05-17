@@ -175,6 +175,12 @@ export const initTradeExecutionWorker = () => {
           Boolean(jobDedicatedIpEnabled) || Boolean((userDoc as any)?.dedicated_ip_enabled === true);
 
         networkMeta = resolveNetworkMeta(outgoingIp, agentUrl, dedicatedIpEnabled);
+        logger.info("[ORDER_ROUTE_RESOLVED]", {
+          routeType: networkMeta.routeType,
+          usedIp: networkMeta.usedIpLabel,
+          hasAgent: Boolean(agentUrl),
+          dedicatedIpEnabled,
+        });
 
         await SignalExecutionResult.updateOne(
           { clientOrderId },

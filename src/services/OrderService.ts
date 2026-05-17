@@ -115,6 +115,13 @@ function clientcodeMask(encryptedClientCode: string) {
   }
 }
 
+function keyFingerprint(key?: string) {
+  const raw = String(key || "").trim();
+  if (!raw) return "EMPTY";
+  if (raw.length <= 4) return `${raw}(${raw.length})`;
+  return `${raw.slice(0, 2)}***${raw.slice(-2)}(${raw.length})`;
+}
+
 async function resolveOrderSymbolToken(orderInput: PlaceOrderInput): Promise<string> {
   const exchange = String(orderInput.exchange || "NFO").toUpperCase().trim();
   const tradingsymbol = String(orderInput.tradingsymbol || "").toUpperCase().trim();
@@ -351,9 +358,58 @@ export async function placeOrderForClient(
 
       // 🚀 [PRE-EXECUTION GUARD] - Fall fast if state is invalid
       const decJwtToken = await ensureEncrypted(angelTokens, 'jwtToken', `user_${userId}_order`);
-      const userApiKey = await ensureEncrypted(angelTokens, 'apiKey', `user_${userId}_order_placement`);
+      const tokenApiKey = await ensureEncrypted(angelTokens, 'apiKey', `user_${userId}_order_placement`);
+      const profileApiKey =
+        (user as any)?.api_key
+          ? await ensureEncrypted(user as any, "api_key", `user_${userId}_profile_order_placement`)
+          : "";
+
+      let resolvedApiKey = tokenApiKey || profileApiKey;
+
+      if (profileApiKey && tokenApiKey && profileApiKey !== tokenApiKey) {
+          log.warn("[ORDER_API_KEY_MISMATCH] Profile api_key differs from AngelTokens.apiKey. Using profile key and syncing token store.", {
+            clientcode,
+            tokenApiKey: keyFingerprint(tokenApiKey),
+            profileApiKey: keyFingerprint(profileApiKey),
+          });
+          resolvedApiKey = profileApiKey;
+
+          try {
+            const profileEncryptedKey = String((user as any)?.api_key || "").trim();
+            const tokenEncryptedKey = String((angelTokens as any)?.apiKey || "").trim();
+            if (profileEncryptedKey && profileEncryptedKey !== tokenEncryptedKey) {
+              await AngelTokensModel.updateOne(
+                { _id: (angelTokens as any)._id },
+                { $set: { apiKey: profileEncryptedKey } }
+              );
+              (angelTokens as any).apiKey = profileEncryptedKey;
+            }
+          } catch (syncErr: any) {
+            log.warn("[ORDER_API_KEY_SYNC_WARN] Failed syncing profile api_key to AngelTokens.", {
+              clientcode,
+              message: syncErr?.message,
+            });
+          }
+      } else if (!tokenApiKey && profileApiKey) {
+          resolvedApiKey = profileApiKey;
+          try {
+            const profileEncryptedKey = String((user as any)?.api_key || "").trim();
+            if (profileEncryptedKey) {
+              await AngelTokensModel.updateOne(
+                { _id: (angelTokens as any)._id },
+                { $set: { apiKey: profileEncryptedKey } }
+              );
+              (angelTokens as any).apiKey = profileEncryptedKey;
+            }
+          } catch (syncErr: any) {
+            log.warn("[ORDER_API_KEY_SYNC_WARN] Failed writing missing token apiKey from profile.", {
+              clientcode,
+              message: syncErr?.message,
+            });
+          }
+      }
       
-      if (!userApiKey || userApiKey.length < 5) {
+      if (!resolvedApiKey || resolvedApiKey.length < 5) {
           log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid API Key for ${clientcode}`);
           throw new Error("Invalid or missing API key. Please update your broker settings.");
       }
@@ -363,7 +419,7 @@ export async function placeOrderForClient(
       }
 
       // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
-      const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, {
+      const dynamicAdapter = getOrCreateAngelAdapter(resolvedApiKey, {
         outgoingIp: currentIp,
         agentUrl: currentAgentUrl,
       });
@@ -430,6 +486,9 @@ export async function placeOrderForClient(
 
       // 🔄 [AUTO-REFRESH TOKEN LOGIC]
       const isInvalidToken = err.message.toLowerCase().includes("invalid token") || err.message.includes("AG8001");
+      const isApiKeyIpMismatch = /api key mismatch against app found with static ip in request/i.test(
+        String(err.message || "")
+      );
       
       if (isInvalidToken && retryCount < 1) {
           log.info(`[OrderService] Token expired for ${clientcode}. Attempting auto-refresh...`);
@@ -438,6 +497,11 @@ export async function placeOrderForClient(
               log.info(`[OrderService] Token refreshed successfully for ${clientcode}. Retrying order...`);
               return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
           }
+      }
+
+      if (isApiKeyIpMismatch) {
+          log.error(`[ORDER_NO_RETRY] API key/static IP mismatch for ${clientcode}. Blocking retries until key/IP mapping is fixed.`);
+          return { status: false, message: err.message };
       }
 
       // Generic Retry Logic (Only for Angel One)
