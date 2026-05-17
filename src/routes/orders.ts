@@ -157,6 +157,43 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     }
 
     const targetStrategy = req.body.strategy || "Manual";
+    const preflightOnly =
+      req.body?.preflightOnly === true ||
+      String(req.query?.preflightOnly || "").toLowerCase() === "true";
+
+    const BroadcastSvc = (await import("../services/SignalBroadcastService")).SignalBroadcastService;
+    const readiness = await BroadcastSvc.getBroadcastReadinessReport(targetStrategy);
+    const blockedDetails = (readiness.details || []).filter((d: any) => d.ready === false);
+
+    if (preflightOnly) {
+      return res.json({
+        ok: true,
+        preflightOnly: true,
+        message: "Broadcast preflight report generated.",
+        preflight: {
+          strategy: readiness.strategy,
+          totalUsers: readiness.totalUsers,
+          readyUsers: readiness.readyUsers,
+          blockedUsers: readiness.blockedUsers,
+          blockedDetails,
+        },
+      });
+    }
+
+    if (readiness.readyUsers === 0) {
+      return res.status(200).json({
+        ok: false,
+        code: "NO_BROKER_READY_USERS",
+        message: "No broker-ready users for this strategy. Broadcast skipped.",
+        preflight: {
+          strategy: readiness.strategy,
+          totalUsers: readiness.totalUsers,
+          readyUsers: readiness.readyUsers,
+          blockedUsers: readiness.blockedUsers,
+          blockedDetails,
+        },
+      });
+    }
 
     // 🚀 [COMPLIANCE FIX] Generate ONE broadcast signal via SignalService
     // All connected users will receive this TRADE_SIGNAL via WebSocket and execute it locally.
@@ -174,13 +211,19 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     });
 
     // 🚀 NEW: Trigger Server-Side Execution Engine (Queue + Outbox)
-    const { SignalBroadcastService } = await import("../services/SignalBroadcastService");
-    const broadcastResult = await SignalBroadcastService.broadcast(signal?._id.toString());
+    const broadcastResult = await BroadcastSvc.broadcast(signal?._id.toString());
 
-    return res.json({ 
-      ok: true, 
-      message: `Broadcast initiated for ${broadcastResult.totalUsers} users.`, 
+    return res.json({
+      ok: true,
+      message: `Broadcast initiated for ${broadcastResult.totalUsers} users.`,
       signalId: signal?._id,
+      preflight: {
+        strategy: readiness.strategy,
+        totalUsers: readiness.totalUsers,
+        readyUsers: readiness.readyUsers,
+        blockedUsers: readiness.blockedUsers,
+        blockedDetails,
+      },
       ...broadcastResult
     });
   } catch (err: any) {
