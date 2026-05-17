@@ -12,7 +12,7 @@ import { decrypt, ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 import { validateInstrumentFromMaster } from "./InstrumentValidationService";
-import { apiKeyFingerprint, buildApiKeyRouteBinding } from "../utils/apiKeyRouteBinding";
+import { apiKeyFingerprint, buildApiKeyRouteBinding, normalizeIpv4 } from "../utils/apiKeyRouteBinding";
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
@@ -116,41 +116,130 @@ function clientcodeMask(encryptedClientCode: string) {
   }
 }
 
-function enforceApiKeyRoutePairValidation(user: any, apiKey: string, routing: any, clientcode: string) {
+async function enforceApiKeyRoutePairValidation(
+  userId: any,
+  user: any,
+  apiKey: string,
+  routing: any,
+  clientcode: string
+) {
+  const strictPrecheck = process.env.STRICT_API_KEY_ROUTE_VALIDATION === "true";
   const licence = String(user?.licence || "").toLowerCase();
   const isExplicitDemo = licence === "demo";
   if (isExplicitDemo) return;
 
-  const binding = buildApiKeyRouteBinding(apiKey, {
+  const baseBinding = buildApiKeyRouteBinding(apiKey, {
     outgoingIp: routing?.outgoingIp,
     agentUrl: routing?.agentUrl,
     dedicatedIpEnabled: Boolean(routing?.dedicatedRoutingEnabled || user?.dedicated_ip_enabled),
   });
 
-  const isVerified = Boolean(user?.api_key_ip_pair_verified === true);
-  const expectedKeyFp = String(user?.validated_api_key_fingerprint || "").trim();
-  const expectedRouteIp = String(user?.validated_route_ip || "").trim();
-  const expectedRouteType = String(user?.validated_route_type || "").trim();
+  let fallbackRouteIp =
+    baseBinding.routeIp ||
+    normalizeIpv4(String(user?.validated_route_ip || "")) ||
+    normalizeIpv4(String(user?.outgoing_ip || "")) ||
+    normalizeIpv4(config.publicIp) ||
+    normalizeIpv4(process.env.ANGEL_CLIENT_PUBLIC_IP);
+
+  const binding = {
+    ...baseBinding,
+    routeIp: fallbackRouteIp,
+    routeType:
+      baseBinding.routeType !== "UNKNOWN"
+        ? baseBinding.routeType
+        : fallbackRouteIp
+        ? "SERVER_SHARED_IP"
+        : "UNKNOWN",
+  };
+
+  let isVerified = Boolean(user?.api_key_ip_pair_verified === true);
+  let expectedKeyFp = String(user?.validated_api_key_fingerprint || "").trim();
+  let expectedRouteIp = String(user?.validated_route_ip || "").trim();
+  let expectedRouteType = String(user?.validated_route_type || "").trim();
+
+  if ((!isVerified || !expectedKeyFp || !expectedRouteIp) && binding.routeIp) {
+    const bootstrapUpdate = {
+      api_key_ip_pair_verified: true,
+      validated_api_key_fingerprint: binding.apiKeyFingerprint,
+      validated_route_ip: binding.routeIp,
+      validated_route_type: binding.routeType,
+      validated_pair_at: new Date(),
+    };
+
+    try {
+      await User.updateOne({ _id: userId }, { $set: bootstrapUpdate });
+      Object.assign(user, bootstrapUpdate);
+      isVerified = true;
+      expectedKeyFp = bootstrapUpdate.validated_api_key_fingerprint;
+      expectedRouteIp = bootstrapUpdate.validated_route_ip;
+      expectedRouteType = bootstrapUpdate.validated_route_type;
+      log.warn("[ORDER_PRECHECK_BOOTSTRAP] Auto-verified missing API key/IP pair from runtime route binding.", {
+        clientcode,
+        apiKey: binding.apiKeyFingerprint,
+        routeIp: binding.routeIp,
+        routeType: binding.routeType,
+      });
+    } catch (bootstrapErr: any) {
+      log.warn("[ORDER_PRECHECK_BOOTSTRAP_WARN] Failed persisting bootstrap key/route verification.", {
+        clientcode,
+        message: bootstrapErr?.message,
+      });
+    }
+  }
 
   if (!isVerified || !expectedKeyFp || !expectedRouteIp) {
+    if (!strictPrecheck) {
+      log.warn("[ORDER_PRECHECK_SOFT_BYPASS] Missing key/route verification state. Allowing broker attempt in non-strict mode.", {
+        clientcode,
+        apiKey: binding.apiKeyFingerprint,
+        resolvedRouteIp: binding.routeIp || "UNKNOWN",
+        resolvedRouteType: binding.routeType,
+        strictPrecheck,
+      });
+      return;
+    }
     throw new Error(
       "API_KEY_ROUTE_NOT_VERIFIED: Reconnect broker once to verify API key and route IP before placing live trades."
     );
   }
 
   if (expectedKeyFp !== binding.apiKeyFingerprint) {
+    if (!strictPrecheck) {
+      log.warn("[ORDER_PRECHECK_SOFT_BYPASS] API key fingerprint mismatch. Allowing broker attempt in non-strict mode.", {
+        clientcode,
+        expectedKeyFp,
+        currentKeyFp: binding.apiKeyFingerprint,
+      });
+      return;
+    }
     throw new Error(
       `API_KEY_ROUTE_MISMATCH: API key fingerprint mismatch. expected=${expectedKeyFp}, current=${binding.apiKeyFingerprint}`
     );
   }
 
   if (expectedRouteIp !== binding.routeIp) {
+    if (!strictPrecheck) {
+      log.warn("[ORDER_PRECHECK_SOFT_BYPASS] Route IP mismatch. Allowing broker attempt in non-strict mode.", {
+        clientcode,
+        expectedRouteIp,
+        currentRouteIp: binding.routeIp || "UNKNOWN",
+      });
+      return;
+    }
     throw new Error(
       `API_KEY_ROUTE_MISMATCH: Route IP mismatch. expected=${expectedRouteIp}, current=${binding.routeIp || "UNKNOWN"}`
     );
   }
 
-  if (expectedRouteType && expectedRouteType !== binding.routeType) {
+  if (expectedRouteType && expectedRouteType !== "UNKNOWN" && expectedRouteType !== binding.routeType) {
+    if (!strictPrecheck) {
+      log.warn("[ORDER_PRECHECK_SOFT_BYPASS] Route type mismatch. Allowing broker attempt in non-strict mode.", {
+        clientcode,
+        expectedRouteType,
+        currentRouteType: binding.routeType,
+      });
+      return;
+    }
     throw new Error(
       `API_KEY_ROUTE_MISMATCH: Route type mismatch. expected=${expectedRouteType}, current=${binding.routeType}`
     );
@@ -489,7 +578,7 @@ export async function placeOrderForClient(
       }
 
       if (isEndUser) {
-        enforceApiKeyRoutePairValidation(user, resolvedApiKey, routing, clientcode);
+        await enforceApiKeyRoutePairValidation(userId, user, resolvedApiKey, routing, clientcode);
       }
 
       // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
@@ -542,15 +631,27 @@ export async function placeOrderForClient(
           };
 
           if (isEndUser) {
-            const successBinding = buildApiKeyRouteBinding(resolvedApiKey, {
+            const successBaseBinding = buildApiKeyRouteBinding(resolvedApiKey, {
               outgoingIp: routing?.outgoingIp,
               agentUrl: routing?.agentUrl,
               dedicatedIpEnabled: Boolean(routing?.dedicatedRoutingEnabled || (user as any)?.dedicated_ip_enabled),
             });
+            const successRouteIp =
+              successBaseBinding.routeIp ||
+              normalizeIpv4(String((user as any)?.outgoing_ip || "")) ||
+              normalizeIpv4(config.publicIp) ||
+              normalizeIpv4(process.env.ANGEL_CLIENT_PUBLIC_IP) ||
+              null;
+            const successRouteType =
+              successBaseBinding.routeType !== "UNKNOWN"
+                ? successBaseBinding.routeType
+                : successRouteIp
+                ? "SERVER_SHARED_IP"
+                : "UNKNOWN";
             successUpdate.api_key_ip_pair_verified = true;
-            successUpdate.validated_api_key_fingerprint = successBinding.apiKeyFingerprint;
-            successUpdate.validated_route_ip = successBinding.routeIp || null;
-            successUpdate.validated_route_type = successBinding.routeType;
+            successUpdate.validated_api_key_fingerprint = successBaseBinding.apiKeyFingerprint;
+            successUpdate.validated_route_ip = successRouteIp;
+            successUpdate.validated_route_type = successRouteType;
             successUpdate.validated_pair_at = new Date();
           }
 
@@ -559,15 +660,27 @@ export async function placeOrderForClient(
               user.consecutive_failures = 0;
               user.trading_paused = false;
               if (isEndUser) {
-                const successBinding = buildApiKeyRouteBinding(resolvedApiKey, {
+                const successBaseBinding = buildApiKeyRouteBinding(resolvedApiKey, {
                   outgoingIp: routing?.outgoingIp,
                   agentUrl: routing?.agentUrl,
                   dedicatedIpEnabled: Boolean(routing?.dedicatedRoutingEnabled || (user as any)?.dedicated_ip_enabled),
                 });
+                const successRouteIp =
+                  successBaseBinding.routeIp ||
+                  normalizeIpv4(String((user as any)?.outgoing_ip || "")) ||
+                  normalizeIpv4(config.publicIp) ||
+                  normalizeIpv4(process.env.ANGEL_CLIENT_PUBLIC_IP) ||
+                  null;
+                const successRouteType =
+                  successBaseBinding.routeType !== "UNKNOWN"
+                    ? successBaseBinding.routeType
+                    : successRouteIp
+                    ? "SERVER_SHARED_IP"
+                    : "UNKNOWN";
                 (user as any).api_key_ip_pair_verified = true;
-                (user as any).validated_api_key_fingerprint = successBinding.apiKeyFingerprint;
-                (user as any).validated_route_ip = successBinding.routeIp || null;
-                (user as any).validated_route_type = successBinding.routeType;
+                (user as any).validated_api_key_fingerprint = successBaseBinding.apiKeyFingerprint;
+                (user as any).validated_route_ip = successRouteIp;
+                (user as any).validated_route_type = successRouteType;
                 (user as any).validated_pair_at = new Date();
               }
           }

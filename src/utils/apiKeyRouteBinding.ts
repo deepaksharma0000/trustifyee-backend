@@ -24,7 +24,9 @@ export function resolveRouteBinding(input: {
   const localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
   const routeIpFromProfile = normalizeIpv4(input.outgoingIp);
   const routeAgentUrl = String(input.agentUrl || "").trim();
-  const sharedIp = normalizeIpv4(config.publicIp);
+  const sharedIp =
+    normalizeIpv4(config.publicIp) ||
+    normalizeIpv4(process.env.ANGEL_CLIENT_PUBLIC_IP);
   const dedicatedRoutingEnabled =
     Boolean(input.dedicatedIpEnabled) || Boolean(routeIpFromProfile || routeAgentUrl);
 
@@ -91,4 +93,3 @@ export function buildApiKeyRouteBinding(
     agentUrl: route.agentUrl,
   };
 }
-

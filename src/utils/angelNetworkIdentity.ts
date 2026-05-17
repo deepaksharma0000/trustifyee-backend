@@ -60,7 +60,8 @@ export function getAngelNetworkIdentity(): AngelNetworkIdentity {
   const envLocalIp = normalizeIpv4(process.env.ANGEL_CLIENT_LOCAL_IP);
   const envMac = normalizeMac(process.env.ANGEL_CLIENT_MAC_ADDRESS);
 
-  const publicIp = envPublicIp || normalizeIpv4(config.publicIp) || "127.0.0.1";
+  // In shared VPS mode PUBLIC_IP should be authoritative; env override is fallback only.
+  const publicIp = normalizeIpv4(config.publicIp) || envPublicIp || "127.0.0.1";
   const localIp = envLocalIp || normalizeIpv4(detectLocalIpv4()) || publicIp || "127.0.0.1";
   const macAddress = envMac || detectMacAddress() || "02:00:00:00:00:00";
   const sourceId = String(process.env.ANGEL_SOURCE_ID || "WEB").trim() || "WEB";
@@ -76,4 +77,3 @@ export function getAngelNetworkIdentity(): AngelNetworkIdentity {
 
   return cachedIdentity;
 }
-

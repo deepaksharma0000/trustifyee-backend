@@ -71,6 +71,8 @@ export const config = {
 // --- STARTUP VALIDATION ---
 export const validateConfig = () => {
   const isValidIpv4 = (ip: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+  const envPublicIp = (process.env.PUBLIC_IP || "").trim();
+  const envAngelHeaderIp = (process.env.ANGEL_CLIENT_PUBLIC_IP || "").trim();
 
   const allowedModes = ["USER_ONLY", "SERVER_AUTO"];
   if (!allowedModes.includes(config.executionMode)) {
@@ -85,6 +87,10 @@ export const validateConfig = () => {
 
   if (config.nodeEnv === "production" && !isValidIpv4(config.publicIp || "")) {
     throw new Error("FATAL: PUBLIC_IP must be a valid IPv4 address in production.");
+  }
+
+  if (config.nodeEnv === "production" && envAngelHeaderIp && envPublicIp && envAngelHeaderIp !== envPublicIp) {
+    throw new Error("FATAL: PUBLIC_IP and ANGEL_CLIENT_PUBLIC_IP must match in production shared routing mode.");
   }
 
   if (config.nodeEnv === "production" && config.forceSharedVpsRoute !== true) {

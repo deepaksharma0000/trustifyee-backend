@@ -77,6 +77,9 @@ function runtimeDiagnostics() {
     timezone: tz,
     offsetMinutes,
     nowIso: now.toISOString(),
+    publicIp: config.publicIp || "",
+    angelClientPublicIp: process.env.ANGEL_CLIENT_PUBLIC_IP || "",
+    strictApiKeyRouteValidation: process.env.STRICT_API_KEY_ROUTE_VALIDATION === "true",
   });
 }
 
