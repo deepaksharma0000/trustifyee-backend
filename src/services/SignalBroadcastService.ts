@@ -3,14 +3,18 @@ import User from "../models/User";
 import { Signal } from "../models/Signal";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
 import { TradeOutbox } from "../models/TradeOutbox";
+import { BrokerResponse } from "../models/BrokerResponse";
 import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { v4 as uuidv4 } from "uuid";
 import { config } from "../config";
+import { apiKeyFingerprint } from "../utils/apiKeyRouteBinding";
 
 const BATCH_SIZE = 50;
 const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX"]);
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
+const STATIC_IP_REJECTION_REGEX =
+  /(api key mismatch against app found with static ip in request|unregistered ip|register your ip before retrying)/i;
 
 function normalizeIpv4(value?: string) {
   const trimmed = String(value || "").trim();
@@ -94,6 +98,122 @@ function checkUserEligibility(user: any, now: Date): { eligible: boolean; reason
 }
 
 export class SignalBroadcastService {
+  private static async getLatestOrderResponseByUser(userIds: string[]) {
+    if (!userIds.length) return new Map<string, any>();
+
+    const rows = await BrokerResponse.aggregate([
+      {
+        $match: {
+          userId: { $in: userIds },
+          action: "PLACE_ORDER",
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$userId",
+          message: { $first: "$message" },
+          status: { $first: "$status" },
+          usedIp: { $first: "$usedIp" },
+          networkRoute: { $first: "$networkRoute" },
+          createdAt: { $first: "$createdAt" },
+        },
+      },
+    ]);
+
+    const map = new Map<string, any>();
+    for (const row of rows || []) {
+      map.set(String(row?._id || ""), row);
+    }
+    return map;
+  }
+
+  private static buildReadinessEntry(user: any, latestResponse: any) {
+    const userId = String(user?._id || "");
+    const broker = normalizeBroker(user?.broker);
+    const networkMeta = resolveUserNetworkMeta(user);
+    const rawClientCode = user?.client_key ? decrypt(user.client_key) : "";
+    const hasApiKey = Boolean(String(user?.api_key || "").trim());
+    const latestMessage = String(latestResponse?.message || "");
+    const latestUsedIp = String(latestResponse?.usedIp || "") || networkMeta.usedIpLabel;
+
+    let ready = true;
+    let reason = "READY";
+
+    if (!rawClientCode || rawClientCode.trim().length < 3) {
+      ready = false;
+      reason = "Client code missing or invalid";
+    } else if (broker === "ANGELONE" && !hasApiKey) {
+      ready = false;
+      reason = "Angel API key missing in user profile";
+    } else if (broker === "ANGELONE" && STATIC_IP_REJECTION_REGEX.test(latestMessage)) {
+      ready = false;
+      reason = latestMessage || "Static IP mapping rejected by broker for this user API key";
+    }
+
+    return {
+      userId,
+      userName: user?.user_name || null,
+      email: user?.email || null,
+      broker,
+      licence: user?.licence || "Live",
+      ready,
+      reason,
+      clientCode: rawClientCode || null,
+      apiKeyFingerprint: hasApiKey ? apiKeyFingerprint(decrypt(user.api_key || "")) : "EMPTY",
+      routeType: networkMeta.networkRoute,
+      usedIp: networkMeta.usedIpLabel,
+      dedicatedIpEnabled: Boolean(user?.dedicated_ip_enabled === true),
+      lastBrokerStatus: latestResponse?.status || null,
+      lastBrokerMessage: latestMessage || null,
+      lastBrokerUsedIp: latestUsedIp || null,
+      lastBrokerAt: latestResponse?.createdAt || null,
+      apiKeyIpPairVerified: Boolean(user?.api_key_ip_pair_verified === true),
+      validatedRouteIp: user?.validated_route_ip || null,
+      validatedRouteType: user?.validated_route_type || null,
+    };
+  }
+
+  private static async buildReadinessMap(users: any[]) {
+    const userIds = users.map((u) => String(u?._id || "")).filter(Boolean);
+    const latestByUser = await this.getLatestOrderResponseByUser(userIds);
+    const map = new Map<string, any>();
+
+    for (const user of users) {
+      const key = String(user?._id || "");
+      map.set(key, this.buildReadinessEntry(user, latestByUser.get(key)));
+    }
+
+    return map;
+  }
+
+  static async getBroadcastReadinessReport(targetStrategy = "Manual") {
+    const strategyQuery = this.buildStrategyQuery(targetStrategy);
+    const users = await User.find({
+      status: "active",
+      trading_status: "enabled",
+      broker_connected: true,
+      ...strategyQuery,
+    })
+      .select(
+        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type"
+      )
+      .lean();
+
+    const readinessMap = await this.buildReadinessMap(users as any[]);
+    const details = Array.from(readinessMap.values());
+    const readyUsers = details.filter((d: any) => d.ready === true).length;
+    const blockedUsers = details.length - readyUsers;
+
+    return {
+      strategy: targetStrategy,
+      totalUsers: details.length,
+      readyUsers,
+      blockedUsers,
+      details,
+    };
+  }
+
   static async broadcast(signalId: string) {
     const signal = await Signal.findById(signalId).lean();
     if (!signal) throw new Error("Signal not found");
@@ -156,11 +276,14 @@ export class SignalBroadcastService {
       broker_connected: true,
       ...strategyQuery,
     })
-      .select("user_name email client_key licence end_date broker outgoing_ip agent_url dedicated_ip_enabled")
+      .select(
+        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type"
+      )
       .lean();
 
     if (session) usersQuery.session(session);
     const users = await usersQuery;
+    const readinessMap = await this.buildReadinessMap(users as any[]);
 
     if (users.length === 0) {
       await Signal.updateOne(
@@ -229,7 +352,6 @@ export class SignalBroadcastService {
       );
 
       try {
-        const { BrokerResponse } = await import("../models/BrokerResponse");
         const doc = {
           userId: String(user?._id || ""),
           clientcode: "UNKNOWN",
@@ -273,10 +395,26 @@ export class SignalBroadcastService {
       const userLicence = String(user.licence || "Live").toLowerCase();
       const isLive = userLicence === "live";
       const eligibility = checkUserEligibility(user, now);
+      const readiness = readinessMap.get(String(user?._id || ""));
 
       if (!eligibility.eligible) {
         failedCount += 1;
         const reason = eligibility.reason || "User not eligible for execution";
+        await markFailure(user, clientOrderId, correlationId, reason);
+        executions.push({
+          userName,
+          licence: user.licence || "Live",
+          status: "FAILED",
+          message: reason,
+          usedIp: networkMeta.usedIpLabel,
+          networkRoute: networkMeta.networkRoute,
+        });
+        return;
+      }
+
+      if (readiness && readiness.ready === false) {
+        failedCount += 1;
+        const reason = String(readiness.reason || "User broker route not ready for server-side execution");
         await markFailure(user, clientOrderId, correlationId, reason);
         executions.push({
           userName,

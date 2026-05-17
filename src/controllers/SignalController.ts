@@ -52,7 +52,7 @@ export const queueExecution = async (req: Request, res: Response) => {
         }
 
         const user = await User.findById(userId)
-            .select('+outgoing_ip +agent_url +broker_password +broker_totp_secret')
+            .select('+outgoing_ip +agent_url +broker_password +broker_totp_secret dedicated_ip_enabled')
             .lean();
         if (!user) return res.status(404).json({ error: "User not found", status: false });
 
@@ -100,8 +100,9 @@ export const queueExecution = async (req: Request, res: Response) => {
             clientOrderId,
             correlationId,
             clientCode: resolvedClientCode,
-            outgoingIp: user.outgoing_ip || undefined,
-            agentUrl: (user as any).agent_url || undefined,
+            outgoingIp: Boolean((user as any)?.dedicated_ip_enabled === true) ? (user.outgoing_ip || undefined) : undefined,
+            agentUrl: Boolean((user as any)?.dedicated_ip_enabled === true) ? ((user as any).agent_url || undefined) : undefined,
+            dedicatedIpEnabled: Boolean((user as any)?.dedicated_ip_enabled === true),
             orderData: {
                 exchange: signal.exchange,
                 tradingsymbol: signal.tradingsymbol,

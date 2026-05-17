@@ -474,6 +474,33 @@ router.get("/broker-responses", auth, async (req: any, res) => {
   }
 });
 
+router.get("/broadcast-readiness", auth, adminOnly, async (req: any, res) => {
+  try {
+    const strategy = typeof req.query.strategy === "string" && req.query.strategy.trim()
+      ? req.query.strategy.trim()
+      : "Manual";
+    const blockedOnly = String(req.query.blockedOnly || "").toLowerCase() === "true";
+
+    const { SignalBroadcastService } = await import("../services/SignalBroadcastService");
+    const report = await SignalBroadcastService.getBroadcastReadinessReport(strategy);
+
+    const details = blockedOnly
+      ? (report.details || []).filter((row: any) => row.ready === false)
+      : report.details;
+
+    return res.json({
+      ok: true,
+      strategy: report.strategy,
+      totalUsers: report.totalUsers,
+      readyUsers: report.readyUsers,
+      blockedUsers: report.blockedUsers,
+      details,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err.message || String(err) });
+  }
+});
+
 router.get("/history-all", auth, adminOnly, getGlobalTradeHistory);
 router.get("/unique-symbols", auth, adminOnly, getUniqueSymbols);
 router.get("/export-all", auth, adminOnly, exportGlobalTradeHistory);
