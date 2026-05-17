@@ -78,6 +78,9 @@ export class SignalService {
         },
       });
 
+      if (pushed === 0) {
+        log.warn("[SignalService] No connected user sockets. Signal stored, waiting for user-side polling/connection.");
+      }
       log.info(`[SignalService] Signal pushed to ${pushed} connected users via WebSocket`);
 
       return signal;

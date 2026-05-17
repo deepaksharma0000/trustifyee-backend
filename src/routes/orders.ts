@@ -183,6 +183,20 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const BroadcastSvc = (await import("../services/SignalBroadcastService")).SignalBroadcastService;
     const readiness = await BroadcastSvc.getBroadcastReadinessReport(targetStrategy);
     const blockedDetails = (readiness.details || []).filter((d: any) => d.ready === false);
+    const executionRows = (readiness.details || []).map((d: any) => ({
+      userId: d.userId || null,
+      userName: d.userName || d.email || null,
+      licence: d.licence || "Live",
+      broker: d.broker || null,
+      status: "QUEUED",
+      message: "Signal dispatched for user-side execution.",
+      usedIp: d.usedIp || null,
+      networkRoute: d.routeType || null,
+    }));
+    const liveUsers = (readiness.details || []).filter(
+      (d: any) => String(d.licence || "Live").toLowerCase() === "live"
+    ).length;
+    const demoUsers = Math.max(0, readiness.totalUsers - liveUsers);
     const hasStaticIpRisk = blockedDetails.some((d: any) => {
       const text = String(d?.reason || d?.lastBrokerMessage || "").toLowerCase();
       return (
@@ -233,6 +247,12 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         dispatchMode: "CLIENT_ONLY",
         message: "Signal dispatched for user-side execution.",
         signalId: signal?._id,
+        totalUsers: readiness.totalUsers,
+        queued: readiness.totalUsers,
+        failed: 0,
+        livePlaced: liveUsers,
+        demoPlaced: demoUsers,
+        executions: executionRows,
         preflight: {
           strategy: readiness.strategy,
           totalUsers: readiness.totalUsers,
@@ -269,6 +289,12 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           warning: blockedReason,
           message: "Server-side broker route blocked. Signal dispatched for user-side execution.",
           signalId: signal?._id,
+          totalUsers: readiness.totalUsers,
+          queued: readiness.totalUsers,
+          failed: 0,
+          livePlaced: liveUsers,
+          demoPlaced: demoUsers,
+          executions: executionRows,
           preflight: {
             strategy: readiness.strategy,
             totalUsers: readiness.totalUsers,
