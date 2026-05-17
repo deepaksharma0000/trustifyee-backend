@@ -181,16 +181,33 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     }
 
     if (readiness.readyUsers === 0) {
-      return res.status(200).json({
+      const firstBlocked = blockedDetails[0] || null;
+      const blockedReason =
+        String(firstBlocked?.reason || "").trim() ||
+        "No broker-ready users for this strategy. Broadcast skipped.";
+
+      return res.status(409).json({
         ok: false,
+        status: false,
         code: "NO_BROKER_READY_USERS",
-        message: "No broker-ready users for this strategy. Broadcast skipped.",
+        error: blockedReason,
+        message: blockedReason,
         preflight: {
           strategy: readiness.strategy,
           totalUsers: readiness.totalUsers,
           readyUsers: readiness.readyUsers,
           blockedUsers: readiness.blockedUsers,
           blockedDetails,
+          firstBlockedUser: firstBlocked
+            ? {
+                userId: firstBlocked.userId || null,
+                userName: firstBlocked.userName || firstBlocked.email || null,
+                routeType: firstBlocked.routeType || null,
+                usedIp: firstBlocked.usedIp || null,
+                lastBrokerMessage: firstBlocked.lastBrokerMessage || null,
+                lastBrokerUsedIp: firstBlocked.lastBrokerUsedIp || null,
+              }
+            : null,
         },
       });
     }

@@ -15,6 +15,10 @@ const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX"]);
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 const STATIC_IP_REJECTION_REGEX =
   /(api key mismatch against app found with static ip in request|unregistered ip|register your ip before retrying)/i;
+const STATIC_REJECTION_HOLD_MS = Math.max(
+  60 * 1000,
+  Number(process.env.ORDER_STATIC_REJECTION_HOLD_MINUTES || "30") * 60 * 1000
+);
 
 function normalizeIpv4(value?: string) {
   const trimmed = String(value || "").trim();
@@ -77,6 +81,26 @@ function resolveUserNetworkMeta(user: any) {
 
 function normalizeBroker(input: any): string {
   return String(input || "ANGELONE").trim().toUpperCase();
+}
+
+function shouldBlockForRecentStaticRejection(latestResponse: any, currentRouteIp?: string | null) {
+  const latestMessage = String(latestResponse?.message || "");
+  if (!STATIC_IP_REJECTION_REGEX.test(latestMessage)) return false;
+
+  const latestUsedIp = normalizeIpv4(latestResponse?.usedIp);
+  const currentUsedIp = normalizeIpv4(currentRouteIp || "");
+  const routeChanged = Boolean(latestUsedIp && currentUsedIp && latestUsedIp !== currentUsedIp);
+
+  if (routeChanged) return false;
+
+  const latestAtMs = latestResponse?.createdAt
+    ? new Date(latestResponse.createdAt).getTime()
+    : Number.NaN;
+
+  if (!Number.isFinite(latestAtMs)) return true;
+
+  const ageMs = Date.now() - latestAtMs;
+  return ageMs <= STATIC_REJECTION_HOLD_MS;
 }
 
 function checkUserEligibility(user: any, now: Date): { eligible: boolean; reason?: string } {
@@ -146,7 +170,7 @@ export class SignalBroadcastService {
     } else if (broker === "ANGELONE" && !hasApiKey) {
       ready = false;
       reason = "Angel API key missing in user profile";
-    } else if (broker === "ANGELONE" && STATIC_IP_REJECTION_REGEX.test(latestMessage)) {
+    } else if (broker === "ANGELONE" && shouldBlockForRecentStaticRejection(latestResponse, networkMeta.usedIp)) {
       ready = false;
       reason = latestMessage || "Static IP mapping rejected by broker for this user API key";
     }
