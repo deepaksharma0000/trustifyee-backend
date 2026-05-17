@@ -37,11 +37,15 @@ export function extractUserIdFromToken(token: string): string | null {
  * Called when a user connects to /ws/signals.
  */
 export function registerUserSocket(userId: string, ws: WebSocket): void {
-  // Close old socket if any
   const existing = userSockets.get(userId);
-  if (existing && existing.readyState === WebSocket.OPEN) {
-    existing.close();
+  if (existing && existing !== ws && existing.readyState === WebSocket.OPEN) {
+    try {
+      existing.close(1000, "replaced-by-new-connection");
+    } catch {
+      // best effort
+    }
   }
+
   userSockets.set(userId, ws);
   log.info(`[UserSocket] User ${userId} connected. Total connected: ${userSockets.size}`);
 }
@@ -49,7 +53,15 @@ export function registerUserSocket(userId: string, ws: WebSocket): void {
 /**
  * Remove a user's socket on disconnect.
  */
-export function removeUserSocket(userId: string): void {
+export function removeUserSocket(userId: string, closingSocket?: WebSocket): void {
+  const current = userSockets.get(userId);
+  if (!current) return;
+
+  // Prevent old socket close events from deleting a newer active socket.
+  if (closingSocket && current !== closingSocket) {
+    return;
+  }
+
   userSockets.delete(userId);
   log.info(`[UserSocket] User ${userId} disconnected. Total connected: ${userSockets.size}`);
 }
