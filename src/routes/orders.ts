@@ -186,7 +186,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         String(firstBlocked?.reason || "").trim() ||
         "No broker-ready users for this strategy. Broadcast skipped.";
 
-      return res.status(409).json({
+      return res.status(200).json({
         ok: false,
         status: false,
         code: "NO_BROKER_READY_USERS",
