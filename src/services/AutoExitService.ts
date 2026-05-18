@@ -68,3 +68,12 @@ export class AutoExitService {
         }
     }
 }
+
+export async function shutdownAutoExitQueue() {
+    if (autoExitQueue) {
+        log.info("[AutoExit] Shutting down queue...");
+        await autoExitQueue.close().catch(err => log.error("[AutoExit] Error closing queue:", err));
+        autoExitQueue = null;
+        log.info("[AutoExit] Queue closed cleanly.");
+    }
+}

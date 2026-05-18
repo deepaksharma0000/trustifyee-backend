@@ -117,7 +117,14 @@ const withIpHint = (message: string, usedIpLabel: string) => {
   return `${baseMessage} | Used IP: ${usedIpLabel}`;
 };
 
+const activeWorkers: Worker[] = [];
+
 export const initTradeExecutionWorker = () => {
+  if (activeWorkers.length > 0) {
+    log.warn("[TradeExecutionWorker] Workers already initialized.");
+    return;
+  }
+
   const startWorkerForQueue = (queueName: string) => {
     const worker = new Worker(
       queueName,
@@ -441,9 +448,21 @@ export const initTradeExecutionWorker = () => {
       });
     });
 
+    activeWorkers.push(worker);
     log.info("[TradeExecutionWorker] Worker started", { queueName });
   };
 
   const queueNames = getAllTradeQueueNames();
   queueNames.forEach((queueName) => startWorkerForQueue(queueName));
+};
+
+export const shutdownTradeExecutionWorkers = async () => {
+  log.info("[TradeExecutionWorker] Shutting down workers...");
+  await Promise.all(
+    activeWorkers.map((w) =>
+      w.close().catch((err) => log.error("[TradeExecutionWorker] Error shutting down worker:", err))
+    )
+  );
+  activeWorkers.length = 0;
+  log.info("[TradeExecutionWorker] All trade execution workers shut down cleanly.");
 };

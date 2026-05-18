@@ -35,6 +35,12 @@ export const TRADE_QUEUE_BY_BROKER: Record<string, string> = {
 
 const queueCache = new Map<string, Queue>();
 
+export let currentStartupCorrelationId: string = "unknown";
+export function setStartupCorrelationId(id: string) {
+  currentStartupCorrelationId = id;
+  log.info(`[BullMQ] Configured Startup Correlation ID: ${id}`);
+}
+
 function createTradeQueue(name: string) {
   return new Queue(name, {
     connection: redisBullConnection as any,
@@ -97,5 +103,23 @@ Object.values(TRADE_QUEUE_BY_BROKER).forEach((name) => {
 export const riskQueue = new Queue("risk-management", {
     connection: redisBullConnection as any,
 });
+
+export async function shutdownTradeQueues() {
+  log.info("[TradeQueue] Shutting down queues...");
+  const queuesToClose = Array.from(queueCache.values());
+  if (riskQueue) {
+    queuesToClose.push(riskQueue);
+  }
+  await Promise.all(
+    queuesToClose.map((q) =>
+      q.close().catch((err) => log.error("[TradeQueue] Error closing queue:", err))
+    )
+  );
+  queueCache.clear();
+  log.info("[TradeQueue] All queues closed cleanly.");
+}
+
+// Simple helper logger import just in case
+import log from "./logger";
 
 export default tradeQueue;

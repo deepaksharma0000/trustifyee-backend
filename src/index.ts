@@ -37,6 +37,8 @@ import aliceOrderRoutes from "./routes/aliceOrders";
 import aliceInstrumentsRoutes from "./routes/aliceInstruments";
 import { syncPendingOrders } from "./jobs/orderSync.job";
 import marketStatusRoutes from "./routes/marketStatus.routes";
+import chaosRoutes from "./routes/chaos.routes";
+import observabilityRoutes from "./routes/observability.routes";
 import log from "./utils/logger";
 import { startMarketStream } from "./services/marketStream";
 import { startSignalStream } from "./services/signalStream";
@@ -48,21 +50,67 @@ import { getPublicIp } from "./utils/ipService";
 import { requestLogger } from "./middleware/requestLogger.middleware";
 import redisConnection from "./utils/redis";
 import { TokenRefreshScheduler } from "./services/TokenRefreshScheduler";
+import { tickEngineService } from "./services/TickEngineService";
+import { realTimeRiskEngine } from "./services/RealTimeRiskEngine";
+import { eventSourcedOMS } from "./services/EventSourcedOMS";
+import { reconciliationService } from "./services/ReconciliationService";
+import { clockDriftMonitor } from "./services/ClockDriftMonitor";
+import { sessionAuthority } from "./services/SessionAuthority";
+import { strategySandboxRuntime } from "./services/StrategySandboxRuntime";
+import { decrypt } from "./utils/encryption";
 
-initAutoExitWorker();
-initTradeExecutionWorker();
+import { StartupDiagnostics } from "./utils/startupDiagnostics";
+import { shutdownAutoExitWorker } from "./jobs/AutoExitWorker";
+import { shutdownTradeExecutionWorkers } from "./jobs/TradeExecutionWorker";
+import { shutdownTradeQueues } from "./utils/tradeQueue";
+import { shutdownAutoExitQueue } from "./services/AutoExitService";
+import { initAlgoRiskWorker, shutdownAlgoRiskWorker } from "./services/algoEngineV2";
+
+async function shutdownAll() {
+  log.info("[STARTUP] Starting graceful infrastructure teardown...");
+  try {
+    await shutdownAutoExitWorker();
+  } catch (e) {
+    log.error("Error shutting down AutoExitWorker:", e);
+  }
+  try {
+    await shutdownTradeExecutionWorkers();
+  } catch (e) {
+    log.error("Error shutting down TradeExecutionWorker:", e);
+  }
+  try {
+    await shutdownAlgoRiskWorker();
+  } catch (e) {
+    log.error("Error shutting down AlgoRiskWorker:", e);
+  }
+  try {
+    await shutdownTradeQueues();
+  } catch (e) {
+    log.error("Error shutting down TradeQueues:", e);
+  }
+  try {
+    await shutdownAutoExitQueue();
+  } catch (e) {
+    log.error("Error shutting down AutoExitQueue:", e);
+  }
+  log.info("[STARTUP] Graceful infrastructure teardown complete.");
+}
 
 function setupProcessGuards() {
-  process.on("unhandledRejection", (reason) => {
+  process.on("unhandledRejection", async (reason) => {
     log.error("[PROCESS] Unhandled promise rejection", { reason });
+    if (config.nodeEnv === "production") {
+      log.info("[PROCESS] Triggering clean shutdown due to promise rejection...");
+      await shutdownAll().catch(() => {});
+      process.exit(1);
+    }
   });
 
-  process.on("uncaughtException", (error) => {
+  process.on("uncaughtException", async (error) => {
     log.error("[PROCESS] Uncaught exception", error);
-
-    if (config.nodeEnv === "production") {
-      setTimeout(() => process.exit(1), 1500);
-    }
+    log.info("[PROCESS] Triggering clean shutdown due to uncaught exception...");
+    await shutdownAll().catch(() => {});
+    setTimeout(() => process.exit(1), 1500);
   });
 }
 
@@ -96,16 +144,21 @@ async function updatePublicIp() {
 async function start() {
   try {
     setupProcessGuards();
+
+    // 1. Run all startup dependency checks (includes exponential Mongo retry & Redis compatibility validation)
+    await StartupDiagnostics.runAllChecks();
+
+    // 2. Initialize workers and queues (only after dependencies are proven healthy)
+    initAutoExitWorker();
+    initTradeExecutionWorker();
+    initAlgoRiskWorker();
+
     runtimeDiagnostics();
-    validateConfig();
 
     await updatePublicIp();
     setInterval(() => {
       updatePublicIp().catch((err) => log.error("[NETWORK] periodic public IP refresh failed", err));
     }, 5 * 60 * 1000);
-
-    await mongoose.connect(config.mongoUri);
-    log.info("[DB] MongoDB connected");
 
     if (!config.encryptionKey || config.encryptionKey.length < 32) {
       throw new Error("ENCRYPTION_SECRET must be at least 32 characters.");
@@ -115,20 +168,82 @@ async function start() {
     startPositionWatchdog();
 
     await recoverRunningRuns();
-    TokenRefreshScheduler.start();
+    if (!StartupDiagnostics.isSafeBootMode()) {
+      TokenRefreshScheduler.start();
+    } else {
+      log.warn("[SAFE_BOOT_MODE] TokenRefreshScheduler start bypassed because of startup safety lock.");
+    }
 
+    // Start Single-Instance Streaming Market Tick Engine
+    tickEngineService.start().catch((err) => {
+      log.error("[STARTUP] Failed to initialize system TickEngineService:", err);
+    });
+
+    // Start Dedicated Real-Time Risk Monitor Pipeline
     try {
-      const upstoxUser = await User.findOne({
-        broker: { $regex: /^upstox$/i },
-        status: "active",
-        broker_connected: true,
-      }).lean();
-
-      if (upstoxUser) {
-        await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
-      }
+      realTimeRiskEngine.start();
     } catch (err: any) {
-      log.warn("[STARTUP] Option chain warmup failed", { message: err?.message });
+      log.error("[STARTUP] Failed to initialize realTimeRiskEngine:", err);
+    }
+
+    // Recover EventSourcedOMS state and spawn the pending timeout watchdog
+    try {
+      await eventSourcedOMS.recoverStateFromDb();
+      
+      setInterval(() => {
+        if (StartupDiagnostics.isSafeBootMode()) return;
+        eventSourcedOMS.checkForPendingTimeouts().catch((err) => {
+          log.error("[STARTUP] OMS pending timeout check failed:", err);
+        });
+      }, 5000);
+
+      // Periodically audit positions bidirectionally against the exchange orderbook
+      setInterval(async () => {
+        if (StartupDiagnostics.isSafeBootMode()) {
+          log.debug("[SAFE_BOOT_MODE] Skipping periodic reconciliation audit sweep");
+          return;
+        }
+        try {
+          const activeUsers = await User.find({
+            status: "active",
+            trading_status: "enabled",
+            broker_connected: true,
+          }).select("_id client_key broker").lean();
+
+          for (const u of activeUsers) {
+            const isAngel = String(u.broker).toUpperCase() === "ANGELONE";
+            if (isAngel) {
+              const clientCode = u.client_key ? decrypt(u.client_key) : "";
+              if (clientCode) {
+                await reconciliationService.runAudit(String(u._id), clientCode);
+              }
+            }
+          }
+        } catch (auditErr: any) {
+          log.error("[STARTUP] Periodic reconciliation audit failure:", auditErr.message);
+        }
+      }, 30000); // Trigger reconciliation every 30 seconds
+
+    } catch (err: any) {
+      log.error("[STARTUP] Failed to initialize eventSourcedOMS:", err);
+    }
+
+    if (!StartupDiagnostics.isSafeBootMode()) {
+      try {
+        const upstoxUser = await User.findOne({
+          broker: { $regex: /^upstox$/i },
+          status: "active",
+          broker_connected: true,
+        }).lean();
+
+        if (upstoxUser) {
+          await fetchAndStoreOptionChain("NSE_INDEX|Nifty 50");
+        }
+      } catch (err: any) {
+        log.warn("[STARTUP] Option chain warmup failed", { message: err?.message });
+      }
+    } else {
+      log.warn("[SAFE_BOOT_MODE] Upstox Nifty option chain warmup bypassed because of startup safety lock.");
     }
 
     const app = express();
@@ -204,6 +319,12 @@ async function start() {
     }, 5000);
 
     app.use("/api/market", marketStatusRoutes);
+    app.use("/api/chaos", chaosRoutes);
+    app.use("/api/observability", observabilityRoutes);
+    
+    const executionRoutes = require("./routes/execution.routes").default;
+    app.use("/api/execution", executionRoutes);
+
     app.use("/api/upstox/auth", upstoxAuthRoutes);
     app.use("/api/upstox/orders", upstoxOrder);
     app.use("/api/upstox", upstoxOrderRoutes);
@@ -240,6 +361,13 @@ async function start() {
         env: config.nodeEnv,
         executionMode: config.executionMode,
         version: process.env.npm_package_version || "1.0.0",
+        tickEngineMetrics: tickEngineService.getMetrics(),
+        riskEngineMetrics: realTimeRiskEngine.getMetrics(),
+        omsMetrics: eventSourcedOMS.getMetrics(),
+        reconciliationMetrics: reconciliationService.getMetrics(),
+        temporalMetrics: clockDriftMonitor.getMetrics(),
+        sessionMetrics: sessionAuthority.getMetrics(),
+        sandboxStatus: "operational",
       });
     });
 
@@ -282,7 +410,10 @@ async function start() {
       }
     });
   } catch (err: any) {
-    log.error("[STARTUP] Boot failed", err);
+    log.error("[STARTUP] Boot failed! Executing cleanup rollback...", err);
+    await shutdownAll().catch((cleanupErr) => {
+      log.error("[STARTUP] Error executing cleanup rollback:", cleanupErr);
+    });
     process.exit(1);
   }
 }

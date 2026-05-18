@@ -56,7 +56,18 @@ export const config = {
   encryptionKey: process.env.ENCRYPTION_SECRET || "",
   publicIp: process.env.PUBLIC_IP || "",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8080",
-  executionMode: process.env.EXECUTION_MODE || "USER_ONLY",
+  executionMode: process.env.EXECUTION_MODE || (
+    (process.env.NODE_ENV || "development") === "development" && (
+      (process.env.APP_BASE_URL || "").includes("localhost") || 
+      (process.env.APP_BASE_URL || "").includes("127.0.0.1") ||
+      (process.env.FRONTEND_URL || "").includes("localhost") ||
+      (process.env.FRONTEND_URL || "").includes("127.0.0.1") ||
+      (process.env.MONGO_URI || "").includes("localhost") ||
+      (process.env.MONGO_URI || "").includes("127.0.0.1")
+    )
+    ? "LOCAL_DEVICE"
+    : "SERVER_SHARED_IP"
+  ),
   forceSharedVpsRoute: process.env.FORCE_SHARED_VPS_ROUTE !== "false",
 
   // Dedicated Data Feed
@@ -74,7 +85,7 @@ export const validateConfig = () => {
   const envPublicIp = (process.env.PUBLIC_IP || "").trim();
   const envAngelHeaderIp = (process.env.ANGEL_CLIENT_PUBLIC_IP || "").trim();
 
-  const allowedModes = ["USER_ONLY", "SERVER_AUTO"];
+  const allowedModes = ["USER_ONLY", "SERVER_AUTO", "LOCAL_DEVICE", "SERVER_SHARED_IP", "STATIC_AGENT"];
   if (!allowedModes.includes(config.executionMode)) {
     throw new Error(`FATAL: EXECUTION_MODE must be one of ${allowedModes.join(", ")}`);
   }

@@ -2,6 +2,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import log from "../utils/logger";
 import redlock from "../utils/redlock";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
+import { sessionAuthority } from "./SessionAuthority";
 
 const REFRESH_LOOKAHEAD_MS = 30 * 60 * 1000;
 const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
@@ -52,12 +53,12 @@ export class TokenRefreshScheduler {
       const settled = await Promise.allSettled(
         sessions.map(async (session) => {
           try {
-            const recovered = await recoverSessionByRefreshOrLogin(session, "token_scheduler");
-            if (!recovered.ok) {
-              return { clientcode: session.clientcode, status: "failed", reason: recovered.reason };
+            const rotated = await sessionAuthority.rotateSession(String(session.userId), session.clientcode);
+            if (!rotated) {
+              return { clientcode: session.clientcode, status: "failed", reason: "Rotation workflow failed" };
             }
 
-            return { clientcode: session.clientcode, status: "refreshed", mode: recovered.mode };
+            return { clientcode: session.clientcode, status: "refreshed", mode: "REFRESH" };
           } catch (error: any) {
             log.warn("[TokenRefreshScheduler] refresh failed", {
               clientcode: session.clientcode,

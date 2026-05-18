@@ -10,6 +10,7 @@ import { SignalBroadcastService } from "./SignalBroadcastService";
 import log from "../utils/logger";
 import { randomUUID } from "crypto";
 import { AlgoTrade } from "../models/AlgoTrade";
+import { StartupDiagnostics } from "../utils/startupDiagnostics";
 import {
     startRun as startRunLegacy,
     stopRun as stopRunLegacy,
@@ -19,40 +20,72 @@ import {
     getSummary as getSummaryLegacy,
 } from "./algoEngine.DEPRECATED";
 
+const activeRiskWorkers: Worker[] = [];
+let riskCheckInterval: NodeJS.Timeout | null = null;
+
 /**
- * FIXED: Remove setInterval. Use BullMQ Repeatable Jobs.
+ * FIXED: Remove setInterval. Use BullMQ Repeatable Jobs (or local interval fallback).
  */
 export const initAlgoRiskWorker = () => {
-    const worker = new Worker(
-        "risk-management",
-        async (job) => {
-            const correlationId = randomUUID();
-            const runningRuns = await AlgoRun.find({ status: "running" }).lean();
-            
-            for (const run of runningRuns) {
-                // 🛡️ STRONG DISTRIBUTED LOCK (Redlock)
-                const resource = `lock:algo-risk:${run._id}`;
-                let lock;
-                try {
-                    lock = await redlock.acquire([resource], 20000); // 20s lock
-                    
-                    await runRiskCycle(run, correlationId);
-                    
-                } catch (err: any) {
-                    log.debug(`Could not acquire lock for ${run._id}, skipping cycle.`);
-                } finally {
-                    if (lock) await lock.release();
-                }
-            }
-        },
-        { connection: redisConnection as any }
-    );
+    if (!StartupDiagnostics.isBullMqCompatible) {
+        log.warn("[REDIS] [COMPATIBILITY] Skipping BullMQ worker for 'risk-management' due to incompatible Redis version. Using local in-memory fallback.");
+        return;
+    }
 
-    // Schedule the repeatable job (runs every 30 seconds)
-    riskQueue.add("risk-check-loop", {}, {
-        repeat: { every: 30000 },
-        removeOnComplete: true
-    });
+    try {
+        const worker = new Worker(
+            "risk-management",
+            async (job) => {
+                const correlationId = randomUUID();
+                const runningRuns = await AlgoRun.find({ status: "running" }).lean();
+                
+                for (const run of runningRuns) {
+                    // 🛡️ STRONG DISTRIBUTED LOCK (Redlock)
+                    const resource = `lock:algo-risk:${run._id}`;
+                    let lock;
+                    try {
+                        lock = await redlock.acquire([resource], 20000); // 20s lock
+                        await runRiskCycle(run, correlationId);
+                    } catch (err: any) {
+                        log.debug(`Could not acquire lock for ${run._id}, skipping cycle.`);
+                    } finally {
+                        if (lock) await lock.release().catch(() => {});
+                    }
+                }
+            },
+            { connection: redisConnection as any }
+        );
+
+        activeRiskWorkers.push(worker);
+
+        // Schedule the repeatable job (runs every 30 seconds)
+        riskQueue.add("risk-check-loop", {}, {
+            repeat: { every: 30000 },
+            removeOnComplete: true
+        }).catch((err) => {
+            log.error("[AlgoRiskWorker] Failed to add repeatable job to riskQueue:", err);
+        });
+
+        log.info("[AlgoRiskWorker] Worker initialized successfully.");
+    } catch (err) {
+        log.error("[AlgoRiskWorker] Failed to initialize worker:", err);
+    }
+};
+
+export const shutdownAlgoRiskWorker = async () => {
+    if (riskCheckInterval) {
+        clearInterval(riskCheckInterval);
+        riskCheckInterval = null;
+        log.info("[AlgoRiskWorker] Local risk check interval cleared.");
+    }
+    log.info("[AlgoRiskWorker] Shutting down active risk workers...");
+    await Promise.all(
+        activeRiskWorkers.map((w) =>
+            w.close().catch((err) => log.error("[AlgoRiskWorker] Error shutting down worker:", err))
+        )
+    );
+    activeRiskWorkers.length = 0;
+    log.info("[AlgoRiskWorker] Active risk workers shut down successfully.");
 };
 
 async function runRiskCycle(run: any, correlationId: string) {
@@ -103,13 +136,51 @@ async function createExitSignal(position: any, price: number) {
 
 // ... rest of the helper functions (startRun, stopRun, recoverRunningRuns)
 export async function recoverRunningRuns() {
-    // Simply ensures the repeatable job is active. 
-    // BullMQ handles job persistence across restarts.
     log.info("Recovering Algo Engine state...");
-    await riskQueue.add("risk-check-loop", {}, {
-        repeat: { every: 30000 },
-        jobId: "risk-check-loop" // Static ID prevents duplicates
-    });
+
+    if (!StartupDiagnostics.isBullMqCompatible) {
+        log.info("[AlgoEngine] [DEGRADED] Using local timer fallback for repeatable risk checks.");
+        if (riskCheckInterval) {
+            clearInterval(riskCheckInterval);
+        }
+
+        const runLocalCycle = async () => {
+            const correlationId = randomUUID();
+            const runningRuns = await AlgoRun.find({ status: "running" }).lean();
+            
+            for (const run of runningRuns) {
+                const resource = `lock:algo-risk:${run._id}`;
+                let lock;
+                try {
+                    lock = await redlock.acquire([resource], 20000);
+                    await runRiskCycle(run, correlationId);
+                } catch (err: any) {
+                    // Locking issue or lock busy; locally execute since we're the only local scheduler
+                    await runRiskCycle(run, correlationId).catch(cycleErr => log.error("Local risk check failed:", cycleErr));
+                } finally {
+                    if (lock) await lock.release().catch(() => {});
+                }
+            }
+        };
+
+        // Run immediately
+        runLocalCycle().catch(err => log.error("Local risk execution failed:", err));
+
+        riskCheckInterval = setInterval(() => {
+            runLocalCycle().catch(err => log.error("Periodic local risk check execution failed:", err));
+        }, 30000);
+        return;
+    }
+
+    try {
+        await riskQueue.add("risk-check-loop", {}, {
+            repeat: { every: 30000 },
+            jobId: "risk-check-loop" // Static ID prevents duplicates
+        });
+        log.info("[AlgoEngine] BullMQ risk check repeatable job recovered successfully.");
+    } catch (err) {
+        log.error("[AlgoEngine] Failed to recover repeatable risk check job:", err);
+    }
 }
 
 export const startRun = startRunLegacy;

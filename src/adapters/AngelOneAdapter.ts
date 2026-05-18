@@ -350,4 +350,8 @@ export class AngelOneAdapter {
 
     return this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
   }
+
+  async getPositions(jwtToken: string) {
+    return this.authGet(jwtToken, "/rest/secure/angelbroking/order/v1/getPosition");
+  }
 }

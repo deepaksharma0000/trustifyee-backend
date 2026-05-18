@@ -4,9 +4,16 @@ import { closeAngelOrder } from "../services/angel.service";
 import log from "../utils/logger";
 import { redisBullConnection } from "../utils/redis";
 
+let activeWorker: Worker | null = null;
+
 export const initAutoExitWorker = () => {
     try {
-        const worker = new Worker(
+        if (activeWorker) {
+            log.warn("[AutoExitWorker] Worker already initialized.");
+            return;
+        }
+
+        activeWorker = new Worker(
             "auto-square-off",
             async (job) => {
                 const { orderId } = job.data;
@@ -54,16 +61,25 @@ export const initAutoExitWorker = () => {
             { connection: redisBullConnection as any, lockDuration: 30000 }
         );
 
-        worker.on("completed", (job) => {
+        activeWorker.on("completed", (job) => {
             log.info(`[AutoExitWorker] Job ${job.id} completed`);
         });
 
-        worker.on("failed", (job, err) => {
+        activeWorker.on("failed", (job, err) => {
             log.error(`[AutoExitWorker] Job ${job?.id} failed:`, err);
         });
 
         log.info("[AutoExitWorker] Worker started and waiting for jobs...");
     } catch (err) {
         log.error("[AutoExitWorker] Critical failure starting worker (Redis down?):", err);
+    }
+};
+
+export const shutdownAutoExitWorker = async () => {
+    if (activeWorker) {
+        log.info("[AutoExitWorker] Shutting down worker...");
+        await activeWorker.close().catch((err) => log.error("[AutoExitWorker] Error closing worker:", err));
+        activeWorker = null;
+        log.info("[AutoExitWorker] Worker shut down cleanly.");
     }
 };

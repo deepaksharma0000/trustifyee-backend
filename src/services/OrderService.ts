@@ -13,6 +13,9 @@ import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 import { validateInstrumentFromMaster } from "./InstrumentValidationService";
 import { apiKeyFingerprint, buildApiKeyRouteBinding, normalizeIpv4 } from "../utils/apiKeyRouteBinding";
+import { eventSourcedOMS } from "./EventSourcedOMS";
+import { globalRateLimiter, PriorityClass } from "./GlobalRateLimiter";
+import { clockDriftMonitor } from "./ClockDriftMonitor";
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
@@ -37,6 +40,10 @@ export type PlaceOrderInput = {
 
   isDynamicQty?: boolean;
   riskPercent?: number;
+  strategyName?: string;
+  strategy?: string;
+  correlationId?: string;
+  positionId?: string;
 };
 
 function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
@@ -405,6 +412,43 @@ export async function placeOrderForClient(
 
   log.debug(`[OrderService] Attempting order for ${clientcode}. Current Failures: ${user!.consecutive_failures || 0}`);
 
+  // 🛡️ [IP WHITELIST HARD SAFETY GUARD]
+  const { StartupDiagnostics } = require("../utils/startupDiagnostics");
+  const licence = String(user!.licence || "").toLowerCase();
+  
+  if (StartupDiagnostics.whitelistMismatchExists && licence === "live") {
+      log.error(`[SAFETY_PROTECTION] Whitelist IP mismatch exists on startup! Blocking LIVE order for client ${clientcode} on ${user!.broker}. Falling back to PAPER trading mode.`);
+
+      // Trigger critical alert
+      const { AlertService } = require("./AlertService");
+      await AlertService.trigger(
+          "WHITELIST_MISMATCH_SAFETY_FALLBACK",
+          `CRITICAL: Whitelist mismatch active! Blocked LIVE order placement for user ID ${userId} (${clientcode}, broker: ${user!.broker}) and fell back to PAPER mode automatically. Outbound IP: ${StartupDiagnostics.detectedOutboundIp}, Configured Whitelisted IP: ${config.publicIp}`,
+          "CRITICAL"
+      );
+
+      // Call Paper Simulator
+      const { paperTradingSimulator } = require("./PaperTradingSimulator");
+      
+      const paperOrderId = (orderInput as any).clientOrderId || `PAPER-${clientcode}-${Date.now().toString().slice(-6)}`;
+      await paperTradingSimulator.submitOrder({
+          clientOrderId: paperOrderId,
+          tradingsymbol: (orderInput as any).tradingsymbol,
+          exchange: (orderInput as any).exchange || "NFO",
+          side: (orderInput as any).side || "BUY",
+          quantity: (orderInput as any).quantity,
+          ordertype: (orderInput as any).ordertype || "MARKET",
+          price: (orderInput as any).price,
+      });
+
+      return {
+          status: true,
+          data: {
+              orderid: paperOrderId,
+              message: "Safety fallback: executed via Paper Trading Simulator due to whitelist IP mismatch"
+          }
+      };
+  }
 
   // 🚀 [BROKER ROUTING]
   const routing = resolveNetworkRouting(orderInput, user);
@@ -477,6 +521,7 @@ export async function placeOrderForClient(
   }
 
   // 😇 [DEFAULT / ANGELONE FLOW] - Unmodified production logic
+  let clientOrderId = "";
   try {
       // 1. Run Validations
       const validation = await runPreTradeValidation(user!._id.toString(), clientcode, {
@@ -491,6 +536,38 @@ export async function placeOrderForClient(
       // 2. Fetch tokens and resolve API Key
       const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
       if (!angelTokens?.jwtToken) throw new Error("No Angel session");
+
+      const correlationId = (orderInput as any).correlationId || `corr_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const positionId = (orderInput as any).positionId || `pos_${orderInput.symboltoken || 'unknown'}`;
+      const strategyRunId = orderInput.strategyName || orderInput.strategy || "Manual";
+
+      clientOrderId = eventSourcedOMS.generateClientOrderId(
+        correlationId,
+        positionId,
+        orderInput.side,
+        strategyRunId
+      );
+
+      // Write-Ahead Intent and Creation Logging
+      await eventSourcedOMS.appendEvent(clientOrderId, "PENDING_BROKER", "INTENT_LOGGED", {
+        userId: userId.toString(),
+        tradingsymbol: orderInput.tradingsymbol,
+        exchange: orderInput.exchange,
+        side: orderInput.side,
+        quantity: orderInput.quantity,
+        positionId,
+        strategyRunId,
+      });
+
+      await eventSourcedOMS.appendEvent(clientOrderId, "PENDING_BROKER", "CREATED", {
+        userId: userId.toString(),
+        tradingsymbol: orderInput.tradingsymbol,
+        exchange: orderInput.exchange,
+        side: orderInput.side,
+        quantity: orderInput.quantity,
+        positionId,
+        strategyRunId,
+      });
 
       // 🚀 [PRE-EXECUTION GUARD] - Fall fast if state is invalid
       const decJwtToken = await ensureEncrypted(angelTokens, 'jwtToken', `user_${userId}_order`);
@@ -585,6 +662,49 @@ export async function placeOrderForClient(
         await enforceApiKeyRoutePairValidation(userId, user, resolvedApiKey, routing, clientcode);
       }
 
+      // 🚀 [RATE LIMITING] - Enforce priority capacity reservation before external broker request
+      let priority: PriorityClass = "ENTRY";
+      if ((orderInput as any).priority) {
+        priority = (orderInput as any).priority;
+      } else if (orderInput.side === "SELL" || (orderInput as any).isExit) {
+        priority = "CRITICAL_EXIT";
+      }
+
+      const fp = apiKeyFingerprint(resolvedApiKey);
+      const acquired = await globalRateLimiter.acquire(fp, priority);
+      if (!acquired) {
+        log.error(`[RateLimiter] Throttling order for ${clientcode} - Priority: ${priority}`);
+        throw new Error(`RATE_LIMIT_EXCEEDED: Execution capacity exceeded for priority ${priority}`);
+      }
+
+      // 🛡️ [STARTUP CIRCUIT BREAKER PROTECTION] - Suspend new entries under SAFE_BOOT_MODE
+      const isEntry = priority === "ENTRY";
+      if (isEntry) {
+        try {
+          const { StartupDiagnostics } = require("../utils/startupDiagnostics");
+          if (StartupDiagnostics.isSafeBootMode()) {
+            log.error(`[StartupCircuitBreaker] Blocked entry order placement for ${clientcode} due to active SAFE_BOOT_MODE`);
+            throw new Error("STARTUP_SAFETY_ALERT: New entry orders are suspended because the system is running in SAFE_BOOT_MODE.");
+          }
+        } catch (diagErr: any) {
+          if (diagErr.message.includes("STARTUP_SAFETY_ALERT")) {
+            throw diagErr;
+          }
+        }
+      }
+
+      // 🛡️ [CLOCK DRIFT SAFETY MODE] - Suspend new entries under temporal degradation modes
+      if (isEntry && !clockDriftMonitor.isEntryAllowed()) {
+        const currentMode = clockDriftMonitor.getSafetyMode();
+        log.error(`[ClockDriftSafety] Blocked entry order placement for ${clientcode} due to safety mode: ${currentMode}`);
+        throw new Error(`TEMPORAL_SAFETY_ALERT: New entry orders are suspended under safety mode: ${currentMode}`);
+      }
+
+      if (!clockDriftMonitor.isExitAllowed()) {
+        log.error(`[ClockDriftSafety] Blocked exit order placement for ${clientcode} due to extreme safety mode: READ_ONLY_MODE`);
+        throw new Error(`TEMPORAL_SAFETY_ALERT: Order placements are suspended under safety mode: READ_ONLY_MODE`);
+      }
+
       // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
       const dynamicAdapter = getOrCreateAngelAdapter(resolvedApiKey, {
         outgoingIp: currentIp,
@@ -607,7 +727,8 @@ export async function placeOrderForClient(
         price: orderInput.ordertype === "LIMIT" ? String(orderInput.price || 0) : "0",
         quantity: String(orderInput.quantity),
         squareoff: "0",
-        stoploss: "0"
+        stoploss: "0",
+        clientref: clientOrderId
       };
 
       // Use dynamic adapter instance with the correct API key and optional agent
@@ -628,6 +749,14 @@ export async function placeOrderForClient(
 
       // Reset failures on success
       if (resp && resp.status === 200 && (brokerSuccess || brokerData?.data?.orderid || brokerData?.orderid)) {
+          const brokerOrderId = brokerData?.data?.orderid || brokerData?.orderid || "PENDING";
+          await eventSourcedOMS.appendEvent(clientOrderId, brokerOrderId, "SUBMITTED", {
+            brokerOrderId,
+          });
+          await eventSourcedOMS.appendEvent(clientOrderId, brokerOrderId, "ACKNOWLEDGED", {
+            brokerOrderId,
+          });
+
           // [ISSUE 2 FIX] Atomic reset in DB + In-memory update
           const successUpdate: any = {
             consecutive_failures: 0,
@@ -756,6 +885,12 @@ export async function placeOrderForClient(
       // Generic Retry Logic (Only for Angel One)
       if (retryCount < 1 && !isInvalidToken) { 
           return placeOrderForClient(userId, clientcode, orderInput, retryCount + 1);
+      }
+
+      if (clientOrderId) {
+        await eventSourcedOMS.appendEvent(clientOrderId, "FAILED_BROKER", "FAILED", {
+          error: err.message,
+        });
       }
 
       // 🛡️ [CIRCUIT BREAKER] - Use atomic increment to avoid race conditions

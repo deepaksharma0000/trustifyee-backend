@@ -1,14 +1,12 @@
+// src/services/marketStream.ts
 import { Server as WebSocketServer, WebSocket } from "ws";
-import { UpstoxAdapter } from "../adapters/UpstoxAdapter";
-import AngelTokensModel from "../models/AngelTokens";
-import UpstoxTokensModel from "../models/UpstoxTokens";
+import Redis from "ioredis";
 import { config } from "../config";
 import log from "../utils/logger";
+import { tickEngineService } from "./TickEngineService";
+import { redisBullConnection } from "../utils/redis";
+import UpstoxTokensModel from "../models/UpstoxTokens";
 import { getUpstoxAdapter } from "../utils/upstox";
-import { decrypt } from "../utils/encryption";
-import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
-import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
-import { resolveAngelSessionContext } from "./AngelSessionContextService";
 
 type QuoteRequestItem = {
   exchange: string;
@@ -16,177 +14,146 @@ type QuoteRequestItem = {
   symboltoken: string;
 };
 
-type ClientState = {
-  intervalMs: number;
-  items: QuoteRequestItem[];
-  timer?: NodeJS.Timeout;
-};
-
-const MIN_FETCH_MS = 1500;
 const DEFAULT_INTERVAL_MS = 3000;
 const MAX_ITEMS = 50;
-const quoteCache = new Map<
+
+// Dynamic quote cache for other services
+export const quoteCache = new Map<
   string,
-  { ltp: number; oi: number | null; ts: number }
+  { ltp: number; oi: number | null; ts: number; volume?: number; percentChange?: number }
 >();
-
-function isInvalidTokenResponse(resp: any) {
-  const body = resp?.data || resp || {};
-  const code = body?.errorCode || body?.errorcode || body?.code || resp?.errorCode || resp?.errorcode;
-  const msg = String(body?.message || resp?.message || "").toLowerCase();
-  return String(code || "").toUpperCase() === "AG8001" || msg.includes("invalid token");
-}
-
-async function refreshAngelSession(session: any) {
-  const sessionDoc = await AngelTokensModel.findById(session?._id);
-  if (!sessionDoc) {
-    throw new Error("Session not found for refresh");
-  }
-
-  const recovery = await recoverSessionByRefreshOrLogin(sessionDoc, "market_stream");
-  if (!recovery.ok || !recovery.jwtToken) {
-    throw new Error(recovery.reason || "SESSION_RECOVERY_FAILED");
-  }
-
-  return { jwtToken: recovery.jwtToken };
-}
 
 export function startMarketStream(server: any) {
   const wss = new WebSocketServer({ server, path: "/ws/market" });
+  log.info("Event-Driven Market stream WS running on /ws/market");
 
   wss.on("connection", (ws: WebSocket) => {
-    const state: ClientState = { intervalMs: DEFAULT_INTERVAL_MS, items: [] };
+    let subRedis: Redis | null = null;
+    let upstoxTimer: NodeJS.Timeout | null = null;
+    let activeAngelSubs: QuoteRequestItem[] = [];
+    let activeUpstoxSubs: QuoteRequestItem[] = [];
 
-    const stopTimer = () => {
-      if (state.timer) {
-        clearInterval(state.timer);
-        state.timer = undefined;
+    const cleanup = () => {
+      // 1. Terminate Redis Pub/Sub client
+      if (subRedis) {
+        subRedis.disconnect();
+        subRedis = null;
       }
+
+      // 2. Unsubscribe active tokens from the master Tick Engine
+      activeAngelSubs.forEach((item) => {
+        tickEngineService.unsubscribe(item.exchange, item.symboltoken);
+      });
+      activeAngelSubs = [];
+
+      // 3. Clear Upstox secondary poll timer
+      if (upstoxTimer) {
+        clearInterval(upstoxTimer);
+        upstoxTimer = null;
+      }
+      activeUpstoxSubs = [];
     };
 
-    const startTimer = () => {
-      stopTimer();
-      if (!state.items.length) return;
-      state.timer = setInterval(async () => {
-        try {
-          // Fetch both sessions
-          const [angelSession, upstoxSession] = await Promise.all([
-            resolveAngelSessionContext({
-              purpose: "market_stream",
-              clientcode: config.dataClientCode || undefined,
-              allowGlobalFallback: false,
-              strictIdentity: true,
-              requireJwt: true,
-            }) as any,
-            UpstoxTokensModel.findOne({ accessToken: { $exists: true } }).sort({ updatedAt: -1 }).lean() as any
-          ]);
+    const handleSubscribe = async (items: QuoteRequestItem[]) => {
+      cleanup();
 
-          if (!angelSession?.jwtToken && !upstoxSession?.accessToken) {
-            // log.warn("No active broker session found for WS stream");
-            return;
+      const limitedItems = items.slice(0, MAX_ITEMS);
+
+      // Separate primary AngelOne items from secondary Upstox items
+      const angelItems = limitedItems.filter(
+        (item) => !item.symboltoken.includes("|") && item.symboltoken.length <= 20
+      );
+      const upstoxItems = limitedItems.filter(
+        (item) => item.symboltoken.includes("|") || item.symboltoken.length > 20
+      );
+
+      activeAngelSubs = angelItems;
+      activeUpstoxSubs = upstoxItems;
+
+      // --- 1. SET UP ANGELONE EVENT-DRIVEN SUBSCRIPTIONS ---
+      if (angelItems.length > 0) {
+        subRedis = new Redis(redisBullConnection as any);
+        const channels: string[] = [];
+        const initialTicks: any[] = [];
+
+        // Resolve channels and query Redis for immediate cached LTP values
+        for (const item of angelItems) {
+          const exName = item.exchange.toUpperCase().trim();
+          const channel = `ticks:${exName}:${item.symboltoken}`.toUpperCase();
+          channels.push(channel);
+
+          // Register with master system Tick Engine
+          tickEngineService.subscribe(item.exchange, item.symboltoken);
+
+          // Proactively fetch cached LTP to prevent blackouts
+          const cachedLtp = await subRedis.get(`LTP:${exName}:${item.symboltoken}`);
+          if (cachedLtp) {
+            const ltpNum = Number(cachedLtp);
+            quoteCache.set(item.symboltoken, { ltp: ltpNum, oi: 0, ts: Date.now() });
+            initialTicks.push({
+              symboltoken: item.symboltoken,
+              ltp: ltpNum,
+              oi: 0,
+              volume: 0,
+              percentChange: 0,
+              ts: Date.now(),
+            });
           }
+        }
 
-          let jwtToken = angelSession?.jwtToken;
-          let upstoxToken = upstoxSession?.accessToken;
-          const results: any[] = [];
-          const now = Date.now();
-          const limitedItems = state.items.slice(0, MAX_ITEMS);
+        // Push initial cache hits instantly
+        if (initialTicks.length > 0 && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "tick", items: initialTicks }));
+        }
 
-          // Batching for AngelOne
-          const angelItems = limitedItems.filter(item => !item.symboltoken.includes("|") && item.symboltoken.length <= 20);
-          const upstoxItems = limitedItems.filter(item => item.symboltoken.includes("|") || item.symboltoken.length > 20);
+        // Subscribe to real-time tick channel multicasts
+        subRedis.subscribe(...channels);
 
-          // Handle AngelOne Batched (Dynamic Resolution)
-          if (angelItems.length > 0 && jwtToken) {
-            const { DataFeedService } = require("./DataFeedService");
-            try {
-              const exchangeSymbols: Record<string, string[]> = {};
-              const symbolToOrigItem: Record<string, any> = {};
+        subRedis.on("message", (channel, message) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          try {
+            const parsed = JSON.parse(message);
+            
+            // Standardize cache entry
+            quoteCache.set(parsed.token, {
+              ltp: parsed.ltp,
+              oi: 0,
+              ts: parsed.timestamp,
+            });
 
-              angelItems.forEach(item => {
-                if (!exchangeSymbols[item.exchange]) exchangeSymbols[item.exchange] = [];
-                exchangeSymbols[item.exchange].push(item.tradingsymbol);
-                symbolToOrigItem[item.tradingsymbol] = item;
-              });
+            // Standardize format back to frontend contract
+            const tick = {
+              symboltoken: parsed.token,
+              ltp: parsed.ltp,
+              oi: 0,
+              volume: 0,
+              percentChange: 0,
+              ts: parsed.timestamp,
+            };
 
-              // 🛡️ Resolve Symbols to Tokens dynamically
-              const resolvedMap: Record<string, string[]> = {};
-              for (const ex in exchangeSymbols) {
-                  const resolved = await DataFeedService.resolveSymbols(ex, exchangeSymbols[ex]);
-                  const resolvedTokens = Object.values(resolved).filter(Boolean) as string[];
-                  if (resolvedTokens.length > 0) {
-                    resolvedMap[ex] = resolvedTokens;
-                  }
-              }
-
-              if (Object.keys(resolvedMap).length === 0) {
-                log.warn("[MarketStream] No tokens resolved for requested symbols.");
-                return;
-              }
-
-              if (!angelSession.apiKey) throw new Error(`API Key missing for ${angelSession.clientcode}`);
-              const sessionApiKey = decrypt(angelSession.apiKey, `market_stream_${angelSession.clientcode}`);
-              const angelAdapter = getOrCreateAngelAdapter(sessionApiKey);
-
-              let resp = await angelAdapter.getMarketData(jwtToken, "FULL", resolvedMap);
-
-              // 🔍 [DEBUG] RAW WS QUOTE RESPONSE
-              if (resp?.data) {
-                log.info(`[WS_QUOTE_DATA] Total fetched: ${resp.data.fetched?.length || 0}`);
-              }
-
-              if (isInvalidTokenResponse(resp)) {
-                log.info(`[MarketStream] Token invalid for ${angelSession.clientcode}, refreshing...`);
-                const refreshed = await refreshAngelSession(angelSession);
-                jwtToken = refreshed.jwtToken;
-                resp = await angelAdapter.getMarketData(jwtToken, "FULL", resolvedMap);
-              }
-
-              if (resp && resp.status === 200 && resp.data && resp.data.fetched) {
-                resp.data.fetched.forEach((data: any) => {
-                  const token = data.symbolToken;
-                  const ltp = Number(data.ltp || 0);
-                  const lastPrice = Number(data.lastPrice || 0);
-                  const close = Number(data.close || ltp || lastPrice || 0);
-                  
-                  // Fallback Logic
-                  let finalLtp = ltp || lastPrice || close || 0;
-                  
-                  if (finalLtp === 0) {
-                     log.error(`[WS_ZERO_LTP] Token ${token} still 0. Raw: ${JSON.stringify(data)}`);
-                  }
-
-                  const oi = Number(data.oi || data.openInterest || 0);
-                  const volume = Number(data.volume || data.tradeVolume || 0);
-                  let percentChange = Number(data.percentChange || 0);
-
-                  // Fallback: Calculate percentChange if it's 0 but there's a difference between finalLtp and close
-                  if (percentChange === 0 && finalLtp !== 0 && close !== 0 && finalLtp !== close) {
-                    percentChange = Number((((finalLtp - close) / close) * 100).toFixed(2));
-                  }
-
-                  quoteCache.set(token, { ltp: finalLtp, oi, ts: Date.now(), volume, percentChange } as any);
-                  results.push({
-                    symboltoken: token,
-                    ltp: finalLtp,
-                    oi,
-                    volume,
-                    percentChange,
-                    ts: Date.now()
-                  });
-                });
-              }
-            } catch (err) {
-              log.error("Angel Market Data Batch failed:", err);
-            }
+            ws.send(JSON.stringify({ type: "tick", items: [tick] }));
+          } catch (err: any) {
+            log.error("[MarketStream] Redis Tick Forwarding failed:", err.message);
           }
+        });
+      }
 
-          // Handle Upstox (keeping it simple for now as it's secondary)
-          if (upstoxItems.length > 0 && upstoxToken) {
-            const upstoxAdapter = getUpstoxAdapter();
+      // --- 2. SET UP UPSTOX SECONDARY POLLING (Isolated Secondary Fallback) ---
+      if (upstoxItems.length > 0) {
+        const upstoxAdapter = getUpstoxAdapter();
+        
+        const executeUpstoxPoll = async () => {
+          try {
+            const upstoxSession = await UpstoxTokensModel.findOne({ accessToken: { $exists: true } })
+              .sort({ updatedAt: -1 })
+              .lean();
+
+            if (!upstoxSession?.accessToken) return;
+
+            const results: any[] = [];
             for (const item of upstoxItems) {
               try {
-                const resp = await upstoxAdapter.getLtp(upstoxToken, item.symboltoken);
+                const resp = await upstoxAdapter.getLtp(upstoxSession.accessToken, item.symboltoken);
                 const data = resp?.data || {};
                 let entry = data[item.symboltoken as keyof typeof data];
                 if (!entry) {
@@ -196,9 +163,9 @@ export function startMarketStream(server: any) {
                 const ltp = Number(entry?.last_price || 0);
                 const oi = Number(entry?.oi || 0);
                 const volume = Number(entry?.volume || 0);
-                const percentChange = Number(entry?.cp || 0); // Upstox often uses cp for change percent
+                const percentChange = Number(entry?.cp || 0);
 
-                quoteCache.set(item.symboltoken, { ltp, oi, ts: Date.now(), volume, percentChange } as any);
+                quoteCache.set(item.symboltoken, { ltp, oi, ts: Date.now(), volume, percentChange });
                 results.push({
                   symboltoken: item.symboltoken,
                   tradingsymbol: item.tradingsymbol,
@@ -206,45 +173,41 @@ export function startMarketStream(server: any) {
                   oi,
                   volume,
                   percentChange,
-                  ts: Date.now()
+                  ts: Date.now(),
                 });
-              } catch (err) { }
+              } catch (err) {}
             }
-          }
 
-          if (results.length > 0) {
-            ws.send(JSON.stringify({ type: "tick", items: results }));
+            if (results.length > 0 && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "tick", items: results }));
+            }
+          } catch (err: any) {
+            log.error("[MarketStream] Upstox Polling failure:", err.message);
           }
-        } catch (err: any) {
-          ws.send(JSON.stringify({ type: "error", message: err.message || String(err) }));
-        }
-      }, Math.max(state.intervalMs, DEFAULT_INTERVAL_MS));
+        };
+
+        // Trigger immediate first fetch and start polling interval
+        await executeUpstoxPoll();
+        upstoxTimer = setInterval(executeUpstoxPoll, DEFAULT_INTERVAL_MS);
+      }
     };
 
-    ws.on("message", (raw) => {
+    ws.on("message", async (raw) => {
       try {
         const msg = JSON.parse(String(raw));
         if (msg?.type === "subscribe" && Array.isArray(msg.items)) {
-          state.items = msg.items;
-          state.intervalMs =
-            typeof msg.intervalMs === "number"
-              ? Math.max(msg.intervalMs, DEFAULT_INTERVAL_MS)
-              : state.intervalMs;
-          startTimer();
+          await handleSubscribe(msg.items);
         }
         if (msg?.type === "unsubscribe") {
-          state.items = [];
-          stopTimer();
+          cleanup();
         }
       } catch (err: any) {
-        ws.send(JSON.stringify({ type: "error", message: "Invalid message" }));
+        ws.send(JSON.stringify({ type: "error", message: "Invalid payload format" }));
       }
     });
 
     ws.on("close", () => {
-      stopTimer();
+      cleanup();
     });
   });
-
-  log.info("Market stream WS running on /ws/market");
 }

@@ -404,13 +404,85 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     return res.status(500).json({ error: err.message || err });
   }
 });
-router.post("/place-user", auth, async (_req, res) => {
-  log.warn("[LEGACY_ROUTE_CALLED] /api/orders/place-user called. Resource is Gone.");
-  return res.status(410).json({
-    status: false,
-    code: 'USER_DEVICE_EXECUTION_REQUIRED',
-    error: "Server-side execution disabled. Use the integrated user-device executor in the dashboard."
-  });
+router.post("/place-user", auth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { symbol, optiontype, side, quantity, strategy, producttype } = req.body;
+    let { tradingsymbol, symboltoken } = req.body;
+
+    log.info("[PLACE_USER] Compliant manual signal generation requested:", {
+      userId: user?._id,
+      symbol,
+      optiontype,
+      side,
+      quantity,
+      strategy
+    });
+
+    // 1. Auto-resolve ATM contract if missing but symbol & optiontype provided
+    if (!tradingsymbol && symbol && optiontype) {
+      const { getOptionChain } = await import("../services/NiftyOptionService");
+      const normalizedSym = symbol.toUpperCase().replace("-", "").replace(" ", "") as any;
+      const chain = await getOptionChain(normalizedSym);
+      const atmStrike = chain.atmStrike;
+      const match = chain.options.find(
+        (o: any) => o.strike === atmStrike && String(o.optiontype).toUpperCase() === String(optiontype).toUpperCase()
+      );
+
+      if (!match) {
+        return res.status(400).json({
+          ok: false,
+          status: false,
+          error: `Could not resolve ATM ${optiontype} for ${symbol}`
+        });
+      }
+
+      tradingsymbol = match.tradingsymbol;
+      symboltoken = match.symboltoken;
+    }
+
+    if (!tradingsymbol) {
+      return res.status(400).json({
+        ok: false,
+        status: false,
+        error: "tradingsymbol is required or could not be resolved."
+      });
+    }
+
+    // 2. Generate a compliant TRADE_SIGNAL via SignalService
+    const { SignalService } = await import("../services/SignalService");
+    const signal = await SignalService.createSignal({
+      symbol: symbol || tradingsymbol,
+      exchange: "NFO",
+      side: (side || "BUY").toUpperCase() as any,
+      tradingsymbol,
+      strike: undefined,
+      optiontype: optiontype ? (optiontype.toUpperCase() as any) : undefined,
+      price: 0, // Market order
+      quantity: Number(quantity) || 1,
+      strategy: strategy || "Manual",
+      signalType: "ENTRY",
+      executionMode: "CLIENT"
+    });
+
+    log.info(`[PLACE_USER] Compliant signal generated: ${signal._id} for ${user?._id}`);
+
+    // Return exact keys expected by the frontend: ok: true, orderid (mapped to signalId)
+    return res.json({
+      ok: true,
+      status: true,
+      message: "Order signal generated and pushed to your device. Direct execution starting...",
+      signalId: signal?._id,
+      orderid: signal?._id
+    });
+  } catch (err: any) {
+    log.error("[PLACE_USER] Compliant signal generation failed:", err.message || err);
+    return res.status(500).json({
+      ok: false,
+      status: false,
+      error: err.message || "Internal server error"
+    });
+  }
 });
 
 
