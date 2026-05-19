@@ -68,9 +68,21 @@ export const queueExecution = async (req: Request, res: Response) => {
 
         const clientOrderId = `USER-${uuidv4()}`;
         const correlationId = uuidv4();
-        const resolvedClientCode = decrypt(user.client_key || "");
+        const resolvedClientCode = decrypt(user.client_key || "", "client_key");
+
+        // High-Visibility Telemetry Tracing logs
+        console.log("=================================================================");
+        console.log(`[SignalController] 🚨 QUEUE_EXECUTION INITIATED:`);
+        console.log(`- Resolved userId: ${userId}`);
+        console.log(`- User Model Client Key in DB: ${user.client_key}`);
+        console.log(`- Decrypted Client Code: ${resolvedClientCode || "FAILED_TO_DECRYPT"}`);
+        console.log(`- Assigned Broker: ${user.broker || "ANGELONE"}`);
+        console.log(`- Has Decrypted Password: ${user.broker_password ? "YES" : "NO"}`);
+        console.log(`- Has TOTP Secret: ${user.broker_totp_secret ? "YES" : "NO"}`);
+        console.log("=================================================================");
 
         if (!resolvedClientCode) {
+            console.error(`[SignalController] ❌ Queue Execution Rejected: client_key decryption failed or returned empty for userId: ${userId}`);
             return res.status(400).json({
                 status: false,
                 error: "Client code is missing or invalid. Please reconnect broker credentials."

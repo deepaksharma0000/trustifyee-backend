@@ -46,9 +46,34 @@ export const safeDecrypt = (text: string, identifier: string = 'field'): string 
     if (!text) return null;
     
     const maskedRaw = text.length > 10 ? text.substring(0, 10) + '...' : text;
+    const hasPrefix = isMigrated(text);
 
-    // If it doesn't have the prefix, treat as plaintext or legacy
-    if (!isMigrated(text)) {
+    // If it doesn't have the prefix, treat as plaintext OR legacy iv:ciphertext format
+    if (!hasPrefix) {
+        const textParts = text.split(':');
+        if (textParts.length === 2) {
+            const [ivHex, encryptedHex] = textParts;
+            const hexRegex = /^[0-9a-fA-F]+$/;
+            if (hexRegex.test(ivHex) && hexRegex.test(encryptedHex) && ivHex.length === 32) {
+                // High-visibility telemetry log for legacy migration path
+                log.info(`[DECRYPTION_INFO] [LEGACY_ENCRYPTED_FORMAT_DETECTED] [${identifier}] Field: ${identifier}`);
+                try {
+                    const iv = Buffer.from(ivHex, 'hex');
+                    const encryptedText = Buffer.from(encryptedHex, 'hex');
+                    const decipher = crypto.createDecipheriv('aes-256-cbc', getKey(), iv);
+                    let decrypted = decipher.update(encryptedText);
+                    decrypted = Buffer.concat([decrypted, decipher.final()]);
+                    const result = decrypted.toString('utf8');
+                    if (result && result.length > 0) {
+                        log.info(`%c[DECRYPTION_SUCCESS] [${identifier}] Decrypted legacy format successfully. Client Code resolved: ${result}`, "color: #4caf50; font-weight: bold;");
+                        return result;
+                    }
+                } catch (err: any) {
+                    log.error(`[DECRYPTION_FAILURE] [LEGACY_DECRYPT_FAILED] [${identifier}] Failed to decrypt legacy format: ${err.message}`);
+                }
+            }
+        }
+
         // [AUDIT] Log that we are using legacy plaintext
         if (ENCRYPTION_VERBOSE && text.length > 5) {
             log.debug(`[DECRYPTION_INFO] [PLAINTEXT_DETECTED] [${identifier}] Field: ${identifier}`);
