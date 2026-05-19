@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { observabilityStack } from "../services/ObservabilityStack";
 import { shadowExecutionService } from "../services/ShadowExecutionService";
+import { systemConfigManager } from "../services/SystemConfigManager";
 
 const router = Router();
 
@@ -92,6 +93,41 @@ router.get("/startup/replay/:correlationId", async (req, res) => {
     res.json({
       status: "success",
       data: replay,
+    });
+  } catch (err: any) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+/**
+ * Retrieve system-wide operational feature flags
+ */
+router.get("/flags", (req, res) => {
+  res.json({
+    status: "success",
+    flags: systemConfigManager.getSnapshot(),
+  });
+});
+
+/**
+ * Toggle a global operational feature flag securely (Emergency Kill Switch, safe mode, live trade, etc.)
+ */
+router.post("/flags/toggle", async (req, res) => {
+  try {
+    const { key, value } = req.body;
+    if (key === undefined || value === undefined) {
+      return res.status(400).json({ status: "error", message: "key and value fields are required in request body" });
+    }
+
+    const success = await systemConfigManager.updateFlag(key, value === true || value === "true");
+    if (!success) {
+      return res.status(500).json({ status: "error", message: `Failed to update system flag: ${key}` });
+    }
+
+    res.json({
+      status: "success",
+      message: `System flag '${key}' updated successfully to ${value}`,
+      flags: systemConfigManager.getSnapshot(),
     });
   } catch (err: any) {
     res.status(500).json({ status: "error", message: err.message });

@@ -16,6 +16,8 @@ import { apiKeyFingerprint, buildApiKeyRouteBinding, normalizeIpv4 } from "../ut
 import { eventSourcedOMS } from "./EventSourcedOMS";
 import { globalRateLimiter, PriorityClass } from "./GlobalRateLimiter";
 import { clockDriftMonitor } from "./ClockDriftMonitor";
+import { MarketOrderProtection } from "../utils/MarketOrderProtection";
+
 
 // Removed global adapters to enforce per-user API keys
 // const adapter = new AngelOneAdapter();
@@ -410,22 +412,79 @@ export async function placeOrderForClient(
       return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
   }
 
+  // 🛡️ [GLOBAL OPERATIONAL FEATURE FLAGS & EMERGENCY KILL SWITCH]
+  const { systemConfigManager } = require("./SystemConfigManager");
+  const flags = systemConfigManager.getSnapshot();
+
+  const isExit = orderInput.side === "SELL" || (orderInput as any).isExit;
+  const isEntry = !isExit;
+
+  if (flags.EMERGENCY_KILL_SWITCH && isEntry) {
+      log.error(`[EMERGENCY_KILL_SWITCH] Blocked new entry order for ${clientcode} - global kill switch engaged.`);
+      throw new Error("EMERGENCY_KILL_SWITCH_ENGAGED: New entry orders are suspended by system administrators.");
+  }
+
+  if (flags.SAFE_MODE_GLOBAL && isEntry) {
+      log.error(`[SAFE_MODE_GLOBAL] Blocked new entry order for ${clientcode} - Global Safe Mode active.`);
+      throw new Error("SAFE_MODE_GLOBAL_ACTIVE: Global Safe Mode is active. New entry orders are suspended.");
+  }
+
+  if (flags.BROKER_DISABLED) {
+      log.error(`[BROKER_DISABLED] Blocked outbound order for ${clientcode} - Broker connections disabled.`);
+      throw new Error("BROKER_CONNECTIONS_DISABLED: All outbound broker execution has been temporarily suspended by administrators.");
+  }
+
+  if (!flags.LIVE_TRADING_ENABLED && !flags.PAPER_ONLY_MODE && !flags.SHADOW_ONLY_MODE) {
+      log.error(`[LIVE_TRADING_DISABLED] Blocked order for ${clientcode} - Live trading is disabled globally.`);
+      throw new Error("LIVE_TRADING_DISABLED: Outbound live trading is suspended globally.");
+  }
+
   log.debug(`[OrderService] Attempting order for ${clientcode}. Current Failures: ${user!.consecutive_failures || 0}`);
+
+  // 🛡️ [MARKET ORDER PROTECTION & COMPLIANCE]
+  const protectionResult = await MarketOrderProtection.enforceProtection(
+      orderInput,
+      "",
+      ""
+  );
+
+  // Override input with protected values
+  orderInput.ordertype = protectionResult.ordertype;
+  orderInput.price = Number(protectionResult.price);
+
 
   // 🛡️ [IP WHITELIST HARD SAFETY GUARD]
   const { StartupDiagnostics } = require("../utils/startupDiagnostics");
-  const licence = String(user!.licence || "").toLowerCase();
   
-  if (StartupDiagnostics.whitelistMismatchExists && licence === "live") {
-      log.error(`[SAFETY_PROTECTION] Whitelist IP mismatch exists on startup! Blocking LIVE order for client ${clientcode} on ${user!.broker}. Falling back to PAPER trading mode.`);
+  // Force paper trading if paper only or shadow mode is globally active, or if running in staging/development
+  const isStagingEnv = process.env.NODE_ENV !== "production";
+  const licence = (flags.PAPER_ONLY_MODE || flags.SHADOW_ONLY_MODE || isStagingEnv) 
+      ? "paper" 
+      : String(user!.licence || "").toLowerCase();
 
-      // Trigger critical alert
-      const { AlertService } = require("./AlertService");
-      await AlertService.trigger(
-          "WHITELIST_MISMATCH_SAFETY_FALLBACK",
-          `CRITICAL: Whitelist mismatch active! Blocked LIVE order placement for user ID ${userId} (${clientcode}, broker: ${user!.broker}) and fell back to PAPER mode automatically. Outbound IP: ${StartupDiagnostics.detectedOutboundIp}, Configured Whitelisted IP: ${config.publicIp}`,
-          "CRITICAL"
-      );
+  if (isStagingEnv) {
+      log.info(`[ENVIRONMENT_ISOLATION] Running in non-production environment: forcing paper trading for safety.`);
+  }
+
+  if (flags.SHADOW_ONLY_MODE) {
+      log.info(`[SHADOW_ONLY_MODE] Running shadow-only execution for ${clientcode}. Real order will execute via Paper Simulator.`);
+  }
+  
+  if ((StartupDiagnostics.whitelistMismatchExists && licence === "live") || licence === "paper") {
+      const isMismatch = StartupDiagnostics.whitelistMismatchExists && licence === "live";
+      if (isMismatch) {
+          log.error(`[SAFETY_PROTECTION] Whitelist IP mismatch exists on startup! Blocking LIVE order for client ${clientcode} on ${user!.broker}. Falling back to PAPER trading mode.`);
+          
+          // Trigger critical alert
+          const { AlertService } = require("./AlertService");
+          await AlertService.trigger(
+              "WHITELIST_MISMATCH_SAFETY_FALLBACK",
+              `CRITICAL: Whitelist mismatch active! Blocked LIVE order placement for user ID ${userId} (${clientcode}, broker: ${user!.broker}) and fell back to PAPER mode automatically. Outbound IP: ${StartupDiagnostics.detectedOutboundIp}, Configured Whitelisted IP: ${config.publicIp}`,
+              "CRITICAL"
+          );
+      } else {
+          log.info(`[PAPER_SIMULATOR] Routing order for ${clientcode} to Paper Trading Simulator.`);
+      }
 
       // Call Paper Simulator
       const { paperTradingSimulator } = require("./PaperTradingSimulator");
@@ -445,7 +504,9 @@ export async function placeOrderForClient(
           status: true,
           data: {
               orderid: paperOrderId,
-              message: "Safety fallback: executed via Paper Trading Simulator due to whitelist IP mismatch"
+              message: isMismatch 
+                ? "Safety fallback: executed via Paper Trading Simulator due to whitelist IP mismatch"
+                : "Executed via Paper Trading Simulator"
           }
       };
   }
@@ -537,37 +598,7 @@ export async function placeOrderForClient(
       const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
       if (!angelTokens?.jwtToken) throw new Error("No Angel session");
 
-      const correlationId = (orderInput as any).correlationId || `corr_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-      const positionId = (orderInput as any).positionId || `pos_${orderInput.symboltoken || 'unknown'}`;
-      const strategyRunId = orderInput.strategyName || orderInput.strategy || "Manual";
 
-      clientOrderId = eventSourcedOMS.generateClientOrderId(
-        correlationId,
-        positionId,
-        orderInput.side,
-        strategyRunId
-      );
-
-      // Write-Ahead Intent and Creation Logging
-      await eventSourcedOMS.appendEvent(clientOrderId, "PENDING_BROKER", "INTENT_LOGGED", {
-        userId: userId.toString(),
-        tradingsymbol: orderInput.tradingsymbol,
-        exchange: orderInput.exchange,
-        side: orderInput.side,
-        quantity: orderInput.quantity,
-        positionId,
-        strategyRunId,
-      });
-
-      await eventSourcedOMS.appendEvent(clientOrderId, "PENDING_BROKER", "CREATED", {
-        userId: userId.toString(),
-        tradingsymbol: orderInput.tradingsymbol,
-        exchange: orderInput.exchange,
-        side: orderInput.side,
-        quantity: orderInput.quantity,
-        positionId,
-        strategyRunId,
-      });
 
       // 🚀 [PRE-EXECUTION GUARD] - Fall fast if state is invalid
       const decJwtToken = await ensureEncrypted(angelTokens, 'jwtToken', `user_${userId}_order`);
@@ -648,7 +679,7 @@ export async function placeOrderForClient(
             });
           }
       }
-      
+
       if (!resolvedApiKey || resolvedApiKey.length < 5) {
           log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid API Key for ${clientcode}`);
           throw new Error("Invalid or missing API key. Please update your broker settings.");
@@ -661,6 +692,61 @@ export async function placeOrderForClient(
       if (isEndUser) {
         await enforceApiKeyRoutePairValidation(userId, user, resolvedApiKey, routing, clientcode);
       }
+
+      // Enforce SEBI/NSE compliance and market order protection
+      const protectionResult = await MarketOrderProtection.enforceProtection(
+        orderInput,
+        decJwtToken,
+        resolvedApiKey
+      );
+
+      const correlationId = (orderInput as any).correlationId || `corr_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const positionId = (orderInput as any).positionId || `pos_${orderInput.symboltoken || 'unknown'}`;
+      const strategyRunId = orderInput.strategyName || orderInput.strategy || "Manual";
+
+      clientOrderId = eventSourcedOMS.generateClientOrderId(
+        correlationId,
+        positionId,
+        orderInput.side,
+        strategyRunId
+      );
+
+      // Write-Ahead Intent and Creation Logging with COMPLIANCE METADATA
+      await eventSourcedOMS.appendEvent(clientOrderId, "PENDING_BROKER", "INTENT_LOGGED", {
+        userId: userId.toString(),
+        tradingsymbol: orderInput.tradingsymbol,
+        exchange: orderInput.exchange,
+        side: orderInput.side,
+        quantity: orderInput.quantity,
+        positionId,
+        strategyRunId,
+        compliance: {
+          originalType: protectionResult.originalType,
+          executedType: protectionResult.ordertype,
+          slippagePercent: protectionResult.slippagePercent,
+          referenceLtp: protectionResult.ltp,
+          routeType: routing.dedicatedRoutingEnabled ? "DEDICATED" : "SHARED",
+          routeIp: routing.outgoingIp || "SERVER_SHARED_IP",
+        }
+      });
+
+      await eventSourcedOMS.appendEvent(clientOrderId, "PENDING_BROKER", "CREATED", {
+        userId: userId.toString(),
+        tradingsymbol: orderInput.tradingsymbol,
+        exchange: orderInput.exchange,
+        side: orderInput.side,
+        quantity: orderInput.quantity,
+        positionId,
+        strategyRunId,
+        compliance: {
+          originalType: protectionResult.originalType,
+          executedType: protectionResult.ordertype,
+          slippagePercent: protectionResult.slippagePercent,
+          referenceLtp: protectionResult.ltp,
+          routeType: routing.dedicatedRoutingEnabled ? "DEDICATED" : "SHARED",
+          routeIp: routing.outgoingIp || "SERVER_SHARED_IP",
+        }
+      });
 
       // 🚀 [RATE LIMITING] - Enforce priority capacity reservation before external broker request
       let priority: PriorityClass = "ENTRY";
@@ -713,7 +799,7 @@ export async function placeOrderForClient(
 
       orderInput.symboltoken = await resolveOrderSymbolToken(orderInput);
 
-      // 3. Place Order
+      // 3. Place Order using Protection Result
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
       const payload = {
         variety: "NORMAL",
@@ -721,10 +807,10 @@ export async function placeOrderForClient(
         symboltoken: orderInput.symboltoken,
         transactiontype: txType,
         exchange: orderInput.exchange || "NFO",
-        ordertype: orderInput.ordertype || "MARKET",
+        ordertype: protectionResult.ordertype, // Enforced "LIMIT" type
         producttype: orderInput.producttype || "INTRADAY",
-        duration: "DAY",
-        price: orderInput.ordertype === "LIMIT" ? String(orderInput.price || 0) : "0",
+        duration: orderInput.duration || "DAY",
+        price: protectionResult.price,         // Enforced slippage protected price
         quantity: String(orderInput.quantity),
         squareoff: "0",
         stoploss: "0",

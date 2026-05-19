@@ -547,3 +547,75 @@ export const reactivateTrading = async (req: Request, res: Response) => {
         res.status(500).json({ error: err.message, status: false });
     }
 };
+
+export const startTradingDay = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const user = await User.findById(id);
+        if (!user) return res.status(404).json({ error: 'User not found', status: false });
+
+        const clientcode = decrypt(user.client_key || "");
+        
+        // 1. Check broker token presence and expiry
+        const now = new Date();
+        const angelToken = await AngelTokensModel.findOne({
+            userId: user._id,
+            clientcode,
+            expiresAt: { $gt: now }
+        }).lean();
+
+        if (!angelToken || !angelToken.jwtToken) {
+            return res.status(200).json({
+                status: true,
+                sessionState: "PENDING_AUTH",
+                message: "No active broker session found. Please authenticate with your broker.",
+            });
+        }
+
+        // 2. Validate session and retrieve margin
+        const { ProfileValidationService } = require('../services/ProfileValidationService');
+        const { RiskManagementService } = require('../services/RiskManagementService');
+        
+        const profile = await ProfileValidationService.validateUserSession(user._id.toString(), clientcode);
+        if (!profile.status) {
+            return res.status(200).json({
+                status: true,
+                sessionState: "EXPIRED",
+                message: `Broker session invalid: ${profile.message}. Please login again.`,
+            });
+        }
+
+        const margin = await RiskManagementService.getAvailableMargin(user._id.toString(), clientcode);
+
+        // 3. Check system startup diagnostics and circuit breakers
+        const { StartupDiagnostics } = require('../utils/startupDiagnostics');
+        const { clockDriftMonitor } = require('../services/ClockDriftMonitor');
+
+        let sessionState = "AUTHORIZED";
+        let message = "Trading Day started successfully! Algo execution is fully authorized.";
+
+        if (StartupDiagnostics.isSafeBootMode()) {
+            sessionState = "SAFE_MODE";
+            message = "System is running under SAFE_BOOT_MODE. Only paper trading and exits are allowed.";
+        } else if (!clockDriftMonitor.isEntryAllowed()) {
+            sessionState = "READ_ONLY_MODE";
+            message = `System is running in READ_ONLY_MODE due to clock drift: ${clockDriftMonitor.getSafetyMode()}. Entries are suspended.`;
+        }
+
+        res.status(200).json({
+            status: true,
+            sessionState,
+            message,
+            data: {
+                user_name: user.user_name,
+                trading_paused: user.trading_paused || false,
+                profile_valid: profile.status,
+                margin_valid: margin.status,
+                margin_data: margin.data,
+            }
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, status: false });
+    }
+};
+

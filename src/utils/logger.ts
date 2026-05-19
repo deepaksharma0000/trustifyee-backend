@@ -29,6 +29,49 @@ const serializeError = (err: Error) => ({
   stack: err.stack,
 });
 
+const SENSITIVE_KEYS_SCRUB = new Set([
+  "apikey", "apisecret", "jwttoken", "accesstoken", "refreshtoken", 
+  "password", "totp", "totpsecret", "client_key", "encryptionkey", "secret", "appcode", "token"
+]);
+
+const SENSITIVE_KEYS_MASK = new Set([
+  "email", "phone", "mobile", "pan", "aadhar", "dob", "address", "clientname", "username"
+]);
+
+const maskValue = (val: string): string => {
+  if (!val || typeof val !== "string") return val;
+  if (val.includes("@")) {
+    const [local, domain] = val.split("@");
+    return `${local[0]}***${local.slice(-1)}@${domain}`;
+  }
+  if (val.length <= 4) return "****";
+  return `${val.slice(0, 2)}****${val.slice(-2)}`;
+};
+
+const sanitizePayload = (obj: any): any => {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== "object") return obj;
+
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizePayload);
+  }
+
+  const sanitized: Record<string, any> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    const lowerKey = key.toLowerCase();
+    if (SENSITIVE_KEYS_SCRUB.has(lowerKey)) {
+      sanitized[key] = "[SCRUBBED]";
+    } else if (SENSITIVE_KEYS_MASK.has(lowerKey)) {
+      sanitized[key] = maskValue(String(val));
+    } else if (typeof val === "object") {
+      sanitized[key] = sanitizePayload(val);
+    } else {
+      sanitized[key] = val;
+    }
+  }
+  return sanitized;
+};
+
 const safeStringify = (payload: unknown) => {
   const seen = new WeakSet();
   return JSON.stringify(payload, (_key, value) => {
@@ -83,7 +126,8 @@ const createLogger = (context: Record<string, any> = {}) => {
       payload.meta = detailParts;
     }
 
-    const line = safeStringify(payload);
+    const sanitized = sanitizePayload(payload);
+    const line = safeStringify(sanitized);
     if (level === "error") {
       process.stderr.write(line + "\n");
       return;

@@ -148,6 +148,14 @@ async function start() {
     // 1. Run all startup dependency checks (includes exponential Mongo retry & Redis compatibility validation)
     await StartupDiagnostics.runAllChecks();
 
+    // 1.1 Load operational feature flags and emergency kill switch configurations
+    try {
+      const { systemConfigManager } = require("./services/SystemConfigManager");
+      await systemConfigManager.initialize();
+    } catch (flagErr: any) {
+      log.error("[STARTUP] SystemConfigManager initialization failed:", flagErr.message);
+    }
+
     // 2. Initialize workers and queues (only after dependencies are proven healthy)
     initAutoExitWorker();
     initTradeExecutionWorker();
