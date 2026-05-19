@@ -68,12 +68,21 @@ export const queueExecution = async (req: Request, res: Response) => {
 
         const clientOrderId = `USER-${uuidv4()}`;
         const correlationId = uuidv4();
-        const resolvedClientCode = decrypt(user.client_key || "", "client_key");
+        
+        const rawClientKey = user.client_key || "";
+        const rawClientKeyLength = rawClientKey.length;
+        const resolvedClientCode = decrypt(rawClientKey, "client_key");
+
+        const activeKey = require('../config').config.encryptionKey || 'your-default-secure-key-32-chars-long';
+        const activeKeyHash = require('crypto').createHash('sha256').update(String(activeKey)).digest('hex');
 
         // High-Visibility Telemetry Tracing logs
         console.log("=================================================================");
         console.log(`[SignalController] 🚨 QUEUE_EXECUTION INITIATED:`);
         console.log(`- Resolved userId: ${userId}`);
+        console.log(`- client_key raw length before decrypt: ${rawClientKeyLength}`);
+        console.log(`- Active ENCRYPTION_SECRET SHA256 Hash: ${activeKeyHash}`);
+        console.log(`- Decrypted Client Code status: ${resolvedClientCode ? `RESOLVED (length: ${resolvedClientCode.length})` : "FAILED/NULL"}`);
         console.log(`- User Model Client Key in DB: ${user.client_key}`);
         console.log(`- Decrypted Client Code: ${resolvedClientCode || "FAILED_TO_DECRYPT"}`);
         console.log(`- Assigned Broker: ${user.broker || "ANGELONE"}`);

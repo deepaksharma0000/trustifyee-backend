@@ -43,81 +43,104 @@ export const encrypt = (text: string): string => {
  * 3. [STRICT] If decryption fails -> return NULL and log error
  */
 export const safeDecrypt = (text: string, identifier: string = 'field'): string | null => {
-    if (!text) return null;
+    if (!text) {
+        const activeKeyHash = crypto.createHash('sha256').update(String(ENCRYPTION_KEY)).digest('hex');
+        log.info(`[DECRYPTION_TELEMETRY] Field: ${identifier} | Active Secret SHA256 Hash: ${activeKeyHash} | Input is empty/null | Decrypted Result: null`);
+        return null;
+    }
     
-    const maskedRaw = text.length > 10 ? text.substring(0, 10) + '...' : text;
-    const hasPrefix = isMigrated(text);
+    const activeKeyHash = crypto.createHash('sha256').update(String(ENCRYPTION_KEY)).digest('hex');
+    const rawLength = text.length;
+    
+    // Telemetry: Print client_key raw length before decrypt, and SHA256 fingerprint
+    log.info(`[DECRYPTION_TELEMETRY] Field: ${identifier} | Input Raw Length: ${rawLength} | Active Secret SHA256 Hash: ${activeKeyHash}`);
 
-    // If it doesn't have the prefix, treat as plaintext OR legacy iv:ciphertext format
-    if (!hasPrefix) {
-        const textParts = text.split(':');
-        if (textParts.length === 2) {
-            const [ivHex, encryptedHex] = textParts;
-            const hexRegex = /^[0-9a-fA-F]+$/;
-            if (hexRegex.test(ivHex) && hexRegex.test(encryptedHex) && ivHex.length === 32) {
-                // High-visibility telemetry log for legacy migration path
-                log.info(`[DECRYPTION_INFO] [LEGACY_ENCRYPTED_FORMAT_DETECTED] [${identifier}] Field: ${identifier}`);
-                try {
-                    const iv = Buffer.from(ivHex, 'hex');
-                    const encryptedText = Buffer.from(encryptedHex, 'hex');
-                    const decipher = crypto.createDecipheriv('aes-256-cbc', getKey(), iv);
-                    let decrypted = decipher.update(encryptedText);
-                    decrypted = Buffer.concat([decrypted, decipher.final()]);
-                    const result = decrypted.toString('utf8');
-                    if (result && result.length > 0) {
-                        log.info(`%c[DECRYPTION_SUCCESS] [${identifier}] Decrypted legacy format successfully. Client Code resolved: ${result}`, "color: #4caf50; font-weight: bold;");
-                        return result;
+    const decryptInternal = (): string | null => {
+        const maskedRaw = text.length > 10 ? text.substring(0, 10) + '...' : text;
+        const hasPrefix = isMigrated(text);
+
+        // If it doesn't have the prefix, treat as plaintext OR legacy iv:ciphertext format
+        if (!hasPrefix) {
+            const textParts = text.split(':');
+            if (textParts.length === 2) {
+                const [ivHex, encryptedHex] = textParts;
+                const hexRegex = /^[0-9a-fA-F]+$/;
+                if (hexRegex.test(ivHex) && hexRegex.test(encryptedHex) && ivHex.length === 32) {
+                    // High-visibility telemetry log for legacy migration path
+                    log.info(`[DECRYPTION_INFO] [LEGACY_ENCRYPTED_FORMAT_DETECTED] [${identifier}] Field: ${identifier}`);
+                    try {
+                        const iv = Buffer.from(ivHex, 'hex');
+                        const encryptedText = Buffer.from(encryptedHex, 'hex');
+                        const decipher = crypto.createDecipheriv('aes-256-cbc', getKey(), iv);
+                        let decrypted = decipher.update(encryptedText);
+                        decrypted = Buffer.concat([decrypted, decipher.final()]);
+                        const result = decrypted.toString('utf8');
+                        if (result && result.length > 0) {
+                            log.info(`%c[DECRYPTION_SUCCESS] [${identifier}] Decrypted legacy format successfully. Client Code resolved: ${result}`, "color: #4caf50; font-weight: bold;");
+                            return result;
+                        }
+                    } catch (err: any) {
+                        log.error(`[DECRYPTION_FAILURE] [LEGACY_DECRYPT_FAILED] [${identifier}] Failed to decrypt legacy format: ${err.message}`);
                     }
-                } catch (err: any) {
-                    log.error(`[DECRYPTION_FAILURE] [LEGACY_DECRYPT_FAILED] [${identifier}] Failed to decrypt legacy format: ${err.message}`);
                 }
             }
+
+            // [AUDIT] Log that we are using legacy plaintext
+            if (ENCRYPTION_VERBOSE && text.length > 5) {
+                log.debug(`[DECRYPTION_INFO] [PLAINTEXT_DETECTED] [${identifier}] Field: ${identifier}`);
+            }
+            return text;
         }
 
-        // [AUDIT] Log that we are using legacy plaintext
-        if (ENCRYPTION_VERBOSE && text.length > 5) {
-            log.debug(`[DECRYPTION_INFO] [PLAINTEXT_DETECTED] [${identifier}] Field: ${identifier}`);
+        // Strip prefix
+        const rawData = text.substring(ENCRYPTION_PREFIX.length);
+        const textParts = rawData.split(':');
+        
+        if (textParts.length < 2) {
+            log.warn(`[DECRYPTION_FAILURE] [INVALID_FORMAT] [${identifier}] Data: ${maskedRaw} - Expected iv:data`);
+            return null;
         }
-        return text;
-    }
 
-    // Strip prefix
-    const rawData = text.substring(ENCRYPTION_PREFIX.length);
-    const textParts = rawData.split(':');
+        try {
+            const ivHex = textParts.shift()!;
+            const encryptedHex = textParts.join(':');
+            
+            const iv = Buffer.from(ivHex, 'hex');
+            const encryptedText = Buffer.from(encryptedHex, 'hex');
+            
+            const decipher = crypto.createDecipheriv('aes-256-cbc', getKey(), iv);
+            let decrypted = decipher.update(encryptedText);
+            decrypted = Buffer.concat([decrypted, decipher.final()]);
+            
+            const result = decrypted.toString('utf8');
+            if (!result || result.length < 1) {
+                 log.error(`[DECRYPTION_FAILURE] [EMPTY_RESULT] [${identifier}] Decryption succeeded but resulted in empty string.`);
+                 return null;
+            }
+
+            // [DEBUG] Success log (masked)
+            if (ENCRYPTION_VERBOSE) {
+                log.debug(`[DECRYPTION_SUCCESS] [${identifier}] Decrypted successfully. Preview: ${result.substring(0, 4)}****`);
+            }
+            
+            return result;
+        } catch (error: any) {
+            // [AUDIT LOG] track records that failed decryption (likely key mismatch or corrupted iv)
+            log.error(`[DECRYPTION_FAILURE] [BAD_DECRYPT] [${identifier}] Possible key mismatch. Msg: ${error.message} | Raw: ${maskedRaw}`);
+            return null;
+        }
+    };
+
+    const result = decryptInternal();
     
-    if (textParts.length < 2) {
-        log.warn(`[DECRYPTION_FAILURE] [INVALID_FORMAT] [${identifier}] Data: ${maskedRaw} - Expected iv:data`);
-        return null;
+    // Telemetry: Print whether decrypt() returns null or resolved value length
+    if (result === null) {
+        log.info(`[DECRYPTION_TELEMETRY] [RESULT] Field: ${identifier} | Decryption failed (result is NULL)`);
+    } else {
+        log.info(`[DECRYPTION_TELEMETRY] [RESULT] Field: ${identifier} | Decryption succeeded | Resolved length: ${result.length}`);
     }
 
-    try {
-        const ivHex = textParts.shift()!;
-        const encryptedHex = textParts.join(':');
-        
-        const iv = Buffer.from(ivHex, 'hex');
-        const encryptedText = Buffer.from(encryptedHex, 'hex');
-        
-        const decipher = crypto.createDecipheriv('aes-256-cbc', getKey(), iv);
-        let decrypted = decipher.update(encryptedText);
-        decrypted = Buffer.concat([decrypted, decipher.final()]);
-        
-        const result = decrypted.toString('utf8');
-        if (!result || result.length < 1) {
-             log.error(`[DECRYPTION_FAILURE] [EMPTY_RESULT] [${identifier}] Decryption succeeded but resulted in empty string.`);
-             return null;
-        }
-
-        // [DEBUG] Success log (masked)
-        if (ENCRYPTION_VERBOSE) {
-            log.debug(`[DECRYPTION_SUCCESS] [${identifier}] Decrypted successfully. Preview: ${result.substring(0, 4)}****`);
-        }
-        
-        return result;
-    } catch (error: any) {
-        // [AUDIT LOG] track records that failed decryption (likely key mismatch or corrupted iv)
-        log.error(`[DECRYPTION_FAILURE] [BAD_DECRYPT] [${identifier}] Possible key mismatch. Msg: ${error.message} | Raw: ${maskedRaw}`);
-        return null;
-    }
+    return result;
 };
 
 // Legacy alias for compatibility, mapped to safeDecrypt
