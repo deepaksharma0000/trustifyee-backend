@@ -17,3 +17,8 @@ export const generateRefreshToken = (userId: string | unknown, role: string = 'u
     const secret = (role === 'admin' || role === 'sub-admin') ? ADMIN_REFRESH_SECRET : USER_REFRESH_SECRET;
     return jwt.sign({ user_id: userId, role }, secret, { expiresIn: '7d' }); // 7 days expiration
 };
+
+export const verifyRefreshToken = (token: string, type: 'admin' | 'user') => {
+    const secret = type === 'admin' ? ADMIN_REFRESH_SECRET : USER_REFRESH_SECRET;
+    return jwt.verify(token, secret);
+};

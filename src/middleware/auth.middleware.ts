@@ -138,32 +138,52 @@ export const auth = async (req: AuthRequest, res: Response, next: NextFunction) 
         const candidates = extractTokenCandidates(req);
         if (!candidates.length) return res.status(401).json({ error: 'Access token is missing' });
 
+        let isExpired = false;
+
         for (const access of candidates) {
             try {
-                const adminDecoded = jwt.verify(access, ADMIN_ACCESS_SECRET) as JwtPayload;
-                const admin = await Admin.findById(adminDecoded.user_id);
-                if (admin) {
-                    req.id = adminDecoded.user_id;
-                    req.user = admin;
-                    req.userType = 'admin';
-                    return next();
-                }
-            } catch {
-                // try user token path
-            }
+                const decoded = jwt.decode(access) as JwtPayload | null;
+                if (!decoded || !decoded.user_id) continue;
 
-            try {
-                const userDecoded = jwt.verify(access, USER_ACCESS_SECRET) as JwtPayload;
-                const user = await User.findById(userDecoded.user_id);
-                if (user) {
-                    req.id = userDecoded.user_id;
-                    req.user = user;
-                    req.userType = 'user';
-                    return next();
+                const role = decoded.role || 'user';
+                const secret = (role === 'admin' || role === 'sub-admin') ? ADMIN_ACCESS_SECRET : USER_ACCESS_SECRET;
+
+                const verified = jwt.verify(access, secret) as JwtPayload;
+
+                if (role === 'admin' || role === 'sub-admin') {
+                    const admin = await Admin.findById(verified.user_id);
+                    if (admin) {
+                        req.id = verified.user_id;
+                        req.user = admin;
+                        req.userType = 'admin';
+                        return next();
+                    }
+                } else {
+                    const user = await User.findById(verified.user_id);
+                    if (user) {
+                        req.id = verified.user_id;
+                        req.user = user;
+                        req.userType = 'user';
+                        return next();
+                    }
                 }
-            } catch {
-                // continue next candidate
+            } catch (error: any) {
+                if (error.name === 'TokenExpiredError') {
+                    isExpired = true;
+                }
             }
+        }
+
+        if (isExpired) {
+            const expiredToken = candidates[0];
+            const decoded = jwt.decode(expiredToken) as JwtPayload | null;
+            if (decoded) {
+                const type = (decoded.role === 'admin' || decoded.role === 'sub-admin') ? 'admin' : 'user';
+                const model = type === 'admin' ? Admin : User;
+                const secret = type === 'admin' ? ADMIN_ACCESS_SECRET : USER_ACCESS_SECRET;
+                await resetLoginState(type, expiredToken, secret, model);
+            }
+            return res.status(401).json({ error: 'Access token has expired! Please login again.', code: 'TOKEN_EXPIRED' });
         }
 
         return res.status(403).json({ error: 'Invalid or expired token' });
@@ -179,41 +199,4 @@ export const adminOnly = (req: AuthRequest, res: Response, next: NextFunction) =
     return next();
 };
 
-export const commonAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
-    try {
-        const candidates = extractTokenCandidates(req);
-        if (!candidates.length) return res.status(401).json({ error: 'Access token is missing' });
-
-        for (const access of candidates) {
-            try {
-                const adminDecoded = jwt.verify(access, ADMIN_ACCESS_SECRET) as JwtPayload;
-                const admin = await Admin.findById(adminDecoded.user_id);
-                if (admin) {
-                    req.id = adminDecoded.user_id;
-                    req.user = admin;
-                    req.userType = 'admin';
-                    return next();
-                }
-            } catch {
-                // try user
-            }
-
-            try {
-                const userDecoded = jwt.verify(access, USER_ACCESS_SECRET) as JwtPayload;
-                const user = await User.findById(userDecoded.user_id);
-                if (user) {
-                    req.id = userDecoded.user_id;
-                    req.user = user;
-                    req.userType = 'user';
-                    return next();
-                }
-            } catch {
-                // continue
-            }
-        }
-
-        return res.status(403).json({ error: 'Authorization failed' });
-    } catch {
-        return res.status(403).json({ error: 'Invalid or expired token' });
-    }
-};
+export const commonAuth = auth;

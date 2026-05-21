@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import Joi from 'joi';
 import User, { IUser } from '../models/User';
 import Admin, { IAdmin } from '../models/Admin';
-import { generateAccessToken, generateRefreshToken } from '../utils/tokens';
+import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../utils/tokens';
 import { validateEmail } from '../utils/functions';
 import { randomUUID } from 'crypto';
 import { encrypt, maskKey } from '../utils/encryption';
@@ -82,8 +82,8 @@ export const registerAdmin = async (req: Request, res: Response) => {
 
         await newAdmin.save();
 
-        const accessToken = generateAccessToken(newAdmin._id);
-        const refreshToken = generateRefreshToken(newAdmin._id);
+        const accessToken = generateAccessToken(newAdmin._id, newAdmin.role || 'admin');
+        const refreshToken = generateRefreshToken(newAdmin._id, newAdmin.role || 'admin');
 
         const adminObj = newAdmin.toObject() as any;
         delete adminObj.password;
@@ -350,5 +350,59 @@ export const logoutUser = async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(err);
         res.status(500).json({ error: err.message, status: false });
+    }
+}
+
+export const refreshAdminToken = async (req: Request, res: Response) => {
+    try {
+        const { refreshToken } = req.body;
+        if (!refreshToken) return res.status(400).json({ error: "Refresh token is required", status: false });
+
+        const decoded: any = verifyRefreshToken(refreshToken, 'admin');
+        const adminId = decoded.user_id;
+
+        const admin = await Admin.findById(adminId);
+        if (!admin) return res.status(404).json({ error: "Admin not found", status: false });
+
+        const newAccessToken = generateAccessToken(admin._id, admin.role || 'admin');
+        const newRefreshToken = generateRefreshToken(admin._id, admin.role || 'admin');
+
+        res.status(200).json({
+            message: "Token refreshed successfully!",
+            status: true,
+            access: { token: newAccessToken, issued_at: new Date() },
+            refresh: { token: newRefreshToken, issued_at: new Date() },
+        });
+    } catch (err: any) {
+        return res.status(401).json({ error: "Invalid or expired refresh token", status: false });
+    }
+}
+
+export const refreshUserToken = async (req: Request, res: Response) => {
+    try {
+        const { refreshToken } = req.body;
+        if (!refreshToken) return res.status(400).json({ error: "Refresh token is required", status: false });
+
+        const decoded: any = verifyRefreshToken(refreshToken, 'user');
+        const userId = decoded.user_id;
+
+        const user = await User.findById(userId);
+        if (!user) return res.status(404).json({ error: "User not found", status: false });
+
+        if (user.status === 'inactive') {
+            return res.status(403).json({ error: "Your account is disabled. Please contact admin.", status: false });
+        }
+
+        const newAccessToken = generateAccessToken(user._id, 'user');
+        const newRefreshToken = generateRefreshToken(user._id, 'user');
+
+        res.status(200).json({
+            message: "Token refreshed successfully!",
+            status: true,
+            access: { token: newAccessToken, issued_at: new Date() },
+            refresh: { token: newRefreshToken, issued_at: new Date() },
+        });
+    } catch (err: any) {
+        return res.status(401).json({ error: "Invalid or expired refresh token", status: false });
     }
 }
