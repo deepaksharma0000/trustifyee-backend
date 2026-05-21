@@ -181,6 +181,7 @@ export class SignalBroadcastService {
       email: user?.email || null,
       broker,
       licence: user?.licence || "Live",
+      isOnlineDb: Boolean(user?.is_online || user?.is_login),
       ready,
       reason,
       clientCode: rawClientCode || null,
@@ -220,7 +221,7 @@ export class SignalBroadcastService {
       ...strategyQuery,
     })
       .select(
-        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type"
+        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type is_online is_login"
       )
       .lean();
 
@@ -301,7 +302,7 @@ export class SignalBroadcastService {
       ...strategyQuery,
     })
       .select(
-        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type"
+        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type is_online is_login"
       )
       .lean();
 

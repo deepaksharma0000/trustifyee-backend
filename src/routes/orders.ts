@@ -185,7 +185,8 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const readiness = await BroadcastSvc.getBroadcastReadinessReport(targetStrategy);
     const blockedDetails = (readiness.details || []).filter((d: any) => d.ready === false);
     const executionRows = (readiness.details || []).map((d: any) => {
-      const online = Boolean(d?.userId && isUserSocketConnected(String(d.userId)));
+      const isSocketConnected = Boolean(d?.userId && isUserSocketConnected(String(d.userId)));
+      const online = Boolean(d?.isOnlineDb) || isSocketConnected;
       return {
         userId: d.userId || null,
         userName: d.userName || d.email || null,
@@ -776,7 +777,7 @@ router.get("/broadcast-readiness", auth, adminOnly, async (req: any, res) => {
 
     const enrichedDetails = (details || []).map((row: any) => ({
       ...row,
-      socketConnected: Boolean(row?.userId && isUserSocketConnected(String(row.userId))),
+      socketConnected: Boolean(row?.isOnlineDb) || Boolean(row?.userId && isUserSocketConnected(String(row.userId))),
     }));
 
     return res.json({
