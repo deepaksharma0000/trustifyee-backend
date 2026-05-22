@@ -16,6 +16,7 @@ import { apiKeyFingerprint, buildApiKeyRouteBinding, normalizeIpv4 } from "../ut
 import { eventSourcedOMS } from "./EventSourcedOMS";
 import { globalRateLimiter, PriorityClass } from "./GlobalRateLimiter";
 import { clockDriftMonitor } from "./ClockDriftMonitor";
+import { logLiveExecution } from "../utils/executionAudit";
 import { MarketOrderProtection } from "../utils/MarketOrderProtection";
 
 
@@ -797,7 +798,14 @@ export async function placeOrderForClient(
         agentUrl: currentAgentUrl,
       });
 
-      orderInput.symboltoken = await resolveOrderSymbolToken(orderInput);
+      // [LIVE_EXECUTION_AUDIT] - Added as per request
+      logLiveExecution(
+        userId.toString(),
+        clientcode,
+        licence,
+        routing.dedicatedRoutingEnabled ? "DEDICATED_AGENT" : "SERVER_SHARED",
+        { tradingsymbol: orderInput.tradingsymbol, quantity: orderInput.quantity }
+      );
 
       // 3. Place Order using Protection Result
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
