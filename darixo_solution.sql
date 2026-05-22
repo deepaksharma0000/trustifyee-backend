@@ -211,7 +211,13 @@ CREATE TABLE `users` (
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
   `password` varchar(255) DEFAULT NULL,
-  `is_login` tinyint(1) NOT NULL DEFAULT 0
+  `is_login` tinyint(1) NOT NULL DEFAULT 0,
+  `broker_verified` tinyint(1) NOT NULL DEFAULT 0,
+  `broker_connected` tinyint(1) NOT NULL DEFAULT 0,
+  `broker_config` text DEFAULT NULL,
+  `broker_totp_secret` varchar(255) DEFAULT NULL,
+  `broker_password` varchar(255) DEFAULT NULL,
+  `is_online` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --

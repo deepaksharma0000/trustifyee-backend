@@ -13,6 +13,10 @@ export interface IUser extends Document {
     group_service?: string;
     broker?: string;
     status: 'active' | 'inactive';
+    broker_config?: {
+        apiKey: string;
+        clientCode: string;
+    };
     trading_status: 'enabled' | 'disabled';
     start_date?: Date;
     end_date?: Date;
@@ -56,6 +60,10 @@ const UserSchema: Schema = new Schema({
     group_service: { type: String },
     broker: { type: String },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
+    broker_config: {
+        apiKey: { type: String },
+        clientCode: { type: String }
+    },
     trading_status: { type: String, enum: ['enabled', 'disabled'], default: 'enabled' },
     start_date: { type: Date },
     end_date: { type: Date },
