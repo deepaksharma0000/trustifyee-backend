@@ -102,6 +102,8 @@ router.post("/place", async (req, res, next) => {
 
     // 🚀 [COMPLIANCE FIX] Generate a signal instead of placing a server-side order
     const { SignalService } = await import("../services/SignalService");
+    const { SignalBroadcastService } = await import("../services/SignalBroadcastService");
+
     const signal = await SignalService.createSignal({
       symbol: orderPayload.tradingsymbol,
       exchange: orderPayload.exchange,
@@ -111,7 +113,18 @@ router.post("/place", async (req, res, next) => {
       quantity: orderPayload.quantity,
       strategy: req.body.strategy || "AdminManual",
       signalType: req.body.signalType || "ENTRY",
+      executionMode: req.body.executionMode === "SERVER" || req.body.clientcode ? "SERVER" : "CLIENT"
     });
+
+    // If Admin is placing for a specific client or SERVER mode is requested, trigger immediate execution
+    if (req.body.executionMode === "SERVER" || req.body.clientcode) {
+        await SignalBroadcastService.executeBroadcast(signal as any);
+        return res.json({ 
+            ok: true, 
+            message: "Real-time server-side execution triggered for client.", 
+            signalId: signal?._id 
+        });
+    }
 
     return res.json({ 
       ok: true, 
@@ -175,7 +188,10 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const clientDispatchRequested =
       requestedExecutionMode === "CLIENT" ||
       requestedExecutionMode === "USER_ONLY";
-    let forceClientDispatch = userOnlyMode || clientDispatchRequested;
+    // If admin explicitly wants server-side, or we are in server-auto mode, override client dispatch
+    const forceServerDispatch = requestedExecutionMode === "SERVER";
+    let forceClientDispatch = (userOnlyMode || clientDispatchRequested) && !forceServerDispatch;
+
     const allowClientFallbackOnBlocked =
       String(process.env.PLACE_ALL_CLIENT_FALLBACK_ON_BLOCK || "true").toLowerCase() !== "false";
     const autoClientOnIpRisk =
@@ -854,5 +870,3 @@ router.post("/update-auto-exit", auth, adminOnly, async (req, res) => {
 });
 
 export default router;
-
-

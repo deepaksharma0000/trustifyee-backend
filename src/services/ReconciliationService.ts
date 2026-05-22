@@ -106,8 +106,9 @@ export class ReconciliationService {
       
       // Query current active position data directly from AngelOne
       const brokerResponse = await adapter.getPositions(decJwtToken);
-      
-      if (!brokerResponse || !Array.isArray(brokerResponse.data)) {
+
+      // [FIX] Ensure we have an array before attempting iteration
+      if (!brokerResponse || !brokerResponse.data || !Array.isArray(brokerResponse.data)) {
         log.error(`[Reconciliation] Invalid broker response for ${clientCode}:`, brokerResponse);
         return;
       }
