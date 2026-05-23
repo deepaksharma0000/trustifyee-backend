@@ -48,12 +48,15 @@ const maskValue = (val: string): string => {
   return `${val.slice(0, 2)}****${val.slice(-2)}`;
 };
 
-const sanitizePayload = (obj: any): any => {
+const sanitizePayload = (obj: any, seen = new WeakSet<object>(), depth = 0): any => {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") return obj;
+  if (depth > 8) return "[TruncatedDepth]";
+  if (seen.has(obj)) return "[Circular]";
+  seen.add(obj);
 
   if (Array.isArray(obj)) {
-    return obj.map(sanitizePayload);
+    return obj.map((item) => sanitizePayload(item, seen, depth + 1));
   }
 
   const sanitized: Record<string, any> = {};
@@ -64,7 +67,7 @@ const sanitizePayload = (obj: any): any => {
     } else if (SENSITIVE_KEYS_MASK.has(lowerKey)) {
       sanitized[key] = maskValue(String(val));
     } else if (typeof val === "object") {
-      sanitized[key] = sanitizePayload(val);
+      sanitized[key] = sanitizePayload(val, seen, depth + 1);
     } else {
       sanitized[key] = val;
     }

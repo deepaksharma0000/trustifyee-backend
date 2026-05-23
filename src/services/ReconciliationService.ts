@@ -108,11 +108,22 @@ export class ReconciliationService {
       const brokerResponse = await adapter.getPositions(decJwtToken);
 
       // [FIX] Ensure we have an array before attempting iteration
-      if (!brokerResponse || !brokerResponse.data || !Array.isArray(brokerResponse.data)) {
-        log.error(`[Reconciliation] Invalid broker response for ${clientCode}:`, brokerResponse);
+      const brokerRows = Array.isArray(brokerResponse?.data)
+        ? brokerResponse.data
+        : Array.isArray(brokerResponse?.data?.data)
+        ? brokerResponse.data.data
+        : null;
+
+      if (!brokerRows) {
+        log.error(`[Reconciliation] Invalid broker response for ${clientCode}`, {
+          hasResponse: Boolean(brokerResponse),
+          hasData: Boolean(brokerResponse?.data),
+          responseType: typeof brokerResponse?.data,
+          responseKeys: brokerResponse?.data ? Object.keys(brokerResponse.data).slice(0, 10) : [],
+        });
         return;
       }
-      const brokerPositions = brokerResponse.data;
+      const brokerPositions = brokerRows;
 
       // 1. Map broker positions by token for O(1) comparison
       const brokerMap = new Map<string, any>();
@@ -122,7 +133,6 @@ export class ReconciliationService {
       });
 
       // 2. Map local positions by token for O(1) comparison
-      const localPositions = positionRegistry.getPositionsByToken("", ""); // Get all active positions
       const localMap = new Map<string, ActivePosition>();
       
       // Fetch positions registered locally

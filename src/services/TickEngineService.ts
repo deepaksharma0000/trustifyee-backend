@@ -50,10 +50,17 @@ export class TickEngineService {
   private pendingUnsubs: PendingSubscription[] = [];
   private batchTimeout: NodeJS.Timeout | null = null;
   private isConnecting = false;
+  private isStarted = false;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  private maxReconnectAttempts = Math.max(10, Number(process.env.TICK_WS_MAX_RETRIES || "30"));
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private cooldownTimer: NodeJS.Timeout | null = null;
+  private connectGeneration = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private pingTimer: NodeJS.Timeout | null = null;
   private lastMessageTime = 0;
+  private currentStreamUrl = "";
+  private streamUrlCandidates: string[] = [];
 
   // 3. Processing Metrics & Diagnostic Counters
   private metrics: TickMetrics = {
@@ -108,23 +115,39 @@ export class TickEngineService {
 
   async updateSessionCredentials(newJwt: string) {
     log.info(`[TickEngine] Updating active streaming session credentials atomically...`);
-    if (this.ws) {
-      this.ws.terminate();
-    }
+    this.cleanupSocket("SESSION_ROTATION");
     await this.start();
   }
 
   async start() {
+    this.isStarted = true;
+    if (this.cooldownTimer) return;
     if (this.isConnecting || (this.ws && this.ws.readyState === WebSocket.OPEN)) return;
 
     this.isConnecting = true;
     this.isDegraded = false;
+    this.connectGeneration += 1;
+    const generation = this.connectGeneration;
     log.info("[TickEngine] Starting Single-Instance Binary Streaming Connection...");
 
     try {
       const session = await this.getSystemSession();
-      
-      this.ws = new WebSocket("wss://smartapisecure.angelone.in/smart-stream", {
+      this.streamUrlCandidates = this.getSmartStreamUrlCandidates();
+      this.currentStreamUrl = this.selectStreamUrlForAttempt(this.reconnectAttempts);
+
+      log.info("[TickEngine] Opening market stream socket", {
+        generation,
+        attempt: this.reconnectAttempts + 1,
+        endpoint: this.currentStreamUrl,
+        clientCode: session.clientCode,
+        hasJwt: Boolean(session.jwtToken),
+        hasFeedToken: Boolean(session.feedToken),
+        hasApiKey: Boolean(session.apiKey),
+      });
+
+      this.cleanupSocket("RECONNECT_CLEANUP");
+
+      this.ws = new WebSocket(this.currentStreamUrl, {
         headers: {
           Authorization: `Bearer ${session.jwtToken}`,
           "x-client-code": session.clientCode,
@@ -134,30 +157,61 @@ export class TickEngineService {
       });
 
       this.ws.on("open", () => {
+        if (generation !== this.connectGeneration) return;
         this.isConnecting = false;
         this.reconnectAttempts = 0;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         this.lastMessageTime = Date.now();
-        log.info("[TickEngine] Connected to AngelOne SmartAPI Stream gateway successfully.");
+        log.info("[TickEngine] Connected to AngelOne SmartAPI Stream gateway successfully.", {
+          endpoint: this.currentStreamUrl,
+          activeSubscriptions: this.activeSubscriptions.size,
+        });
         this.resubscribeActiveTokens();
         this.startHeartbeatMonitor();
+        this.startPingMonitor();
       });
 
       this.ws.on("message", (data: any) => {
+        if (generation !== this.connectGeneration) return;
         this.lastMessageTime = Date.now();
-        if (Buffer.isBuffer(data)) {
+        if (typeof data === "string") {
+          const msg = data.toLowerCase();
+          if (msg === "pong" || msg === "ping") return;
+        } else if (Buffer.isBuffer(data)) {
           this.handleBinaryTickSafe(data);
         }
       });
 
+      this.ws.on("pong", () => {
+        if (generation !== this.connectGeneration) return;
+        this.lastMessageTime = Date.now();
+      });
+
       this.ws.on("close", (code, reason) => {
+        if (generation !== this.connectGeneration) return;
         this.isConnecting = false;
-        log.warn(`[TickEngine] Connection closed. Code: ${code}, Reason: ${reason}`);
+        const reasonText = Buffer.isBuffer(reason) ? reason.toString("utf8") : String(reason || "");
+        log.warn(`[TickEngine] Connection closed. Code: ${code}, Reason: ${reasonText}`);
         this.stopHeartbeatMonitor();
+        this.stopPingMonitor();
+        this.ws = null;
         this.scheduleReconnect();
       });
 
       this.ws.on("error", (err) => {
-        log.error("[TickEngine] WebSocket Error:", err.message);
+        if (generation !== this.connectGeneration) return;
+        const msg = String(err?.message || "UNKNOWN_WS_ERROR");
+        log.error("[TickEngine] WebSocket Error:", {
+          message: msg,
+          endpoint: this.currentStreamUrl,
+          attempt: this.reconnectAttempts + 1,
+        });
+        if (msg.includes("ENOTFOUND")) {
+          this.rotateEndpointCandidate();
+        }
       });
 
     } catch (err: any) {
@@ -389,18 +443,34 @@ export class TickEngineService {
   }
 
   private scheduleReconnect() {
+    if (!this.isStarted) return;
+    if (this.reconnectTimer || this.cooldownTimer) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      log.error("[TickEngine] Maximum reconnect attempts reached. Stream is marked DEAD.");
+      const cooldownMs = Math.max(60_000, Number(process.env.TICK_WS_COOLDOWN_MS || "300000"));
+      log.error("[TickEngine] Maximum reconnect attempts reached. Entering cooldown.", {
+        cooldownMs,
+        attempts: this.reconnectAttempts,
+      });
+      this.cooldownTimer = setTimeout(() => {
+        this.cooldownTimer = null;
+        this.reconnectAttempts = 0;
+        this.start().catch((err) => log.error("[TickEngine] Restart after cooldown failed", err));
+      }, cooldownMs);
       return;
     }
 
     this.reconnectAttempts += 1;
     this.metrics.reconnectCount += 1;
-    const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, 30000);
+    const base = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, 30000);
+    const jitter = Math.floor(Math.random() * 1000);
+    const delay = base + jitter;
     log.warn(`[TickEngine] Scheduling reconnect in ${delay}ms (Attempt ${this.reconnectAttempts})`);
 
-    setTimeout(() => {
-      this.start();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.start().catch((err) => {
+        log.error("[TickEngine] Reconnect start failed", err);
+      });
     }, delay);
   }
 
@@ -442,6 +512,69 @@ export class TickEngineService {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+  }
+
+  private startPingMonitor() {
+    this.stopPingMonitor();
+    this.pingTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      try {
+        this.ws.ping();
+        this.ws.send("ping");
+      } catch (err: any) {
+        log.warn("[TickEngine] ping send failed", { message: err?.message });
+      }
+    }, 10_000);
+  }
+
+  private stopPingMonitor() {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  private cleanupSocket(reason: string) {
+    if (!this.ws) return;
+    try {
+      this.ws.removeAllListeners();
+      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        this.ws.terminate();
+      }
+    } catch (err: any) {
+      log.warn("[TickEngine] cleanupSocket warning", { reason, message: err?.message });
+    } finally {
+      this.ws = null;
+      this.stopHeartbeatMonitor();
+      this.stopPingMonitor();
+    }
+  }
+
+  private getSmartStreamUrlCandidates(): string[] {
+    const candidates = [
+      String(config.angelSmartStreamUrl || "").trim(),
+      "wss://smartapisocket.angelone.in/smart-stream",
+      "wss://smartapisecure.angelone.in/smart-stream",
+    ].filter(Boolean);
+
+    return Array.from(new Set(candidates));
+  }
+
+  private selectStreamUrlForAttempt(attempt: number): string {
+    if (!this.streamUrlCandidates.length) {
+      this.streamUrlCandidates = this.getSmartStreamUrlCandidates();
+    }
+    const idx = Math.min(attempt, this.streamUrlCandidates.length - 1);
+    return this.streamUrlCandidates[idx];
+  }
+
+  private rotateEndpointCandidate() {
+    if (this.streamUrlCandidates.length <= 1) return;
+    const [head, ...rest] = this.streamUrlCandidates;
+    this.streamUrlCandidates = [...rest, head];
+    log.warn("[TickEngine] Rotated websocket endpoint candidate after DNS/network error", {
+      nextEndpoint: this.streamUrlCandidates[0],
+    });
   }
 
   private async getSystemSession() {

@@ -26,6 +26,8 @@ export const config = {
   // -------- ANGEL ONE ----------
   angelApiKey: process.env.ANGEL_API_KEY || "",
   angelBaseUrl: process.env.ANGEL_BASE_URL || "https://apiconnect.angelone.in",
+  angelSmartStreamUrl:
+    process.env.ANGEL_SMART_STREAM_URL || "wss://smartapisocket.angelone.in/smart-stream",
   genPath: process.env.ANGEL_GENERATE_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/generateTokens",
   refreshPath: process.env.ANGEL_REFRESH_TOKENS_PATH || "/rest/auth/angelbroking/jwt/v1/generateTokens",
   angelRedirectUrl: process.env.ANGEL_REDIRECT_URL || "http://localhost:3000/api/auth/angel/callback",
