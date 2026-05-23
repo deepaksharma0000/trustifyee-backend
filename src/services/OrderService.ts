@@ -1051,17 +1051,25 @@ export async function getOrderStatusForClient(
     const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_status_check`);
     const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, { outgoingIp });
     const orderBookResp = await dynamicAdapter.getOrderBook(angelTokens.jwtToken);
-    if (orderBookResp && orderBookResp.status === 200 && Array.isArray(orderBookResp.data)) {
+    const orderRows = Array.isArray(orderBookResp?.data)
+      ? orderBookResp.data
+      : Array.isArray(orderBookResp?.data?.data)
+      ? orderBookResp.data.data
+      : [];
+    if (orderBookResp && orderBookResp.status === 200 && Array.isArray(orderRows)) {
       // 1. Try exact Match
-      let order = orderBookResp.data.find((o: any) => o.orderid === orderId);
+      let order = orderRows.find((o: any) => String(o.orderid || "") === String(orderId || ""));
       
-      // 2. Try Fuzzy Match if ID is synthetic (BROKER-uuid)
-      if (!order && orderId.startsWith("BROKER-") && symbolMatch) {
+      // 2. Try Fuzzy Match if ID is synthetic (internal client IDs)
+      const isSyntheticId = !/^\d+$/.test(String(orderId || "").trim());
+      if (!order && isSyntheticId && symbolMatch) {
           log.info(`Fuzzy matching orderbook for ${symbolMatch} (synthetic ID: ${orderId})`);
           // Find most recent order with matching symbol
-          order = orderBookResp.data.reverse().find((o: any) => 
-            o.tradingsymbol === symbolMatch && 
-            (o.orderstatus === "COMPLETE" || o.orderstatus === "OPEN")
+          order = [...orderRows].reverse().find((o: any) => 
+            String(o.tradingsymbol || "").toUpperCase() === String(symbolMatch || "").toUpperCase() && 
+            ["COMPLETE", "OPEN", "TRIGGER PENDING", "PARTIALLY FILLED"].includes(
+              String(o.orderstatus || o.status || "").toUpperCase()
+            )
           );
       }
 
@@ -1084,4 +1092,21 @@ export async function getOrderStatusForClient(
     return { status: true, data: { status: "unknown", message: "Upstox status check pending" } };
   }
 
-  throw new Error("No active sessio
+  throw new Error("No active session for this user");
+}
+
+export async function fetchBrokerOrder(
+  userId: string | unknown,
+  clientcode: string,
+  clientOrderId: string,
+  outgoingIp?: string,
+  symbolMatch?: string
+) {
+  try {
+    const resp = await getOrderStatusForClient(userId, clientcode, clientOrderId, outgoingIp, symbolMatch);
+    if (!resp?.status || !resp.data) return null;
+    return resp.data;
+  } catch {
+    return null;
+  }
+}

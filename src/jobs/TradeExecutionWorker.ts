@@ -264,7 +264,8 @@ export const initTradeExecutionWorker = () => {
             userId,
             clientCode,
             clientOrderId,
-            outgoingIp
+            outgoingIp,
+            orderData?.tradingsymbol
           );
           const existingStatus = normalizeBrokerOrderStatus(existingOrder);
           if (existingOrder && isAcceptedOrderState(existingStatus)) {
