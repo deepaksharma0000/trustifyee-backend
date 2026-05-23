@@ -14,6 +14,8 @@ import AngelTokensModel from "../models/AngelTokens";
 import { AutoExitService } from "../services/AutoExitService";
 import { MarketStatusService } from "../services/MarketStatusService";
 import { BrokerResponse } from "../models/BrokerResponse";
+import { SignalExecutionResult } from "../models/SignalExecutionResult";
+import { getTradeQueueForBroker } from "../utils/tradeQueue";
 import {
   getGlobalTradeHistory,
   getUniqueSymbols,
@@ -23,6 +25,7 @@ import moment from "moment-timezone";
 import { findUserByClientCode } from "../utils/clientCodeLookup";
 import { config } from "../config";
 import { getConnectedUserIds, isUserSocketConnected } from "../services/UserSocketService";
+import { v4 as uuidv4 } from "uuid";
 
 const router = express.Router();
 
@@ -116,14 +119,76 @@ router.post("/place", async (req, res, next) => {
       executionMode: req.body.executionMode === "SERVER" || req.body.clientcode ? "SERVER" : "CLIENT"
     });
 
-    // If Admin is placing for a specific client or SERVER mode is requested, trigger immediate execution
-    if (req.body.executionMode === "SERVER" || req.body.clientcode) {
-        await SignalBroadcastService.executeBroadcast(signal as any);
-        return res.json({ 
-            ok: true, 
-            message: "Real-time server-side execution triggered for client.", 
-            signalId: signal?._id 
-        });
+    // If admin explicitly targets a client, queue execution only for that user.
+    if (req.body.clientcode) {
+      const clientOrderId = `ADMIN-${String(signal?._id).slice(-4)}-${String(targetUser._id).slice(-4)}-${Date.now().toString().slice(-4)}`;
+      const correlationId = uuidv4();
+      const broker = String(targetUser.broker || "ANGELONE").toUpperCase();
+
+      await SignalExecutionResult.findOneAndUpdate(
+        { signalId: signal?._id, userId: targetUser._id },
+        {
+          signalId: signal?._id,
+          userId: targetUser._id,
+          clientOrderId,
+          broker,
+          status: "PENDING",
+          correlationId,
+          source: "SERVER_QUEUE",
+          errorMessage: undefined,
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      const queue = getTradeQueueForBroker(broker);
+      await queue.add(
+        `admin-exec-${clientOrderId}`,
+        {
+          userId: String(targetUser._id),
+          signalId: String(signal?._id),
+          clientOrderId,
+          correlationId,
+          clientCode: clientcode,
+          outgoingIp: Boolean((targetUser as any)?.dedicated_ip_enabled === true)
+            ? ((targetUser as any).outgoing_ip || undefined)
+            : undefined,
+          agentUrl: Boolean((targetUser as any)?.dedicated_ip_enabled === true)
+            ? ((targetUser as any).agent_url || undefined)
+            : undefined,
+          dedicatedIpEnabled: Boolean((targetUser as any)?.dedicated_ip_enabled === true),
+          orderData: {
+            exchange: signal?.exchange || orderPayload.exchange,
+            tradingsymbol: signal?.tradingsymbol || orderPayload.tradingsymbol,
+            side: signal?.side || orderPayload.side,
+            quantity: orderPayload.quantity,
+            strategy: req.body.strategy || "AdminManual",
+            symboltoken: signal?.symboltoken || symboltoken,
+            broker,
+          },
+        },
+        {
+          attempts: 3,
+          backoff: { type: "exponential", delay: 2000 },
+          jobId: `admin-signal-exec-${clientOrderId}`,
+        }
+      );
+
+      return res.json({
+        ok: true,
+        message: "Real-time server-side execution queued for selected client.",
+        signalId: signal?._id,
+        clientOrderId,
+      });
+    }
+
+    // If admin requests broadcast server-mode, queue across mapped users by strategy.
+    if (req.body.executionMode === "SERVER") {
+      await SignalBroadcastService.executeBroadcast(signal as any);
+      return res.json({
+        ok: true,
+        message: "Real-time server-side strategy execution triggered.",
+        signalId: signal?._id
+      });
     }
 
     return res.json({ 
@@ -193,9 +258,9 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     let forceClientDispatch = (userOnlyMode || clientDispatchRequested) && !forceServerDispatch;
 
     const allowClientFallbackOnBlocked =
-      String(process.env.PLACE_ALL_CLIENT_FALLBACK_ON_BLOCK || "true").toLowerCase() !== "false";
+      String(process.env.PLACE_ALL_CLIENT_FALLBACK_ON_BLOCK || "false").toLowerCase() === "true";
     const autoClientOnIpRisk =
-      String(process.env.PLACE_ALL_CLIENT_ON_IP_RISK || "true").toLowerCase() !== "false";
+      String(process.env.PLACE_ALL_CLIENT_ON_IP_RISK || "false").toLowerCase() === "true";
 
     const BroadcastSvc = (await import("../services/SignalBroadcastService")).SignalBroadcastService;
     const readiness = await BroadcastSvc.getBroadcastReadinessReport(targetStrategy);
@@ -223,16 +288,18 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       (d: any) => String(d.licence || "Live").toLowerCase() === "live"
     ).length;
     const demoUsers = Math.max(0, readiness.totalUsers - liveUsers);
-    const hasStaticIpRisk = blockedDetails.some((d: any) => {
+    const blockedStaticIpCount = blockedDetails.filter((d: any) => {
       const text = String(d?.reason || d?.lastBrokerMessage || "").toLowerCase();
       return (
         text.includes("unregistered ip") ||
         text.includes("register your ip") ||
         text.includes("static ip")
       );
-    });
+    }).length;
+    const hasStaticIpRiskForAllUsers =
+      readiness.totalUsers > 0 && blockedStaticIpCount > 0 && blockedStaticIpCount === readiness.totalUsers;
 
-    if (!forceClientDispatch && autoClientOnIpRisk && hasStaticIpRisk) {
+    if (!forceClientDispatch && autoClientOnIpRisk && hasStaticIpRiskForAllUsers) {
       forceClientDispatch = true;
     }
 

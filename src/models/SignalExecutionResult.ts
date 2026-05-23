@@ -16,6 +16,9 @@ export interface ISignalExecutionResult extends Document {
     strategyId?: string;
     ipAddress?: string;
     brokerResponse?: unknown;
+    brokerOrderStatus?: string;
+    brokerRejectReason?: string;
+    lastSyncedAt?: Date;
 }
 
 const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
@@ -35,6 +38,9 @@ const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
         strategyId: { type: String },
         ipAddress: { type: String },
         brokerResponse: { type: Schema.Types.Mixed },
+        brokerOrderStatus: { type: String },
+        brokerRejectReason: { type: String },
+        lastSyncedAt: { type: Date },
     },
     { timestamps: true }
 );

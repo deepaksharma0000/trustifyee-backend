@@ -20,6 +20,10 @@ const STATIC_REJECTION_HOLD_MS = Math.max(
   Number(process.env.ORDER_STATIC_REJECTION_HOLD_MINUTES || "30") * 60 * 1000
 );
 
+type BroadcastOptions = {
+  targetUserIds?: string[];
+};
+
 function normalizeIpv4(value?: string) {
   const trimmed = String(value || "").trim();
   return IPV4_REGEX.test(trimmed) ? trimmed : "";
@@ -245,7 +249,7 @@ export class SignalBroadcastService {
     return this.executeBroadcast(signal);
   }
 
-  static async executeBroadcast(signal: any) {
+  static async executeBroadcast(signal: any, options: BroadcastOptions = {}) {
     const mongoClient = mongoose.connection.getClient() as any;
     const topoType = String(
       mongoClient?.topology?.description?.type || mongoClient?.topology?.type || ""
@@ -255,14 +259,14 @@ export class SignalBroadcastService {
 
     if (!isReplicaSet) {
       log.warn("[SignalBroadcastService] Standalone MongoDB detected. Running without transaction.");
-      return this._runBroadcast(signal, undefined);
+      return this._runBroadcast(signal, undefined, options);
     }
 
     const session = await mongoose.startSession();
     try {
       let result: any;
       await session.withTransaction(async () => {
-        result = await this._runBroadcast(signal, session);
+        result = await this._runBroadcast(signal, session, options);
       });
       return result;
     } finally {
@@ -288,19 +292,32 @@ export class SignalBroadcastService {
     };
   }
 
-  private static async _runBroadcast(signal: any, session?: mongoose.ClientSession) {
+  private static async _runBroadcast(
+    signal: any,
+    session?: mongoose.ClientSession,
+    options: BroadcastOptions = {}
+  ) {
     const signalId = signal._id || (signal as any).signalId;
     const targetStrategy = signal.strategy || "Manual";
+    const targetUserIds = Array.from(
+      new Set((options.targetUserIds || []).map((id) => String(id || "").trim()).filter(Boolean))
+    );
     const batchCorrelationId = uuidv4();
     const startedAt = Date.now();
 
-    const strategyQuery = this.buildStrategyQuery(targetStrategy);
-    const usersQuery = User.find({
+    const userFilter: any = {
       status: "active",
       trading_status: "enabled",
       broker_connected: true,
-      ...strategyQuery,
-    })
+    };
+    if (targetUserIds.length > 0) {
+      userFilter._id = { $in: targetUserIds };
+    } else {
+      const strategyQuery = this.buildStrategyQuery(targetStrategy);
+      Object.assign(userFilter, strategyQuery);
+    }
+
+    const usersQuery = User.find(userFilter)
       .select(
         "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type is_online is_login"
       )
@@ -582,6 +599,7 @@ export class SignalBroadcastService {
 
     log.info("[SignalBroadcastService] Broadcast fan-out completed", {
       signalId: String(signalId),
+      targetScope: targetUserIds.length > 0 ? "EXPLICIT_USER_SET" : "STRATEGY_MAPPED",
       users: users.length,
       queued: queuedCount,
       failed: failedCount,

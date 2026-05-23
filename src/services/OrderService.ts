@@ -47,6 +47,7 @@ export type PlaceOrderInput = {
   strategy?: string;
   correlationId?: string;
   positionId?: string;
+  requireLiveExecution?: boolean;
 };
 
 function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
@@ -459,6 +460,7 @@ export async function placeOrderForClient(
   
   // Force paper trading if paper only or shadow mode is globally active, or if running in staging/development
   const isStagingEnv = process.env.NODE_ENV !== "production";
+  const requireLiveExecution = Boolean((orderInput as any)?.requireLiveExecution === true);
   const licence = (flags.PAPER_ONLY_MODE || flags.SHADOW_ONLY_MODE || isStagingEnv) 
       ? "paper" 
       : String(user!.licence || "").toLowerCase();
@@ -471,21 +473,25 @@ export async function placeOrderForClient(
       log.info(`[SHADOW_ONLY_MODE] Running shadow-only execution for ${clientcode}. Real order will execute via Paper Simulator.`);
   }
   
-  if ((StartupDiagnostics.whitelistMismatchExists && licence === "live") || licence === "paper") {
-      const isMismatch = StartupDiagnostics.whitelistMismatchExists && licence === "live";
-      if (isMismatch) {
-          log.error(`[SAFETY_PROTECTION] Whitelist IP mismatch exists on startup! Blocking LIVE order for client ${clientcode} on ${user!.broker}. Falling back to PAPER trading mode.`);
-          
-          // Trigger critical alert
-          const { AlertService } = require("./AlertService");
-          await AlertService.trigger(
-              "WHITELIST_MISMATCH_SAFETY_FALLBACK",
-              `CRITICAL: Whitelist mismatch active! Blocked LIVE order placement for user ID ${userId} (${clientcode}, broker: ${user!.broker}) and fell back to PAPER mode automatically. Outbound IP: ${StartupDiagnostics.detectedOutboundIp}, Configured Whitelisted IP: ${config.publicIp}`,
-              "CRITICAL"
-          );
-      } else {
-          log.info(`[PAPER_SIMULATOR] Routing order for ${clientcode} to Paper Trading Simulator.`);
+  if (StartupDiagnostics.whitelistMismatchExists && licence === "live") {
+      log.error(`[SAFETY_PROTECTION] Whitelist IP mismatch exists on startup. Blocking LIVE order for client ${clientcode} on ${user!.broker}.`);
+      const { AlertService } = require("./AlertService");
+      await AlertService.trigger(
+          "WHITELIST_MISMATCH_LIVE_BLOCKED",
+          `CRITICAL: Whitelist mismatch active. LIVE order blocked for user ID ${userId} (${clientcode}, broker: ${user!.broker}). Outbound IP: ${StartupDiagnostics.detectedOutboundIp}, Configured Whitelisted IP: ${config.publicIp}`,
+          "CRITICAL"
+      );
+      throw new Error(
+        `LIVE_EXECUTION_BLOCKED_WHITELIST_MISMATCH: outbound=${StartupDiagnostics.detectedOutboundIp}, configured=${config.publicIp}`
+      );
+  }
+
+  if (licence === "paper") {
+      if (requireLiveExecution) {
+        throw new Error("LIVE_EXECUTION_REQUIRED: execution is currently in paper mode for this user/system configuration.");
       }
+
+      log.info(`[PAPER_SIMULATOR] Routing order for ${clientcode} to Paper Trading Simulator.`);
 
       // Call Paper Simulator
       const { paperTradingSimulator } = require("./PaperTradingSimulator");
@@ -505,9 +511,9 @@ export async function placeOrderForClient(
           status: true,
           data: {
               orderid: paperOrderId,
-              message: isMismatch 
-                ? "Safety fallback: executed via Paper Trading Simulator due to whitelist IP mismatch"
-                : "Executed via Paper Trading Simulator"
+              message: "Executed via Paper Trading Simulator",
+              executionMode: "paper",
+              simulated: true,
           }
       };
   }
@@ -927,6 +933,10 @@ export async function placeOrderForClient(
       const isApiKeyRoutePrecheck = /^API_KEY_ROUTE_(NOT_VERIFIED|MISMATCH)/i.test(
         String(err.message || "")
       );
+      const isLiveExecutionRequired = /^LIVE_EXECUTION_REQUIRED:/i.test(String(err.message || ""));
+      const isWhitelistLiveBlocked = /^LIVE_EXECUTION_BLOCKED_WHITELIST_MISMATCH:/i.test(
+        String(err.message || "")
+      );
       
       if (isInvalidToken && retryCount < 1) {
           log.info(`[OrderService] Token expired for ${clientcode}. Attempting auto-refresh...`);
@@ -962,6 +972,20 @@ export async function placeOrderForClient(
 
       if (isApiKeyRoutePrecheck) {
           log.error(`[ORDER_NO_RETRY] API key/route precheck failed for ${clientcode}.`, {
+            message: err.message,
+          });
+          return { status: false, message: err.message };
+      }
+
+      if (isLiveExecutionRequired) {
+          log.error(`[ORDER_NO_RETRY] Live execution required for ${clientcode}.`, {
+            message: err.message,
+          });
+          return { status: false, message: err.message };
+      }
+
+      if (isWhitelistLiveBlocked) {
+          log.error(`[ORDER_NO_RETRY] Live execution blocked by whitelist mismatch for ${clientcode}.`, {
             message: err.message,
           });
           return { status: false, message: err.message };
@@ -1060,20 +1084,4 @@ export async function getOrderStatusForClient(
     return { status: true, data: { status: "unknown", message: "Upstox status check pending" } };
   }
 
-  throw new Error("No active session for this user");
-}
-
-export async function fetchBrokerOrder(
-  userId: string | unknown,
-  clientcode: string,
-  clientOrderId: string,
-  outgoingIp?: string
-) {
-  try {
-    const resp = await getOrderStatusForClient(userId, clientcode, clientOrderId, outgoingIp);
-    if (!resp?.status || !resp.data) return null;
-    return resp.data;
-  } catch {
-    return null;
-  }
-}
+  throw new Error("No active sessio

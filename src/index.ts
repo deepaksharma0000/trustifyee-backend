@@ -36,6 +36,7 @@ import aliceAuthRoutes from "./routes/aliceAuth";
 import aliceOrderRoutes from "./routes/aliceOrders";
 import aliceInstrumentsRoutes from "./routes/aliceInstruments";
 import { syncPendingOrders } from "./jobs/orderSync.job";
+import { syncSignalExecutionStatuses } from "./jobs/signalStatusSync.job";
 import marketStatusRoutes from "./routes/marketStatus.routes";
 import chaosRoutes from "./routes/chaos.routes";
 import observabilityRoutes from "./routes/observability.routes";
@@ -325,6 +326,12 @@ async function start() {
         log.error("[ORDER_SYNC] periodic sync failed", err);
       });
     }, 5000);
+
+    setInterval(() => {
+      syncSignalExecutionStatuses().catch((err: any) => {
+        log.error("[SIGNAL_STATUS_SYNC] periodic sync failed", err);
+      });
+    }, Number(process.env.SIGNAL_STATUS_SYNC_INTERVAL_MS || 7000));
 
     app.use("/api/market", marketStatusRoutes);
     app.use("/api/chaos", chaosRoutes);

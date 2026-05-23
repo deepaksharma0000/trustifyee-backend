@@ -268,6 +268,9 @@ export const getExecutionSummary = async (req: Request, res: Response) => {
                 clientOrderId: row.clientOrderId || null,
                 correlationId: row.correlationId || null,
                 usedIp: row.ipAddress || null,
+                brokerOrderStatus: row.brokerOrderStatus || null,
+                brokerRejectReason: row.brokerRejectReason || null,
+                lastSyncedAt: row.lastSyncedAt || null,
                 executedAt: row.executedAt || null,
                 updatedAt: row.updatedAt || null,
             };

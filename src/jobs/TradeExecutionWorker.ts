@@ -23,7 +23,9 @@ const isNoRetryRejection = (message: string) => {
     m.includes("unregistered ip") ||
     m.includes("register your ip before retrying") ||
     m.includes("api_key_route_not_verified") ||
-    m.includes("api_key_route_mismatch")
+    m.includes("api_key_route_mismatch") ||
+    m.includes("live_execution_required") ||
+    m.includes("live_execution_blocked_whitelist_mismatch")
   );
 };
 
@@ -117,6 +119,16 @@ const withIpHint = (message: string, usedIpLabel: string) => {
   return `${baseMessage} | Used IP: ${usedIpLabel}`;
 };
 
+const normalizeBrokerOrderStatus = (payload: any): string => {
+  const raw = payload?.orderstatus || payload?.status || payload?.orderStatus || payload?.order_state || "";
+  return String(raw || "").trim().toUpperCase();
+};
+
+const isAcceptedOrderState = (status: string) => {
+  const s = String(status || "").toUpperCase();
+  return s === "OPEN" || s === "COMPLETE" || s === "TRIGGER PENDING" || s === "PARTIALLY FILLED";
+};
+
 const activeWorkers: Worker[] = [];
 
 export const initTradeExecutionWorker = () => {
@@ -200,6 +212,8 @@ export const initTradeExecutionWorker = () => {
             : (userDoc as any).agent_url || undefined;
         const dedicatedIpEnabled =
           Boolean(jobDedicatedIpEnabled) || Boolean((userDoc as any)?.dedicated_ip_enabled === true);
+        const userLicence = String((userDoc as any)?.licence || "Live").toLowerCase();
+        const requireLiveExecution = userLicence === "live";
 
         if (!dedicatedIpEnabled && (requestedOutgoingIp || requestedAgentUrl)) {
           logger.warn("[ORDER_ROUTE_HINT_IGNORED]", {
@@ -252,17 +266,21 @@ export const initTradeExecutionWorker = () => {
             clientOrderId,
             outgoingIp
           );
-
-          if (existingOrder && (existingOrder.status === "COMPLETE" || existingOrder.status === "OPEN")) {
+          const existingStatus = normalizeBrokerOrderStatus(existingOrder);
+          if (existingOrder && isAcceptedOrderState(existingStatus)) {
             logger.warn("Broker already has order for this clientOrderId. Synchronizing instead of placing duplicate order.");
             await SignalExecutionResult.updateOne(
               { clientOrderId },
               {
-                status: "SUCCESS",
-                orderId: existingOrder.orderid,
-                executedAt: new Date(),
-                errorMessage: undefined,
-                ipAddress: networkMeta.usedIpLabel,
+                $set: {
+                  status: "SUCCESS",
+                  orderId: existingOrder.orderid,
+                  executedAt: new Date(),
+                  errorMessage: undefined,
+                  ipAddress: networkMeta.usedIpLabel,
+                  brokerOrderStatus: existingStatus || "OPEN",
+                  brokerResponse: existingOrder,
+                },
               }
             );
             return;
@@ -277,21 +295,33 @@ export const initTradeExecutionWorker = () => {
           outgoingIp,
           agentUrl,
           dedicatedIpEnabled,
+          requireLiveExecution,
         });
 
-        const orderId = resp?.data?.orderid || resp?.data?.data?.orderid;
-        const brokerMessage = String(resp?.data?.message || resp?.message || "");
+        const responseData = resp?.data || {};
+        const responsePayload =
+          responseData?.data && typeof responseData.data === "object" ? responseData.data : responseData;
+        const orderId = responseData?.orderid || responseData?.data?.orderid;
+        const brokerOrderStatus = normalizeBrokerOrderStatus(responsePayload);
+        const brokerMessage = String(responseData?.message || resp?.message || "");
         const loweredMessage = brokerMessage.toLowerCase();
         const isRejectedMessage =
           loweredMessage.includes("reject") ||
           loweredMessage.includes("failed") ||
           loweredMessage.includes("error") ||
           loweredMessage.includes("invalid");
-
-        const isRealSuccess =
+        const isSimulated =
+          Boolean(responseData?.simulated || resp?.simulated) ||
+          String(responseData?.executionMode || "").toLowerCase() === "paper" ||
+          String(orderId || "").toUpperCase().startsWith("PAPER-");
+        const treatSimulatedAsSuccess = isSimulated && !requireLiveExecution;
+        const isBrokerSubmissionSuccess =
           Boolean(orderId) &&
           (resp?.status === 200 || resp?.ok === true || resp?.status === true) &&
-          !isRejectedMessage;
+          !isRejectedMessage &&
+          !isSimulated;
+
+        const isRealSuccess = isBrokerSubmissionSuccess || treatSimulatedAsSuccess;
 
         const { BrokerResponse } = await import("../models/BrokerResponse");
         const rejectedMessage = withIpHint(
@@ -305,13 +335,17 @@ export const initTradeExecutionWorker = () => {
           orderid: orderId || "REJECTED",
           action: "PLACE_ORDER",
           status: isRealSuccess ? "SUCCESS" : "REJECTED",
-          message: isRealSuccess ? "Order placed successfully" : rejectedMessage,
+          message: isBrokerSubmissionSuccess
+            ? "Order accepted by broker and pending status sync"
+            : treatSimulatedAsSuccess
+            ? "Order executed in paper mode"
+            : rejectedMessage,
           usedIp: networkMeta.usedIp,
           networkRoute: networkMeta.routeType,
           brokerError: isRealSuccess
             ? undefined
             : {
-                ...(resp?.data || resp || {}),
+                ...(responseData || resp || {}),
                 usedIp: networkMeta.usedIpLabel,
                 networkRoute: networkMeta.routeType,
                 agentUrl: networkMeta.agentUrl,
@@ -344,16 +378,26 @@ export const initTradeExecutionWorker = () => {
         await SignalExecutionResult.updateOne(
           { clientOrderId },
           {
-            status: "SUCCESS",
-            orderId,
-            executedAt: new Date(),
-            errorMessage: undefined,
-            ipAddress: networkMeta.usedIpLabel,
+            $set: {
+              status: isBrokerSubmissionSuccess ? "PENDING" : "SUCCESS",
+              orderId,
+              executedAt: new Date(),
+              errorMessage: undefined,
+              ipAddress: networkMeta.usedIpLabel,
+              brokerOrderStatus: isBrokerSubmissionSuccess
+                ? brokerOrderStatus || "PENDING_BROKER"
+                : "PAPER",
+              brokerResponse: responseData,
+              lastSyncedAt: new Date(),
+            },
           }
         );
 
         await CircuitBreakerService.recordSuccess(broker, "ORDER");
-        logger.info("Trade execution successful", { orderId });
+        logger.info("Trade execution accepted", {
+          orderId,
+          status: isBrokerSubmissionSuccess ? "PENDING_BROKER_SYNC" : "SIMULATED_SUCCESS",
+        });
       } catch (error: any) {
         const message = toSafeMessage(error);
 
