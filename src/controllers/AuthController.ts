@@ -5,7 +5,6 @@ import User, { IUser } from '../models/User';
 import Admin, { IAdmin } from '../models/Admin';
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../utils/tokens';
 import { validateEmail } from '../utils/functions';
-import { randomUUID } from 'crypto';
 import { encrypt, maskKey } from '../utils/encryption';
 import { sendWelcomeEmail } from '../utils/mail';
 
@@ -190,7 +189,7 @@ export const registerUser = async (req: any, res: Response) => {
 
         // Encrypt sensitive fields
         if (client_key) client_key = encrypt(client_key);
-        else client_key = randomUUID(); // Generate UUID if not provided
+        else client_key = undefined;
 
         if (api_key) api_key = encrypt(api_key);
 

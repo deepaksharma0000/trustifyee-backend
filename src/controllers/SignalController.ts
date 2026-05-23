@@ -5,10 +5,10 @@ import UpstoxInstrumentModel from '../models/UpstoxInstrument';
 import { Signal } from '../models/Signal';
 import { SignalExecutionResult } from '../models/SignalExecutionResult';
 import { getTradeQueueForBroker } from '../utils/tradeQueue';
-import { decrypt } from '../utils/encryption';
 import { SignalBroadcastService } from '../services/SignalBroadcastService';
 import log from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
+import { evaluateBrokerCredentialHealth } from '../utils/brokerCredentialHealth';
 
 export const queueExecution = async (req: Request, res: Response) => {
     try {
@@ -52,7 +52,7 @@ export const queueExecution = async (req: Request, res: Response) => {
         }
 
         const user = await User.findById(userId)
-            .select('+outgoing_ip +agent_url +broker_password +broker_totp_secret dedicated_ip_enabled')
+            .select('client_key api_key broker broker_connected broker_verified licence trading_status +outgoing_ip +agent_url +broker_password +broker_totp_secret dedicated_ip_enabled')
             .lean();
         if (!user) return res.status(404).json({ error: "User not found", status: false });
 
@@ -69,12 +69,31 @@ export const queueExecution = async (req: Request, res: Response) => {
         const clientOrderId = `USER-${uuidv4()}`;
         const correlationId = uuidv4();
         
+        const credentialHealth = evaluateBrokerCredentialHealth(user, `queue_execution_${userId}`);
         const rawClientKey = user.client_key || "";
         const rawClientKeyLength = rawClientKey.length;
-        const resolvedClientCode = decrypt(rawClientKey, "client_key");
+        const resolvedClientCode = credentialHealth.decrypted.clientCode;
 
         const activeKey = require('../config').config.encryptionKey || 'your-default-secure-key-32-chars-long';
         const activeKeyHash = require('crypto').createHash('sha256').update(String(activeKey)).digest('hex');
+        log.info("[QUEUE_EXECUTION_INITIATED]", {
+            userId,
+            signalId,
+            correlationId,
+            broker: user.broker || "ANGELONE",
+            clientKeyEncryptedLength: rawClientKeyLength,
+            activeEncryptionSecretHash: activeKeyHash,
+            clientCodeResolved: Boolean(resolvedClientCode),
+            hasPassword: Boolean(user.broker_password),
+            passwordResolved: Boolean(credentialHealth.decrypted.password),
+            hasTotpSecret: Boolean(user.broker_totp_secret),
+            totpResolved: Boolean(credentialHealth.decrypted.totpSecret),
+            hasApiKey: Boolean(user.api_key),
+            apiKeyResolved: Boolean(credentialHealth.decrypted.apiKey),
+            brokerConnected: Boolean(user.broker_connected),
+            brokerVerified: Boolean(user.broker_verified),
+            missing: credentialHealth.missing,
+        });
 
         // High-Visibility Telemetry Tracing logs
         console.log("=================================================================");
@@ -83,18 +102,22 @@ export const queueExecution = async (req: Request, res: Response) => {
         console.log(`- client_key raw length before decrypt: ${rawClientKeyLength}`);
         console.log(`- Active ENCRYPTION_SECRET SHA256 Hash: ${activeKeyHash}`);
         console.log(`- Decrypted Client Code status: ${resolvedClientCode ? `RESOLVED (length: ${resolvedClientCode.length})` : "FAILED/NULL"}`);
-        console.log(`- User Model Client Key in DB: ${user.client_key}`);
-        console.log(`- Decrypted Client Code: ${resolvedClientCode || "FAILED_TO_DECRYPT"}`);
+        console.log(`- User Model Client Key in DB present: ${Boolean(user.client_key)}`);
+        console.log(`- Decrypted Client Code status: ${resolvedClientCode ? "RESOLVED" : "FAILED_TO_DECRYPT"}`);
         console.log(`- Assigned Broker: ${user.broker || "ANGELONE"}`);
         console.log(`- Has Decrypted Password: ${user.broker_password ? "YES" : "NO"}`);
         console.log(`- Has TOTP Secret: ${user.broker_totp_secret ? "YES" : "NO"}`);
         console.log("=================================================================");
 
-        if (!resolvedClientCode) {
-            console.error(`[SignalController] ❌ Queue Execution Rejected: client_key decryption failed or returned empty for userId: ${userId}`);
+        if (!credentialHealth.ok) {
+            log.error("[SignalController] Queue execution rejected: broker credential health check failed", {
+                userId,
+                signalId,
+                missing: credentialHealth.missing,
+            });
             return res.status(400).json({
                 status: false,
-                error: "Client code is missing or invalid. Please reconnect broker credentials."
+                error: `Broker credentials incomplete or invalid: ${credentialHealth.missing.join(", ")}. Please reconnect broker credentials.`
             });
         }
 

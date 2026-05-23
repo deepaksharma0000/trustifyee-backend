@@ -9,8 +9,37 @@ import { encrypt, decrypt, ensureEncrypted } from '../utils/encryption';
 import { auth } from '../middleware/auth.middleware';
 import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
 import { buildApiKeyRouteBinding } from '../utils/apiKeyRouteBinding';
+import {
+    assertEncryptedRoundTrip,
+    cleanCredentialInput,
+    evaluateBrokerCredentialHealth,
+    resolveClientCodeInput,
+} from '../utils/brokerCredentialHealth';
 
 const router = express.Router();
+
+const MASKED_VALUE_REGEX = /^(\*+|.{1,8}\.\.\.)$/;
+
+const cleanBodyString = (value: unknown): string => {
+    if (typeof value !== 'string') return '';
+    const clean = value.trim();
+    return MASKED_VALUE_REGEX.test(clean) ? '' : clean;
+};
+
+const resolveClientCodeFromBody = (body: any): string => {
+    return (
+        cleanBodyString(body.client_code) ||
+        cleanBodyString(body.client_key) ||
+        cleanBodyString(body.clientCode) ||
+        cleanBodyString(body.clientcode)
+    ).toUpperCase();
+};
+
+const assertEncryptedValue = (field: string, encrypted: string) => {
+    if (!encrypted || encrypted.trim().length < 16) {
+        throw new Error(`${field} encryption failed or returned empty`);
+    }
+};
 
 // 🚀 Manual Session Generation (SmartAPI loginByPassword Model)
 // POST /api/angelone/auth/generate-session
@@ -40,13 +69,13 @@ router.post('/generate-session', auth, async (req: any, res) => {
         log.info(`[AUTH] Broker connect initiated: User=${username}, Licence=${licence}, ID=${userId}`);
 
         // Step 2: Resolve client_code (Request Body > Decrypted Profile)
-        let client_code: string = req.body.client_code || '';
+        let client_code: string = resolveClientCodeInput(req.body);
         if (!client_code && profile.client_key) {
             client_code = await ensureEncrypted(profile, 'client_key', `user_${userId}`);
         }
 
         // Step 3: Resolve password (Request Body > Decrypted Profile)
-        let password: string = req.body.password || '';
+        let password: string = cleanCredentialInput(req.body.password);
         if (!password && profile.broker_password) {
             password = await ensureEncrypted(profile, 'broker_password', `user_${userId}`);
         }
@@ -56,7 +85,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
         let keySource = 'None';
         const allowEnvApiKeyFallback = process.env.ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK === "true";
 
-        const bodyApiKey = typeof req.body.api_key === 'string' ? req.body.api_key.trim() : "";
+        const bodyApiKey = cleanCredentialInput(req.body.api_key || req.body.apiKey);
         const profileApiKey = profile.api_key ? await ensureEncrypted(profile, 'api_key', `user_${userId}`) : "";
         const envApiKey = config.angelApiKey || "";
 
@@ -87,8 +116,8 @@ router.post('/generate-session', auth, async (req: any, res) => {
         const decryptedApiKey = resolvedApiKey; // For clarity with existing code
 
         // Step 5: Resolve TOTP (Request Body TOTP > Request Body Secret > Profile Secret)
-        let totp: string = req.body.totp || '';
-        let totp_secret: string = req.body.totp_secret || '';
+        let totp: string = cleanCredentialInput(req.body.totp);
+        let totp_secret: string = cleanCredentialInput(req.body.totp_secret || req.body.totpSecret).toUpperCase();
         if (!totp && !totp_secret && profile.broker_totp_secret) {
             totp_secret = await ensureEncrypted(profile, 'broker_totp_secret', `user_${userId}`);
             log.info(`[AUTH] Smart Login: Using saved TOTP secret for ${client_code}`);
@@ -103,6 +132,12 @@ router.post('/generate-session', auth, async (req: any, res) => {
         }
         if (!totp && !totp_secret) {
             return res.status(400).json({ status: false, error: 'TOTP or TOTP Secret is required. Enter current 6-digit TOTP or your TOTP secret key.' });
+        }
+        if (!totp_secret && !profile.broker_totp_secret) {
+            return res.status(400).json({
+                status: false,
+                error: 'TOTP Secret Key is required for automated live trade execution. Manual TOTP alone cannot recover broker sessions for queued trades.'
+            });
         }
 
         // FIX: Force IPv4 validation and fallback
@@ -182,12 +217,15 @@ router.post('/generate-session', auth, async (req: any, res) => {
         invalidateAngelSessionCache(String(userId), String(client_code));
 
         // Step 9: Build and save profile update
+        const encryptedClientCode = encrypt(client_code);
+        assertEncryptedRoundTrip('client_key', client_code, encryptedClientCode);
+
         const updatePayload: any = {
             broker_connected: true,
             broker_verified: true,
             trading_paused: false, // [FIX] Reset circuit breaker
             consecutive_failures: 0, // [FIX] Reset failure count
-            client_key: encrypt(client_code),
+            client_key: encryptedClientCode,
             broker: 'AngelOne'
         };
 
@@ -200,26 +238,47 @@ router.post('/generate-session', auth, async (req: any, res) => {
         }
 
         // Always save credentials from request body for future auto-login
-        if (req.body.password) {
-            updatePayload.broker_password = encrypt(req.body.password);
+        if (password) {
+            updatePayload.broker_password = encrypt(password);
+            assertEncryptedRoundTrip('broker_password', password, updatePayload.broker_password);
         }
-        if (req.body.api_key) {
-            updatePayload.api_key = req.body.api_key.startsWith('enc::') ? req.body.api_key : encrypt(req.body.api_key);
+        if (bodyApiKey) {
+            updatePayload.api_key = bodyApiKey.startsWith('enc::') ? bodyApiKey : encrypt(bodyApiKey);
+            assertEncryptedRoundTrip('api_key', bodyApiKey, updatePayload.api_key);
         }
         // FIX #4: Encrypt TOTP secret before persisting to DB
-        if (req.body.totp_secret) {
-            updatePayload.broker_totp_secret = encrypt(req.body.totp_secret);
+        if (totp_secret) {
+            updatePayload.broker_totp_secret = encrypt(totp_secret);
+            assertEncryptedRoundTrip('broker_totp_secret', totp_secret, updatePayload.broker_totp_secret);
         }
 
         if (userType === 'admin') {
             await Admin.updateOne(
-                { panel_client_key: client_code },
-                { ...updatePayload, panel_client_key: client_code },
-                { upsert: true }
+                { _id: userId },
+                { $set: { ...updatePayload, panel_client_key: client_code } },
+                { upsert: false }
             );
         } else {
-            await User.updateOne({ _id: userId }, updatePayload);
+            await User.updateOne({ _id: userId }, { $set: updatePayload });
         }
+
+        const savedProfile = userType === 'admin'
+            ? await Admin.findById(userId).select('+broker_password +broker_totp_secret').lean() as any
+            : await User.findById(userId).select('+broker_password +broker_totp_secret client_key api_key broker broker_connected broker_verified').lean() as any;
+
+        log.info('[BROKER_CREDENTIAL_SAVE_HEALTH]', {
+            userId,
+            userType,
+            broker: savedProfile?.broker,
+            hasClientKey: Boolean(savedProfile?.client_key),
+            clientKeyEncryptedLength: String(savedProfile?.client_key || '').length,
+            hasApiKey: Boolean(savedProfile?.api_key),
+            hasPassword: Boolean(savedProfile?.broker_password),
+            hasTotpSecret: Boolean(savedProfile?.broker_totp_secret),
+            brokerConnected: Boolean(savedProfile?.broker_connected),
+            brokerVerified: Boolean(savedProfile?.broker_verified),
+        });
+        evaluateBrokerCredentialHealth(savedProfile, `broker_connect_saved_${userId}`);
 
         log.info(`[AUTH] ✅ Session generated successfully for ${username} (${client_code}) [${userType}]`);
         return res.json({

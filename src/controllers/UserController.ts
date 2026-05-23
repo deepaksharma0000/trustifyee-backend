@@ -6,6 +6,7 @@ import { encrypt, maskKey, decrypt } from '../utils/encryption';
 import AngelTokensModel from '../models/AngelTokens';
 import UpstoxTokensModel from '../models/UpstoxTokens';
 import log from '../utils/logger';
+import { cleanCredentialInput, resolveClientCodeInput, encryptRequiredCredential } from '../utils/brokerCredentialHealth';
 
 const updateUserSchema = Joi.object({
     full_name: Joi.string().optional(),
@@ -113,11 +114,23 @@ export const updateUser = async (req: any, res: Response) => {
 export const updateUserBroker = async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const { client_key, api_key } = req.body;
+        const clientKey = resolveClientCodeInput(req.body);
+        const apiKey = cleanCredentialInput(req.body.api_key || req.body.apiKey);
+        const password = cleanCredentialInput(req.body.password || req.body.broker_password);
+        const totpSecret = cleanCredentialInput(req.body.totp_secret || req.body.totpSecret || req.body.broker_totp_secret).toUpperCase();
 
         const updateData: any = {};
-        if (client_key) updateData.client_key = encrypt(client_key);
-        if (api_key) updateData.api_key = encrypt(api_key);
+        if (clientKey) updateData.client_key = encryptRequiredCredential('client_key', clientKey);
+        if (apiKey) updateData.api_key = encryptRequiredCredential('api_key', apiKey);
+        if (password) updateData.broker_password = encryptRequiredCredential('broker_password', password);
+        if (totpSecret) updateData.broker_totp_secret = encryptRequiredCredential('broker_totp_secret', totpSecret);
+
+        if (!Object.keys(updateData).length) {
+            return res.status(400).json({
+                error: "No broker credentials provided. Empty or masked credentials are not saved.",
+                status: false
+            });
+        }
 
         updateData.broker_verified = false;
         updateData.broker_connected = false;
@@ -127,7 +140,7 @@ export const updateUserBroker = async (req: Request, res: Response) => {
         updateData.validated_route_type = undefined;
         updateData.validated_pair_at = undefined;
 
-        await User.updateOne({ _id: id }, updateData);
+        await User.updateOne({ _id: id }, { $set: updateData });
         const updatedUser = await User.findById(id);
         if (!updatedUser) return res.status(404).json({ error: "User not found", status: false });
 

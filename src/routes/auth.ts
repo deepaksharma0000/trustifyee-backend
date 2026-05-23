@@ -96,14 +96,19 @@ router.post("/login", async (req, res) => {
 
 router.get("/me", auth, async (req: any, res) => {
   try {
-    const user = req.user;
+    const user = req.userType === "admin"
+      ? await Admin.findById(req.id).select("+broker_password +broker_totp_secret")
+      : await User.findById(req.id).select("+broker_password +broker_totp_secret");
     if (!user) return res.status(404).json({ error: "User not found" });
 
     // ✅ Convert to object and flatten Maps (for lot_multipliers)
     const userData = user.toObject ? user.toObject({ flattenMaps: true }) : user;
     
     // Mask sensitive keys but provide a hint that they exist
-    if (userData.client_key) userData.client_code = "********"; // For UI pre-fill
+    if (userData.client_key) {
+      userData.client_key = "********";
+      userData.client_code = "********"; // For UI pre-fill
+    }
     if (userData.broker_password) userData.broker_password = "********";
     if (userData.api_key) userData.api_key = "********";
     if (userData.broker_totp_secret) userData.broker_totp_secret = "********";
