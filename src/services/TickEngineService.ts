@@ -9,6 +9,7 @@ import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import { redisBullConnection } from "../utils/redis";
 import log from "../utils/logger";
 import { clockDriftMonitor } from "./ClockDriftMonitor";
+import { isPlausibleLtp } from "../utils/price";
 
 interface PendingSubscription {
   exchange: string;
@@ -326,7 +327,9 @@ export class TickEngineService {
 
     try {
       // 1. Packet Bounds Validation
-      if (buffer.length < 43) {
+      // SmartAPI binary LTP packet layout:
+      // mode(1), exchangeType(1), token(25), sequence(8), exchangeTimestamp(8), ltp(8).
+      if (buffer.length < 51) {
         this.registerMalformedPacket("INSUFFICIENT_PACKET_LENGTH");
         return;
       }
@@ -344,11 +347,24 @@ export class TickEngineService {
       // Read 64-bit sequence identifier atomically
       const sequence = buffer.readBigInt64LE(27);
       
-      // Read 32-bit price parameter
-      const ltp = buffer.readInt32LE(35) / 100; // Convert Paisa to Rupees
+      const exchangeTimestamp = Number(buffer.readBigInt64LE(35));
+      const exchangeName = this.getExchangeNameStr(exchangeType);
 
-      if (ltp <= 0) {
-        this.registerMalformedPacket("NON_POSITIVE_LTP");
+      // SmartAPI sends prices in paise as an int64 at byte offset 43.
+      // Reading byte 35 reads timestamp bytes as price and creates huge fake premiums.
+      const rawLtp = Number(buffer.readBigInt64LE(43));
+      const ltp = rawLtp / 100;
+
+      if (!isPlausibleLtp(exchangeName, ltp)) {
+        this.registerMalformedPacket("IMPLAUSIBLE_LTP");
+        log.warn("[TickEngine] Rejected implausible LTP packet", {
+          exchange: exchangeName,
+          token,
+          rawLtp,
+          ltp,
+          exchangeTimestamp,
+          packetLength: buffer.length,
+        });
         return;
       }
 
@@ -371,7 +387,6 @@ export class TickEngineService {
       const parseLatency = Date.now() - startTime;
       this.metrics.parseLatencySumMs += parseLatency;
 
-      const exchangeName = this.getExchangeNameStr(exchangeType);
       const channel = `ticks:${exchangeName}:${token}`.toUpperCase();
 
       const tickPayload = JSON.stringify({

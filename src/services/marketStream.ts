@@ -7,6 +7,7 @@ import { tickEngineService } from "./TickEngineService";
 import { redisBullConnection } from "../utils/redis";
 import UpstoxTokensModel from "../models/UpstoxTokens";
 import { getUpstoxAdapter } from "../utils/upstox";
+import { isPlausibleLtp } from "../utils/price";
 
 type QuoteRequestItem = {
   exchange: string;
@@ -89,6 +90,15 @@ export function startMarketStream(server: any) {
           const cachedLtp = await subRedis.get(`LTP:${exName}:${item.symboltoken}`);
           if (cachedLtp) {
             const ltpNum = Number(cachedLtp);
+            if (!isPlausibleLtp(exName, ltpNum)) {
+              await subRedis.del(`LTP:${exName}:${item.symboltoken}`);
+              log.warn("[MarketStream] Dropped implausible cached LTP", {
+                exchange: exName,
+                symboltoken: item.symboltoken,
+                ltp: ltpNum,
+              });
+              continue;
+            }
             quoteCache.set(item.symboltoken, { ltp: ltpNum, oi: 0, ts: Date.now() });
             initialTicks.push({
               symboltoken: item.symboltoken,
@@ -113,10 +123,20 @@ export function startMarketStream(server: any) {
           if (ws.readyState !== WebSocket.OPEN) return;
           try {
             const parsed = JSON.parse(message);
+            const exchange = String(parsed.exchange || "").toUpperCase();
+            const ltp = Number(parsed.ltp || 0);
+            if (!isPlausibleLtp(exchange, ltp)) {
+              log.warn("[MarketStream] Dropped implausible live LTP", {
+                exchange,
+                token: parsed.token,
+                ltp,
+              });
+              return;
+            }
             
             // Standardize cache entry
             quoteCache.set(parsed.token, {
-              ltp: parsed.ltp,
+              ltp,
               oi: 0,
               ts: parsed.timestamp,
             });
@@ -124,7 +144,7 @@ export function startMarketStream(server: any) {
             // Standardize format back to frontend contract
             const tick = {
               symboltoken: parsed.token,
-              ltp: parsed.ltp,
+              ltp,
               oi: 0,
               volume: 0,
               percentChange: 0,

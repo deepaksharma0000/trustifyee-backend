@@ -51,9 +51,9 @@ export class RiskManagementService {
                 const data = rmsRes.data || {};
                 
                 // Extract metrics as per SmartAPI response structure (varies slightly)
-                const availablecash = Number(data.availablecash || 0);
-                const collateral = Number(data.collateral || 0);
-                const utilisedspan = Number(data.utilisedspan || 0);
+                const availablecash = Number(data.availablecash || data.availableCash || data.net || 0);
+                const collateral = Number(data.collateral || data.collateralvalue || 0);
+                const utilisedspan = Number(data.utilisedspan || data.usedmargin || data.utiliseddebits || 0);
 
                 // usable = cash + collateral - used
                 const totalusablemargin = availablecash + collateral - utilisedspan;

@@ -18,6 +18,7 @@ import { globalRateLimiter, PriorityClass } from "./GlobalRateLimiter";
 import { clockDriftMonitor } from "./ClockDriftMonitor";
 import { logLiveExecution } from "../utils/executionAudit";
 import { MarketOrderProtection } from "../utils/MarketOrderProtection";
+import { normalizeFiniteNumber } from "../utils/price";
 
 
 // Removed global adapters to enforce per-user API keys
@@ -305,6 +306,19 @@ async function resolveOrderSymbolToken(orderInput: PlaceOrderInput): Promise<str
   return masterToken;
 }
 
+async function normalizeOrderQuantity(orderInput: PlaceOrderInput): Promise<{ quantity: number; lotSize: number; requestedLots: number }> {
+  const requested = Math.max(1, Math.floor(normalizeFiniteNumber(orderInput.quantity, 0)));
+  const exchange = String(orderInput.exchange || "NFO").toUpperCase().trim();
+  const tradingsymbol = String(orderInput.tradingsymbol || "").toUpperCase().trim();
+  const instrument = await InstrumentModel.findOne({ tradingsymbol, exchange }).lean() as any;
+
+  const lotSize = Math.max(1, Math.floor(normalizeFiniteNumber(instrument?.lotSize, 1)));
+  const isDerivative = ["NFO", "BFO", "NSE_FO", "BSE_FO"].includes(exchange);
+  const quantity = isDerivative && requested < lotSize ? requested * lotSize : requested;
+
+  return { quantity, lotSize, requestedLots: requested };
+}
+
 /**
  * Robust Pre-Trade Validation Wrapper
  */
@@ -444,17 +458,6 @@ export async function placeOrderForClient(
   log.debug(`[OrderService] Attempting order for ${clientcode}. Current Failures: ${user!.consecutive_failures || 0}`);
 
   // 🛡️ [MARKET ORDER PROTECTION & COMPLIANCE]
-  const protectionResult = await MarketOrderProtection.enforceProtection(
-      orderInput,
-      "",
-      ""
-  );
-
-  // Override input with protected values
-  orderInput.ordertype = protectionResult.ordertype;
-  orderInput.price = Number(protectionResult.price);
-
-
   // 🛡️ [IP WHITELIST HARD SAFETY GUARD]
   const { StartupDiagnostics } = require("../utils/startupDiagnostics");
   
@@ -592,6 +595,18 @@ export async function placeOrderForClient(
   let clientOrderId = "";
   try {
       // 1. Run Validations
+      const normalizedQty = await normalizeOrderQuantity(orderInput);
+      if (normalizedQty.quantity !== orderInput.quantity) {
+        log.info("[ORDER_QUANTITY_NORMALIZED]", {
+          clientcode,
+          tradingsymbol: orderInput.tradingsymbol,
+          requestedLots: normalizedQty.requestedLots,
+          lotSize: normalizedQty.lotSize,
+          brokerQuantity: normalizedQty.quantity,
+        });
+        orderInput.quantity = normalizedQty.quantity;
+      }
+
       const validation = await runPreTradeValidation(user!._id.toString(), clientcode, {
         ...orderInput,
         outgoingIp: currentIp,
@@ -822,11 +837,36 @@ export async function placeOrderForClient(
         clientref: clientOrderId
       };
 
+      log.info("[PLACE_ORDER_PAYLOAD]", {
+        userId: String(userId),
+        clientcode,
+        hasClientKey: Boolean((user as any)?.client_key),
+        hasPassword: Boolean((user as any)?.broker_password),
+        hasTotpSecret: Boolean((user as any)?.broker_totp_secret),
+        hasJwtToken: Boolean(decJwtToken),
+        hasFeedToken: Boolean((angelTokens as any)?.feedToken),
+        apiKey: apiKeyFingerprint(resolvedApiKey),
+        routeType: routing.dedicatedRoutingEnabled ? "DEDICATED" : "SHARED",
+        usedIp: currentIp || "SERVER_SHARED_IP",
+        payload,
+      });
+
       // Use dynamic adapter instance with the correct API key and optional agent
       const resp = await dynamicAdapter.placeOrder(
         decJwtToken,
         payload
       );
+
+      log.info("[PLACE_ORDER_RESPONSE]", {
+        userId: String(userId),
+        clientcode,
+        tradingsymbol: orderInput.tradingsymbol,
+        statusCode: resp?.status,
+        brokerStatus: resp?.data?.status,
+        errorCode: resp?.data?.errorCode || resp?.data?.errorcode,
+        message: resp?.data?.message,
+        orderId: resp?.data?.data?.orderid || resp?.data?.orderid || null,
+      });
 
       const brokerData = resp?.data || {};
       const brokerCode = String(brokerData?.errorCode || brokerData?.errorcode || "").toUpperCase();
@@ -1049,8 +1089,9 @@ export async function getOrderStatusForClient(
   if (angelTokens?.jwtToken) {
     if (!angelTokens.apiKey) throw new Error("User API Key missing in session");
     const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_status_check`);
+    const jwtToken = decrypt(angelTokens.jwtToken, `user_${userId}_status_jwt`);
     const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, { outgoingIp });
-    const orderBookResp = await dynamicAdapter.getOrderBook(angelTokens.jwtToken);
+    const orderBookResp = await dynamicAdapter.getOrderBook(jwtToken);
     const orderRows = Array.isArray(orderBookResp?.data)
       ? orderBookResp.data
       : Array.isArray(orderBookResp?.data?.data)
@@ -1079,7 +1120,7 @@ export async function getOrderStatusForClient(
     // If exact ID lookup is possible (not our UUID)
     if (!orderId.startsWith("BROKER-")) {
         // Reuse dynamicAdapter created above (it's in scope if we refactor slightly, but for now just use the one we have or create new)
-        return await dynamicAdapter.getOrderStatus(angelTokens.jwtToken, orderId);
+        return await dynamicAdapter.getOrderStatus(jwtToken, orderId);
     }
     
     return { status: false, message: "Order not found in broker book" };
