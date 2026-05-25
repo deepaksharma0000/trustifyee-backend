@@ -7,6 +7,7 @@ import AngelTokensModel from '../models/AngelTokens';
 import UpstoxTokensModel from '../models/UpstoxTokens';
 import log from '../utils/logger';
 import { cleanCredentialInput, resolveClientCodeInput, encryptRequiredCredential } from '../utils/brokerCredentialHealth';
+import { executeWithSessionRecovery } from '../services/AngelSessionManager';
 
 const updateUserSchema = Joi.object({
     full_name: Joi.string().optional(),
@@ -348,11 +349,9 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
         }
 
         const client_code = decrypt(user.client_key);
-        const now = new Date();
         const tokenData = await AngelTokensModel.findOne({
             userId: user._id,
             clientcode: client_code,
-            expiresAt: { $gt: now }
         });
 
         if (!tokenData || !tokenData.jwtToken) {
@@ -362,9 +361,14 @@ export const verifyUserBroker = async (req: Request, res: Response) => {
             });
         }
 
-        const { createAngelAdapter } = await import('../utils/broker');
-        const adapter = await createAngelAdapter(user._id.toString());
-        const profile = await adapter.getProfile(tokenData.jwtToken);
+        const profile = await executeWithSessionRecovery(
+            {
+                userId: String(user._id),
+                clientcode: client_code,
+                purpose: "user_broker_validate",
+            },
+            (session) => session.adapter.getProfile(session.jwtToken)
+        );
 
         if (profile && profile.status === 200) {
             user.broker_verified = true;

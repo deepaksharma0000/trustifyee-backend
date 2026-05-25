@@ -4,6 +4,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import InstrumentModel from "../models/Instrument";
 import User from "../models/User";
 import { matchesEncryptedValue } from "../utils/encryption";
+import { getInstrumentLtp } from "../services/MarketDataService";
 
 export const getOrderStatus = async (req: Request, res: Response) => {
   const { orderid, clientcode } = req.params;
@@ -115,8 +116,6 @@ export const getActivePositions = async (req: Request, res: Response) => {
     }
 
     if (!tokens?.userId) return res.status(401).json({ ok: false, message: "Invalid session metadata" });
-    const { createAngelAdapter } = await import('../utils/broker');
-    const adapter = await createAngelAdapter(tokens.userId.toString());
     const positionsWithLtp = await Promise.all(positions.map(async (p) => {
       try {
         let currentSymbolToken = p.symboltoken;
@@ -126,8 +125,10 @@ export const getActivePositions = async (req: Request, res: Response) => {
         }
 
         if (currentSymbolToken) {
-          const ltpResp = await adapter.getLtp(tokens.jwtToken!, p.exchange, p.tradingsymbol, currentSymbolToken);
-          const ltp = ltpResp?.data?.ltp || 0;
+          const ltp = await getInstrumentLtp(p.exchange, p.tradingsymbol, currentSymbolToken, {
+            userId: String(tokens.userId || ""),
+            clientcode,
+          });
           const pnl = p.side === "BUY"
             ? (ltp - p.entryPrice) * p.quantity
             : (p.entryPrice - ltp) * p.quantity;
@@ -309,10 +310,10 @@ export const getGlobalTradeHistory = async (req: Request, res: Response) => {
           // Fetch LTP for LIVE calculation
           const tokens = await AngelTokensModel.findOne({ clientcode: t.clientcode });
           if (tokens?.jwtToken && tokens?.userId && t.symboltoken) {
-            const { createAngelAdapter } = await import('../utils/broker');
-            const adapter = await createAngelAdapter(tokens.userId.toString());
-            const ltpResp = await adapter.getLtp(tokens.jwtToken, t.exchange, t.tradingsymbol, t.symboltoken);
-            const ltp = ltpResp?.data?.ltp || 0;
+            const ltp = await getInstrumentLtp(t.exchange, t.tradingsymbol, t.symboltoken, {
+              userId: String(tokens.userId || ""),
+              clientcode: t.clientcode,
+            });
             exitPrice = ltp;
             pnl = t.side === 'BUY'
               ? (ltp - t.entryPrice) * t.quantity

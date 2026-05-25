@@ -254,6 +254,11 @@ export async function recoverSessionByRefreshOrLogin(
     try {
       const refreshResult = await attemptRefresh(sessionDoc, context);
       if (refreshResult.ok) {
+        log.info("ANGEL_SESSION_REFRESH_SUCCESS", {
+          clientCode: sessionDoc.clientcode,
+          mode: "REFRESH",
+          context,
+        });
         log.info("[SESSION_RECOVERY] Refresh succeeded", {
           context,
           userId: String(sessionDoc.userId || ""),
@@ -272,6 +277,11 @@ export async function recoverSessionByRefreshOrLogin(
 
       const loginResult = await attemptFreshLogin(sessionDoc, context);
       if (loginResult.ok) {
+        log.info("ANGEL_SESSION_REFRESH_SUCCESS", {
+          clientCode: sessionDoc.clientcode,
+          mode: "RELOGIN",
+          context,
+        });
         log.info("[SESSION_RECOVERY] Fresh login succeeded", {
           context,
           userId: String(sessionDoc.userId || ""),

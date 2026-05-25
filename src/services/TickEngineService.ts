@@ -10,6 +10,7 @@ import { redisBullConnection } from "../utils/redis";
 import log from "../utils/logger";
 import { clockDriftMonitor } from "./ClockDriftMonitor";
 import { isPlausibleLtp } from "../utils/price";
+import { ensureValidSession } from "./AngelSessionManager";
 
 interface PendingSubscription {
   exchange: string;
@@ -621,6 +622,26 @@ export class TickEngineService {
     }
 
     const context = "tick_engine_auth";
+    try {
+      const validSession = await ensureValidSession({
+        userId: tokenDoc?.userId ? String(tokenDoc.userId) : undefined,
+        clientcode: clientCode,
+        purpose: context,
+      });
+
+      return {
+        jwtToken: validSession.jwtToken,
+        feedToken: validSession.feedToken,
+        apiKey: validSession.apiKey,
+        clientCode,
+      };
+    } catch (err: any) {
+      log.warn("[TickEngine] ensureValidSession failed, falling back to legacy recovery path", {
+        clientCode,
+        message: err?.message,
+      });
+    }
+
     const decryptedJwt = tokenDoc!.jwtToken ? decrypt(tokenDoc!.jwtToken) : "";
     const decryptedFeed = tokenDoc!.feedToken ? decrypt(tokenDoc!.feedToken) : "";
     const decryptedApiKey = tokenDoc!.apiKey ? decrypt(tokenDoc!.apiKey) : "";

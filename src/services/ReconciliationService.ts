@@ -1,11 +1,10 @@
 // src/services/ReconciliationService.ts
 import { positionRegistry, ActivePosition } from "./PositionRegistry";
 import { eventSourcedOMS } from "./EventSourcedOMS";
-import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 import AngelTokensModel from "../models/AngelTokens";
-import { decrypt } from "../utils/encryption";
 import log from "../utils/logger";
 import { parseAngelRows } from "../utils/angelResponseParser";
+import { executeWithSessionRecovery } from "./AngelSessionManager";
 
 export type ReconciliationState = "RECON_PENDING" | "RECON_ESCALATED" | "RECON_RECOVERED" | "RECON_FAILED" | "RECON_CONFIRMED";
 
@@ -100,13 +99,15 @@ export class ReconciliationService {
         return;
       }
 
-      const decJwtToken = decrypt(tokens.jwtToken);
-      const decApiKey = decrypt(tokens.apiKey || "");
-      
-      const adapter = getOrCreateAngelAdapter(decApiKey);
-      
       // Query current active position data directly from AngelOne
-      const brokerResponse = await adapter.getPositions(decJwtToken);
+      const brokerResponse = await executeWithSessionRecovery(
+        {
+          userId,
+          clientcode: clientCode,
+          purpose: "reconciliation_positions",
+        },
+        (session) => session.adapter.getPositions(session.jwtToken)
+      );
       log.info("FULL_BROKER_RESPONSE", {
         context: "reconciliation_positions",
         clientCode,

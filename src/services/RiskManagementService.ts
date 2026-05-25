@@ -1,10 +1,9 @@
 import AngelTokensModel from "../models/AngelTokens";
 import { config } from "../config";
 import log from "../utils/logger";
-import { decrypt, ensureEncrypted } from "../utils/encryption";
 import User from "../models/User";
 import Admin from "../models/Admin";
-import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { executeWithSessionRecovery } from "./AngelSessionManager";
 
 export interface MarginInfo {
     availablecash: number;
@@ -38,15 +37,15 @@ export class RiskManagementService {
             }
 
             // 🚀 [ISSUE 2 FIX] Ensure user-specific API Key is used (No global fallback)
-            if (!tokens.apiKey) throw new Error("API Key missing in session");
-            
-            const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_rms_val`);
-            const userApiKey = await ensureEncrypted(tokens, 'apiKey', `user_${userId}_rms_check`);
-            const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, {
-                outgoingIp: user?.outgoing_ip,
-            });
-
-            const rmsRes = await dynamicAdapter.getRMS(decJwtToken);
+            const rmsRes = await executeWithSessionRecovery(
+                {
+                    userId,
+                    clientcode,
+                    purpose: "risk_margin_rms",
+                    outgoingIp: user?.outgoing_ip,
+                },
+                (session) => session.adapter.getRMS(session.jwtToken)
+            );
             if (rmsRes && rmsRes.status === 200) {
                 const data = rmsRes.data || {};
                 

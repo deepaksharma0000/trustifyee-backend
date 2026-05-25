@@ -1,7 +1,6 @@
-import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import AngelTokensModel from "../models/AngelTokens";
 import log from "../utils/logger";
-import User from "../models/User";
+import { executeWithSessionRecovery } from "./AngelSessionManager";
 
 const profileCache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -25,10 +24,14 @@ export class ProfileValidationService {
                 return { status: false, message: "No active broker session found" };
             }
 
-            const { createAngelAdapter } = await import('../utils/broker');
-            const adapter = await createAngelAdapter(userId.toString());
-
-            const profile = await adapter.getProfile(tokens.jwtToken);
+            const profile = await executeWithSessionRecovery(
+                {
+                    userId,
+                    clientcode,
+                    purpose: "profile_validation",
+                },
+                (session) => session.adapter.getProfile(session.jwtToken)
+            );
 
             if (profile && profile.status === 200) {
                 // Check for exchange permission

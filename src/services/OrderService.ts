@@ -20,6 +20,7 @@ import { logLiveExecution } from "../utils/executionAudit";
 import { MarketOrderProtection } from "../utils/MarketOrderProtection";
 import { normalizeFiniteNumber } from "../utils/price";
 import { parseAngelOrderPlacement, parseAngelRows } from "../utils/angelResponseParser";
+import { executeWithSessionRecovery } from "./AngelSessionManager";
 
 
 // Removed global adapters to enforce per-user API keys
@@ -815,11 +816,6 @@ export async function placeOrderForClient(
       }
 
       // 🚀 [FIX 2] Pass outgoingIp and agentUrl to AngelOneAdapter
-      const dynamicAdapter = getOrCreateAngelAdapter(resolvedApiKey, {
-        outgoingIp: currentIp,
-        agentUrl: currentAgentUrl,
-      });
-
       // 3. Place Order using Protection Result
       const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
       const payload = {
@@ -853,9 +849,15 @@ export async function placeOrderForClient(
       });
 
       // Use dynamic adapter instance with the correct API key and optional agent
-      const resp = await dynamicAdapter.placeOrder(
-        decJwtToken,
-        payload
+      const resp = await executeWithSessionRecovery(
+        {
+          userId: String(userId),
+          clientcode,
+          purpose: "order_place",
+          outgoingIp: currentIp,
+          agentUrl: currentAgentUrl,
+        },
+        (session) => session.adapter.placeOrder(session.jwtToken, payload)
       );
       const parsedOrder = parseAngelOrderPlacement(resp);
 
@@ -1108,11 +1110,15 @@ export async function getOrderStatusForClient(
 ) {
   const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
   if (angelTokens?.jwtToken) {
-    if (!angelTokens.apiKey) throw new Error("User API Key missing in session");
-    const userApiKey = decrypt(angelTokens.apiKey, `user_${userId}_status_check`);
-    const jwtToken = decrypt(angelTokens.jwtToken, `user_${userId}_status_jwt`);
-    const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, { outgoingIp });
-    const orderBookResp = await dynamicAdapter.getOrderBook(jwtToken);
+    const orderBookResp = await executeWithSessionRecovery(
+      {
+        userId: String(userId || ""),
+        clientcode,
+        purpose: "order_book_status",
+        outgoingIp,
+      },
+      (session) => session.adapter.getOrderBook(session.jwtToken)
+    );
     const parsedRows = parseAngelRows(orderBookResp);
     const orderRows = parsedRows.rows;
     if (orderBookResp && orderBookResp.status === 200 && parsedRows.ok) {
@@ -1138,7 +1144,15 @@ export async function getOrderStatusForClient(
     // If exact ID lookup is possible (not our UUID)
     if (!orderId.startsWith("BROKER-")) {
         // Reuse dynamicAdapter created above (it's in scope if we refactor slightly, but for now just use the one we have or create new)
-        const statusResp = await dynamicAdapter.getOrderStatus(jwtToken, orderId);
+        const statusResp = await executeWithSessionRecovery(
+          {
+            userId: String(userId || ""),
+            clientcode,
+            purpose: "order_status",
+            outgoingIp,
+          },
+          (session) => session.adapter.getOrderStatus(session.jwtToken, orderId)
+        );
         const parsedStatus = parseAngelOrderPlacement(statusResp);
         if (parsedStatus.data && typeof parsedStatus.data === "object") {
           return { status: true, data: parsedStatus.data };
