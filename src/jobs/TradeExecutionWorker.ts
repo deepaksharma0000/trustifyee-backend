@@ -25,6 +25,10 @@ const isNoRetryRejection = (message: string) => {
     m.includes("register your ip before retrying") ||
     m.includes("api_key_route_not_verified") ||
     m.includes("api_key_route_mismatch") ||
+    m.includes("ag8004") ||
+    m.includes("invalid api key") ||
+    m.includes("broker_api_key_token_mismatch") ||
+    m.includes("broker_session_client_mismatch") ||
     m.includes("live_execution_required") ||
     m.includes("live_execution_blocked_whitelist_mismatch") ||
     m.includes("margin") ||
@@ -238,6 +242,20 @@ export const initTradeExecutionWorker = () => {
           usedIp: networkMeta.usedIpLabel,
           hasAgent: Boolean(agentUrl),
           dedicatedIpEnabled,
+        });
+
+        logger.info("BROKER_EXECUTION_CONTEXT", {
+          userId,
+          clientCode,
+          broker,
+          purpose: "trade_queue_worker",
+          apiKeyLast4: "N/A",
+          requestIp: networkMeta.usedIpLabel,
+          routeType: networkMeta.routeType,
+          tokenOwner: userId,
+          executionMode: config.executionMode,
+          correlationId,
+          clientOrderId,
         });
 
         await SignalExecutionResult.updateOne(

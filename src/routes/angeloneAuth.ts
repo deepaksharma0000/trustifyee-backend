@@ -9,6 +9,8 @@ import { encrypt, decrypt, ensureEncrypted } from '../utils/encryption';
 import { auth } from '../middleware/auth.middleware';
 import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
 import { buildApiKeyRouteBinding } from '../utils/apiKeyRouteBinding';
+import { assertApiKeyJwtPair, buildIpWhitelistDiagnostics, validateApiKeyFormat } from '../services/BrokerSessionValidator';
+import { isMigrated } from '../utils/encryption';
 import {
     assertEncryptedRoundTrip,
     cleanCredentialInput,
@@ -108,12 +110,31 @@ router.post('/generate-session', auth, async (req: any, res) => {
                 error: 'AngelOne API Key is missing. Please provide it in the request or contact system administrator.' 
             });
         }
+
+        if (keySource === 'SYSTEM') {
+            log.warn(`[API_KEY_SOURCE] SYSTEM fallback used for ${client_code}. Multi-user isolation requires per-user SmartAPI keys.`);
+        }
         
         if (keySource === 'USER') {
             log.info(`[API_KEY_SOURCE] USER (masked) | Using provided key for ${client_code}`);
         }
         
         const decryptedApiKey = resolvedApiKey; // For clarity with existing code
+
+        if (isMigrated(decryptedApiKey) || String(decryptedApiKey).startsWith('enc::')) {
+            return res.status(400).json({
+                status: false,
+                error: 'API key must be plaintext SmartAPI Private Key, not an encrypted database value.',
+            });
+        }
+
+        const apiKeyFormat = validateApiKeyFormat(decryptedApiKey);
+        if (!apiKeyFormat.valid) {
+            return res.status(400).json({
+                status: false,
+                error: `Invalid SmartAPI key format (${apiKeyFormat.reason}). Use the Private Key from your Angel One developer app.`,
+            });
+        }
 
         // Step 5: Resolve TOTP (Request Body TOTP > Request Body Secret > Profile Secret)
         let totp: string = cleanCredentialInput(req.body.totp);
@@ -153,6 +174,10 @@ router.post('/generate-session', auth, async (req: any, res) => {
         });
 
         log.info(`[BROKER_AUTH] Final IP: ${outgoingIp} (raw was: ${rawIp})`);
+        log.info('[IP_WHITELIST_DIAGNOSTICS]', buildIpWhitelistDiagnostics({
+            dedicatedIpEnabled: Boolean((profile as any).dedicated_ip_enabled === true),
+            userOutgoingIp: (profile as any).outgoing_ip,
+        }));
 
         // Step 7: Call AngelOne API
         const adapter = new AngelOneAdapter(decryptedApiKey, outgoingIp);
@@ -200,7 +225,18 @@ router.post('/generate-session', auth, async (req: any, res) => {
             return res.status(500).json({ status: false, error: "Broker response missing JWT token" });
         }
 
+        try {
+            assertApiKeyJwtPair(decryptedApiKey, jwtToken, client_code);
+        } catch (pairErr: any) {
+            log.error(`[AUTH] API key / JWT pair validation failed for ${client_code}`, { message: pairErr?.message });
+            return res.status(400).json({
+                status: false,
+                error: pairErr?.message || "API key and session token are inconsistent. Re-enter your SmartAPI Private Key.",
+            });
+        }
+
         // Step 8: Save tokens to DB
+        const encryptedApiKey = encrypt(decryptedApiKey);
         await AngelTokensModel.findOneAndUpdate(
             { userId, clientcode: client_code },
             {
@@ -209,7 +245,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
                 jwtToken: encrypt(jwtToken),
                 refreshToken: encrypt(refreshToken),
                 feedToken: encrypt(feedToken),
-                apiKey: decryptedApiKey.startsWith('enc::') ? decryptedApiKey : encrypt(decryptedApiKey), // [FIX] Prevent double encryption
+                apiKey: encryptedApiKey,
                 expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
             },
             { upsert: true, new: true }
@@ -242,9 +278,9 @@ router.post('/generate-session', auth, async (req: any, res) => {
             updatePayload.broker_password = encrypt(password);
             assertEncryptedRoundTrip('broker_password', password, updatePayload.broker_password);
         }
-        if (bodyApiKey) {
-            updatePayload.api_key = bodyApiKey.startsWith('enc::') ? bodyApiKey : encrypt(bodyApiKey);
-            assertEncryptedRoundTrip('api_key', bodyApiKey, updatePayload.api_key);
+        if (bodyApiKey || decryptedApiKey) {
+            updatePayload.api_key = encryptedApiKey;
+            assertEncryptedRoundTrip('api_key', decryptedApiKey, updatePayload.api_key);
         }
         // FIX #4: Encrypt TOTP secret before persisting to DB
         if (totp_secret) {

@@ -6,6 +6,7 @@ import { ensureEncrypted, encrypt, decrypt } from "../utils/encryption";
 import log from "../utils/logger";
 import { invalidateAngelSessionCache, primeAngelSessionCache } from "./AngelSessionContextService";
 import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { resolveConsistentApiKey, validateApiKeyFormat } from "./BrokerSessionValidator";
 
 type RecoveryMode = "REFRESH" | "RELOGIN";
 
@@ -93,11 +94,24 @@ async function attemptRefresh(sessionDoc: any, context: string): Promise<Session
     return { ok: false, reason: "NO_REFRESH_TOKEN" };
   }
 
-  const sessionApiKey = await ensureEncrypted(sessionDoc, "apiKey", `${context}_refresh_api_${sessionDoc.clientcode}`);
+  const userId = String(sessionDoc?.userId || "");
+  const loaded = userId ? await getProfileWithSecrets(userId) : null;
+  const resolved = await resolveConsistentApiKey({
+    angelTokens: sessionDoc,
+    profile: loaded?.profile,
+    userId,
+    clientcode: String(sessionDoc?.clientcode || ""),
+  });
+  const sessionApiKey = resolved.apiKey;
   const refreshToken = await ensureEncrypted(sessionDoc, "refreshToken", `${context}_refresh_rt_${sessionDoc.clientcode}`);
 
   if (!sessionApiKey || !refreshToken) {
     return { ok: false, reason: "REFRESH_MISSING_API_OR_TOKEN" };
+  }
+
+  const keyFormat = validateApiKeyFormat(sessionApiKey);
+  if (!keyFormat.valid) {
+    return { ok: false, reason: `REFRESH_INVALID_API_KEY:${keyFormat.reason}` };
   }
 
   const adapter = getOrCreateAngelAdapter(sessionApiKey);
@@ -144,10 +158,13 @@ async function attemptFreshLogin(sessionDoc: any, context: string): Promise<Sess
   const password = profile?.broker_password ? decrypt(profile.broker_password, `${context}_pwd`) : "";
   const totpSecret = profile?.broker_totp_secret ? decrypt(profile.broker_totp_secret, `${context}_totp`) : "";
 
-  let apiKey = sessionDoc?.apiKey ? decrypt(sessionDoc.apiKey, `${context}_api_session`) : "";
-  if (!apiKey && profile?.api_key) {
-    apiKey = decrypt(profile.api_key, `${context}_api_profile`);
-  }
+  const resolved = await resolveConsistentApiKey({
+    angelTokens: sessionDoc,
+    profile,
+    userId,
+    clientcode: String(sessionDoc?.clientcode || clientCode),
+  });
+  const apiKey = resolved.apiKey;
 
   if (!clientCode || !password || !totpSecret || !apiKey) {
     if (loaded.type === "user") {

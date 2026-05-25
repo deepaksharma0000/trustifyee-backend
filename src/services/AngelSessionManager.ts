@@ -6,7 +6,26 @@ import { resolveAngelSessionContext } from "./AngelSessionContextService";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import { decrypt, ensureEncrypted } from "../utils/encryption";
 import { parseAngelResponse } from "../utils/angelResponseParser";
+import { getAngelNetworkIdentity } from "../utils/angelNetworkIdentity";
+import {
+  assertApiKeyJwtPair,
+  auditBrokerAuthFailure,
+  isAngelApiKeyError,
+  logBrokerExecutionContext,
+  resolveConsistentApiKey,
+} from "./BrokerSessionValidator";
+import { apiKeyFingerprint } from "../utils/apiKeyRouteBinding";
+import { config } from "../config";
+import { extractClientCodeFromJwt } from "./BrokerSessionValidator";
 import log from "../utils/logger";
+
+function extractClientCodeFromJwtSafe(jwt: string) {
+  try {
+    return extractClientCodeFromJwt(jwt);
+  } catch {
+    return "";
+  }
+}
 
 type EnsureSessionInput = {
   userId?: string;
@@ -44,7 +63,11 @@ function getBrokerErrorPayload(errorOrResponse: any) {
 export function isAngelInvalidToken(errorOrResponse: any): boolean {
   const parsed = parseAngelResponse(getBrokerErrorPayload(errorOrResponse));
   const msg = String(parsed.brokerMessage || parsed.rejectionReason || "").toLowerCase();
-  return parsed.errorCode.toUpperCase() === "AG8001" || msg.includes("invalid token");
+  return (
+    parsed.errorCode.toUpperCase() === "AG8001" ||
+    msg.includes("invalid token") ||
+    isAngelApiKeyError(errorOrResponse)
+  );
 }
 
 async function loadProfile(userId: string) {
@@ -65,22 +88,21 @@ async function loadProfile(userId: string) {
 }
 
 async function resolveApiKey(session: any, userId: string, purpose: string) {
-  const fromSession = session?.apiKey
-    ? await ensureEncrypted(session, "apiKey", `${purpose}_session_api_${session?.clientcode || "UNKNOWN"}`)
-    : "";
-  if (fromSession) return fromSession;
-
-  if (!userId) return "";
-  const profile = await loadProfile(userId);
-  const fromProfile = profile?.api_key
-    ? decrypt(profile.api_key, `${purpose}_profile_api_${userId}`)
-    : "";
-
-  if (fromProfile && session?._id && profile?.api_key) {
-    await AngelTokensModel.updateOne({ _id: session._id }, { $set: { apiKey: profile.api_key } }).catch(() => undefined);
+  if (!userId) {
+    const fromSession = session?.apiKey
+      ? await ensureEncrypted(session, "apiKey", `${purpose}_session_api_${session?.clientcode || "UNKNOWN"}`)
+      : "";
+    return fromSession;
   }
 
-  return fromProfile;
+  const profile = await loadProfile(userId);
+  const resolved = await resolveConsistentApiKey({
+    angelTokens: session,
+    profile,
+    userId,
+    clientcode: String(session?.clientcode || ""),
+  });
+  return resolved.apiKey;
 }
 
 function shouldRefresh(session: any, forceRefresh?: boolean) {
@@ -154,6 +176,27 @@ export async function ensureValidSession(input: EnsureSessionInput): Promise<Val
     throw new Error("ANGEL_SESSION_INVALID: clientcode, jwtToken, or apiKey missing after validation.");
   }
 
+  assertApiKeyJwtPair(apiKey, jwtToken, clientcode);
+
+  const identity = getAngelNetworkIdentity();
+  const requestIp = input.outgoingIp || identity.publicIp || config.publicIp || "UNKNOWN";
+
+  logBrokerExecutionContext({
+    userId,
+    clientCode: clientcode,
+    broker: "ANGELONE",
+    purpose: input.purpose,
+    apiKeyLast4: apiKey.slice(-4),
+    apiKeyFingerprint: apiKeyFingerprint(apiKey),
+    apiKeySource: "TOKEN",
+    requestIp,
+    routeType: input.agentUrl ? "AGENT_ROUTE" : input.outgoingIp ? "DEDICATED" : "SERVER_SHARED_IP",
+    tokenOwner: userId,
+    executionMode: process.env.EXECUTION_MODE || "SERVER_SHARED_IP",
+    jwtClientCode: extractClientCodeFromJwtSafe(jwtToken),
+    sessionConsistent: true,
+  });
+
   const adapter = getOrCreateAngelAdapter(apiKey, {
     outgoingIp: input.outgoingIp,
     agentUrl: input.agentUrl,
@@ -179,13 +222,31 @@ export async function executeWithSessionRecovery<T>(
   try {
     const response = await fn(session);
     if (isAngelInvalidToken(response)) {
-      throw Object.assign(new Error("AG8001 Invalid Token"), { response: { data: getBrokerErrorPayload(response) } });
+      auditBrokerAuthFailure({
+        userId: session.userId,
+        clientcode: session.clientcode,
+        purpose: input.purpose,
+        response,
+        apiKeyFingerprint: apiKeyFingerprint(session.apiKey),
+        requestIp: input.outgoingIp || config.publicIp || "UNKNOWN",
+      });
+      const errCode = isAngelApiKeyError(response) ? "AG8004 Invalid API Key" : "AG8001 Invalid Token";
+      throw Object.assign(new Error(errCode), { response: { data: getBrokerErrorPayload(response) } });
     }
     return response;
   } catch (error: any) {
     if (!isAngelInvalidToken(error)) throw error;
 
-    log.warn("ANGEL_TOKEN_EXPIRED", {
+    auditBrokerAuthFailure({
+      userId: session.userId,
+      clientcode: session.clientcode,
+      purpose: input.purpose,
+      response: error,
+      apiKeyFingerprint: apiKeyFingerprint(session.apiKey),
+      requestIp: input.outgoingIp || config.publicIp || "UNKNOWN",
+    });
+
+    log.warn(isAngelApiKeyError(error) ? "ANGEL_API_KEY_MISMATCH" : "ANGEL_TOKEN_EXPIRED", {
       clientCode: session.clientcode,
       broker: "ANGELONE",
       purpose: input.purpose,

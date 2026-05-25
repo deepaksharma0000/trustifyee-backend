@@ -21,6 +21,12 @@ import { MarketOrderProtection } from "../utils/MarketOrderProtection";
 import { normalizeFiniteNumber } from "../utils/price";
 import { parseAngelOrderPlacement, parseAngelRows } from "../utils/angelResponseParser";
 import { executeWithSessionRecovery } from "./AngelSessionManager";
+import {
+  assertApiKeyJwtPair,
+  buildIpWhitelistDiagnostics,
+  logBrokerExecutionContext,
+  resolveConsistentApiKey,
+} from "./BrokerSessionValidator";
 
 
 // Removed global adapters to enforce per-user API keys
@@ -626,92 +632,54 @@ export async function placeOrderForClient(
 
       // 🚀 [PRE-EXECUTION GUARD] - Fall fast if state is invalid
       const decJwtToken = await ensureEncrypted(angelTokens, 'jwtToken', `user_${userId}_order`);
-      const tokenApiKey = await ensureEncrypted(angelTokens, 'apiKey', `user_${userId}_order_placement`);
-      const profileApiKey =
-        (user as any)?.api_key
-          ? await ensureEncrypted(user as any, "api_key", `user_${userId}_profile_order_placement`)
-          : "";
-
-      let resolvedApiKey = tokenApiKey || profileApiKey;
-
-      if (profileApiKey && tokenApiKey && profileApiKey !== tokenApiKey) {
-          const tokenUpdatedAt = new Date((angelTokens as any)?.updatedAt || 0).getTime();
-          const profileUpdatedAt = new Date((user as any)?.updated_at || (user as any)?.updatedAt || 0).getTime();
-          const profileLooksNewer = profileUpdatedAt > tokenUpdatedAt + 1000;
-
-          log.warn("[ORDER_API_KEY_MISMATCH] Profile api_key differs from AngelTokens.apiKey. Resolving by recency.", {
-            clientcode,
-            tokenApiKey: apiKeyFingerprint(tokenApiKey),
-            profileApiKey: apiKeyFingerprint(profileApiKey),
-            tokenUpdatedAt: Number.isFinite(tokenUpdatedAt) ? new Date(tokenUpdatedAt).toISOString() : "UNKNOWN",
-            profileUpdatedAt: Number.isFinite(profileUpdatedAt) ? new Date(profileUpdatedAt).toISOString() : "UNKNOWN",
-            chosenSource: profileLooksNewer ? "PROFILE" : "TOKEN",
-          });
-
-          if (profileLooksNewer) {
-            resolvedApiKey = profileApiKey;
-            try {
-              const profileEncryptedKey = String((user as any)?.api_key || "").trim();
-              const tokenEncryptedKey = String((angelTokens as any)?.apiKey || "").trim();
-              if (profileEncryptedKey && profileEncryptedKey !== tokenEncryptedKey) {
-                await AngelTokensModel.updateOne(
-                  { _id: (angelTokens as any)._id },
-                  { $set: { apiKey: profileEncryptedKey } }
-                );
-                (angelTokens as any).apiKey = profileEncryptedKey;
-              }
-            } catch (syncErr: any) {
-              log.warn("[ORDER_API_KEY_SYNC_WARN] Failed syncing profile api_key to AngelTokens.", {
-                clientcode,
-                message: syncErr?.message,
-              });
-            }
-          } else {
-            resolvedApiKey = tokenApiKey;
-            try {
-              const tokenEncryptedKey = String((angelTokens as any)?.apiKey || "").trim();
-              const profileEncryptedKey = String((user as any)?.api_key || "").trim();
-              if (tokenEncryptedKey && tokenEncryptedKey !== profileEncryptedKey) {
-                await User.updateOne(
-                  { _id: userId },
-                  { $set: { api_key: tokenEncryptedKey } }
-                );
-                (user as any).api_key = tokenEncryptedKey;
-              }
-            } catch (syncErr: any) {
-              log.warn("[ORDER_API_KEY_SYNC_WARN] Failed syncing AngelTokens.apiKey to profile.", {
-                clientcode,
-                message: syncErr?.message,
-              });
-            }
-          }
-      } else if (!tokenApiKey && profileApiKey) {
-          resolvedApiKey = profileApiKey;
-          try {
-            const profileEncryptedKey = String((user as any)?.api_key || "").trim();
-            if (profileEncryptedKey) {
-              await AngelTokensModel.updateOne(
-                { _id: (angelTokens as any)._id },
-                { $set: { apiKey: profileEncryptedKey } }
-              );
-              (angelTokens as any).apiKey = profileEncryptedKey;
-            }
-          } catch (syncErr: any) {
-            log.warn("[ORDER_API_KEY_SYNC_WARN] Failed writing missing token apiKey from profile.", {
-              clientcode,
-              message: syncErr?.message,
-            });
-          }
-      }
+      const apiKeyResolution = await resolveConsistentApiKey({
+        angelTokens,
+        profile: user,
+        userId: String(userId),
+        clientcode,
+      });
+      const resolvedApiKey = apiKeyResolution.apiKey;
 
       if (!resolvedApiKey || resolvedApiKey.length < 5) {
           log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid API Key for ${clientcode}`);
-          throw new Error("Invalid or missing API key. Please update your broker settings.");
+          throw new Error("Invalid or missing API key. Please reconnect broker with your own SmartAPI app key.");
       }
       if (!decJwtToken || decJwtToken.length < 20) {
           log.error(`[ORDER_BLOCKED_INVALID_STATE] Invalid session token for ${clientcode}`);
           throw new Error("Invalid session. Please login to your broker again.");
       }
+
+      if (apiKeyResolution.mismatchDetected) {
+        log.warn("[ORDER_API_KEY_MISMATCH_RECONNECT_REQUIRED] JWT was issued with a different SmartAPI app key. Forcing broker reconnect.", {
+          clientcode,
+          chosenSource: apiKeyResolution.source,
+        });
+        throw new Error(
+          "BROKER_API_KEY_TOKEN_MISMATCH: API key changed since last login. Reconnect broker from profile settings."
+        );
+      }
+
+      assertApiKeyJwtPair(resolvedApiKey, decJwtToken, clientcode);
+
+      logBrokerExecutionContext({
+        userId: String(userId),
+        clientCode: clientcode,
+        broker: "ANGELONE",
+        purpose: "order_place_precheck",
+        apiKeyLast4: resolvedApiKey.slice(-4),
+        apiKeyFingerprint: apiKeyFingerprint(resolvedApiKey),
+        apiKeySource: apiKeyResolution.source,
+        requestIp: currentIp || config.publicIp || "SERVER_SHARED_IP",
+        routeType: routing.dedicatedRoutingEnabled ? "DEDICATED" : "SERVER_SHARED_IP",
+        tokenOwner: String(userId),
+        executionMode: config.executionMode,
+        sessionConsistent: !apiKeyResolution.mismatchDetected,
+      });
+
+      log.info("[IP_WHITELIST_DIAGNOSTICS]", buildIpWhitelistDiagnostics({
+        dedicatedIpEnabled: routing.dedicatedRoutingEnabled,
+        userOutgoingIp: (user as any)?.outgoing_ip,
+      }));
 
       if (isEndUser) {
         await enforceApiKeyRoutePairValidation(userId, user, resolvedApiKey, routing, clientcode);
@@ -876,10 +844,15 @@ export async function placeOrderForClient(
       const brokerData = resp?.data || {};
       const brokerCode = parsedOrder.errorCode.toUpperCase();
       const brokerMessage = parsedOrder.brokerMessage;
-      const isInvalidTokenPayload = brokerCode === "AG8001" || brokerMessage.toLowerCase().includes("invalid token");
+      const isInvalidTokenPayload =
+        brokerCode === "AG8001" ||
+        brokerCode === "AG8004" ||
+        brokerMessage.toLowerCase().includes("invalid token") ||
+        brokerMessage.toLowerCase().includes("invalid api key");
 
       if (isInvalidTokenPayload) {
-          throw new Error(`AG8001 Invalid Token: ${brokerMessage || "Token expired"}`);
+          const errLabel = brokerCode === "AG8004" ? "AG8004 Invalid API Key" : "AG8001 Invalid Token";
+          throw new Error(`${errLabel}: ${brokerMessage || "Broker session invalid"}`);
       }
 
       // Reset failures on success

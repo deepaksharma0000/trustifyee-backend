@@ -5,6 +5,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import log from "../utils/logger";
 import { parseAngelRows } from "../utils/angelResponseParser";
 import { executeWithSessionRecovery } from "./AngelSessionManager";
+import { isAngelApiKeyError } from "./BrokerSessionValidator";
 
 export type ReconciliationState = "RECON_PENDING" | "RECON_ESCALATED" | "RECON_RECOVERED" | "RECON_FAILED" | "RECON_CONFIRMED";
 
@@ -117,6 +118,15 @@ export class ReconciliationService {
       const parsedRows = parseAngelRows(brokerResponse);
       if (!parsedRows.ok) {
         const parsed = parsedRows.parsed;
+        if (isAngelApiKeyError(brokerResponse)) {
+          log.error(`[Reconciliation] AG8004 Invalid API Key for ${clientCode}. User must reconnect broker with matching SmartAPI app key.`, {
+            userId,
+            clientCode,
+            errorCode: parsed.errorCode,
+            message: parsed.brokerMessage,
+          });
+          return;
+        }
         log.warn(`[Reconciliation] Broker response could not be converted to position rows for ${clientCode}`, {
           hasResponse: Boolean(brokerResponse),
           hasData: Boolean(brokerResponse?.data),

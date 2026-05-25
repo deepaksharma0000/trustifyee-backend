@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { config } from "../config";
 import { StartupDiagnostics } from "../utils/startupDiagnostics";
+import { buildIpWhitelistDiagnostics } from "../services/BrokerSessionValidator";
 
 const router = Router();
 
@@ -27,6 +28,8 @@ router.get("/route-status", async (req, res) => {
       routeClassification = "SERVER AUTOMATED ROUTING";
     }
 
+    const ipDiagnostics = buildIpWhitelistDiagnostics();
+
     res.json({
       status: "success",
       data: {
@@ -35,7 +38,10 @@ router.get("/route-status", async (req, res) => {
         configuredPublicIp,
         brokerWhitelistMatch: isMatch,
         routeClassification,
-        safetyStatus: isMatch ? "SECURE" : "FALLBACK_ACTIVE"
+        safetyStatus: isMatch ? "SECURE" : "FALLBACK_ACTIVE",
+        ipWhitelistDiagnostics: ipDiagnostics,
+        operationalNote:
+          "brokerWhitelistMatch=true only means PUBLIC_IP matches VPS egress. Each user SmartAPI app must whitelist that IP in Angel One portal.",
       }
     });
   } catch (err: any) {
