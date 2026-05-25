@@ -19,6 +19,7 @@ import { clockDriftMonitor } from "./ClockDriftMonitor";
 import { logLiveExecution } from "../utils/executionAudit";
 import { MarketOrderProtection } from "../utils/MarketOrderProtection";
 import { normalizeFiniteNumber } from "../utils/price";
+import { parseAngelOrderPlacement, parseAngelRows } from "../utils/angelResponseParser";
 
 
 // Removed global adapters to enforce per-user API keys
@@ -856,22 +857,23 @@ export async function placeOrderForClient(
         decJwtToken,
         payload
       );
+      const parsedOrder = parseAngelOrderPlacement(resp);
 
       log.info("[PLACE_ORDER_RESPONSE]", {
         userId: String(userId),
         clientcode,
         tradingsymbol: orderInput.tradingsymbol,
         statusCode: resp?.status,
-        brokerStatus: resp?.data?.status,
-        errorCode: resp?.data?.errorCode || resp?.data?.errorcode,
-        message: resp?.data?.message,
-        orderId: resp?.data?.data?.orderid || resp?.data?.orderid || null,
+        brokerStatus: resp?.data?.status ?? resp?.data?.success,
+        errorCode: parsedOrder.errorCode,
+        message: parsedOrder.brokerMessage,
+        orderId: parsedOrder.brokerOrderId || null,
+        uniqueOrderId: parsedOrder.uniqueOrderId || null,
       });
 
       const brokerData = resp?.data || {};
-      const brokerCode = String(brokerData?.errorCode || brokerData?.errorcode || "").toUpperCase();
-      const brokerMessage = String(brokerData?.message || "");
-      const brokerSuccess = brokerData?.status === true || brokerData?.success === true;
+      const brokerCode = parsedOrder.errorCode.toUpperCase();
+      const brokerMessage = parsedOrder.brokerMessage;
       const isInvalidTokenPayload = brokerCode === "AG8001" || brokerMessage.toLowerCase().includes("invalid token");
 
       if (isInvalidTokenPayload) {
@@ -879,8 +881,8 @@ export async function placeOrderForClient(
       }
 
       // Reset failures on success
-      if (resp && resp.status === 200 && (brokerSuccess || brokerData?.data?.orderid || brokerData?.orderid)) {
-          const brokerOrderId = brokerData?.data?.orderid || brokerData?.orderid || "PENDING";
+      if (resp && resp.status === 200 && parsedOrder.accepted) {
+          const brokerOrderId = parsedOrder.brokerOrderId || parsedOrder.uniqueOrderId || "PENDING";
           await eventSourcedOMS.appendEvent(clientOrderId, brokerOrderId, "SUBMITTED", {
             brokerOrderId,
           });
@@ -951,7 +953,26 @@ export async function placeOrderForClient(
           log.info(`PLACE_ORDER_BROKER_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
           return resp;
       } else {
-          throw new Error(brokerMessage || resp?.data?.message || "Broker rejected order");
+          const reject = {
+            success: false,
+            brokerOrderId: parsedOrder.brokerOrderId,
+            rejectionReason: parsedOrder.rejectionReason || brokerMessage || "Broker rejected order",
+            brokerMessage,
+            errorCode: parsedOrder.errorCode,
+            rawResponse: parsedOrder.rawResponse,
+          };
+          log.warn("[PLACE_ORDER_BROKER_REJECTED]", {
+            userId: String(userId),
+            clientcode,
+            tradingsymbol: orderInput.tradingsymbol,
+            ...reject,
+          });
+          return {
+            status: false,
+            message: reject.rejectionReason,
+            errorCode: reject.errorCode,
+            data: reject,
+          };
       }
 
   } catch (err: any) {
@@ -1092,12 +1113,9 @@ export async function getOrderStatusForClient(
     const jwtToken = decrypt(angelTokens.jwtToken, `user_${userId}_status_jwt`);
     const dynamicAdapter = getOrCreateAngelAdapter(userApiKey, { outgoingIp });
     const orderBookResp = await dynamicAdapter.getOrderBook(jwtToken);
-    const orderRows = Array.isArray(orderBookResp?.data)
-      ? orderBookResp.data
-      : Array.isArray(orderBookResp?.data?.data)
-      ? orderBookResp.data.data
-      : [];
-    if (orderBookResp && orderBookResp.status === 200 && Array.isArray(orderRows)) {
+    const parsedRows = parseAngelRows(orderBookResp);
+    const orderRows = parsedRows.rows;
+    if (orderBookResp && orderBookResp.status === 200 && parsedRows.ok) {
       // 1. Try exact Match
       let order = orderRows.find((o: any) => String(o.orderid || "") === String(orderId || ""));
       
@@ -1120,7 +1138,20 @@ export async function getOrderStatusForClient(
     // If exact ID lookup is possible (not our UUID)
     if (!orderId.startsWith("BROKER-")) {
         // Reuse dynamicAdapter created above (it's in scope if we refactor slightly, but for now just use the one we have or create new)
-        return await dynamicAdapter.getOrderStatus(jwtToken, orderId);
+        const statusResp = await dynamicAdapter.getOrderStatus(jwtToken, orderId);
+        const parsedStatus = parseAngelOrderPlacement(statusResp);
+        if (parsedStatus.data && typeof parsedStatus.data === "object") {
+          return { status: true, data: parsedStatus.data };
+        }
+        if (parsedStatus.rejected) {
+          return {
+            status: false,
+            message: parsedStatus.rejectionReason || parsedStatus.brokerMessage || "Order status rejected by broker",
+            errorCode: parsedStatus.errorCode,
+            data: parsedStatus.rawResponse,
+          };
+        }
+        return statusResp;
     }
     
     return { status: false, message: "Order not found in broker book" };

@@ -257,11 +257,39 @@ export class AngelOneAdapter {
   }
 
   async getOrderBook(token: string) {
-    return this.authPost(token, "/rest/secure/angelbroking/order/v1/getOrderBook");
+    try {
+      const resp = await this.authPost(token, "/rest/secure/angelbroking/order/v1/getOrderBook");
+      log.info("FULL_BROKER_RESPONSE", {
+        context: "angel_get_order_book",
+        response: JSON.stringify(resp?.data ?? null, null, 2),
+      });
+      return resp;
+    } catch (err: any) {
+      log.error("[ANGEL_GET_ORDER_BOOK_FAILED]", {
+        message: err?.message,
+        response: err?.response?.data,
+      });
+      throw err;
+    }
   }
 
   async getOrderStatus(token: string, orderId: string) {
-    return this.authGet(token, `/rest/secure/angelbroking/order/v1/getOrderStatus/${orderId}`);
+    try {
+      const resp = await this.authGet(token, `/rest/secure/angelbroking/order/v1/getOrderStatus/${orderId}`);
+      log.info("FULL_BROKER_RESPONSE", {
+        context: "angel_get_order_status",
+        orderId,
+        response: JSON.stringify(resp?.data ?? null, null, 2),
+      });
+      return resp;
+    } catch (err: any) {
+      log.error("[ANGEL_GET_ORDER_STATUS_FAILED]", {
+        orderId,
+        message: err?.message,
+        response: err?.response?.data,
+      });
+      throw err;
+    }
   }
 
   async searchScrip(token: string, exchange: string, searchtext: string) {
@@ -348,10 +376,36 @@ export class AngelOneAdapter {
       log.warn("[ORDER_NETWORK_FALLBACK] No dedicated IP/agent provided. Using server network route.");
     }
 
-    return this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
+    try {
+      const resp = await this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
+      log.info("FULL_BROKER_RESPONSE", {
+        context: "angel_place_order",
+        response: JSON.stringify(resp?.data ?? null, null, 2),
+      });
+      return resp;
+    } catch (err: any) {
+      log.error("[ANGEL_PLACE_ORDER_FAILED]", {
+        message: err?.message,
+        response: err?.response?.data,
+      });
+      throw err;
+    }
   }
 
   async getPositions(jwtToken: string) {
-    return this.authGet(jwtToken, "/rest/secure/angelbroking/order/v1/getPosition");
+    try {
+      const resp = await this.authGet(jwtToken, "/rest/secure/angelbroking/order/v1/getPosition");
+      log.info("FULL_BROKER_RESPONSE", {
+        context: "angel_get_positions",
+        response: JSON.stringify(resp?.data ?? null, null, 2),
+      });
+      return resp;
+    } catch (err: any) {
+      log.error("[ANGEL_GET_POSITIONS_FAILED]", {
+        message: err?.message,
+        response: err?.response?.data,
+      });
+      throw err;
+    }
   }
 }

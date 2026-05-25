@@ -3,6 +3,7 @@ import { Position } from "../models/Position.model";
 import { placeOrderForClient, getOrderStatusForClient, PlaceOrderInput } from "../services/OrderService";
 import log from "../utils/logger";
 import { getInstrumentLtp } from "../services/MarketDataService";
+import { parseAngelOrderPlacement } from "../utils/angelResponseParser";
 
 export const getOpenPositions = async (req: Request, res: Response) => {
   try {
@@ -184,7 +185,15 @@ export const closePosition = async (req: Request, res: Response) => {
         return res.status(400).json({ ok: false, message: resp.message || "Broker exit order failed" });
       }
 
-      orderidResp = resp?.data?.orderid || resp?.data?.data?.orderid || "MANUAL";
+      const parsed = parseAngelOrderPlacement(resp);
+      if (!parsed.accepted) {
+        return res.status(400).json({
+          ok: false,
+          message: parsed.rejectionReason || parsed.brokerMessage || "Broker exit order failed",
+          errorCode: parsed.errorCode,
+        });
+      }
+      orderidResp = parsed.brokerOrderId || parsed.uniqueOrderId || `MANUAL-${Date.now()}`;
     } else {
       orderidResp = `PAPER-EXIT-${Date.now()}`;
     }

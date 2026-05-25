@@ -8,6 +8,7 @@ import User from "../models/User";
 import log from "../utils/logger";
 import { getAllTradeQueueNames } from "../utils/tradeQueue";
 import { config } from "../config";
+import { parseAngelOrderPlacement } from "../utils/angelResponseParser";
 
 const toSafeMessage = (error: unknown) => {
   if (!error) return "Unknown execution failure";
@@ -25,7 +26,12 @@ const isNoRetryRejection = (message: string) => {
     m.includes("api_key_route_not_verified") ||
     m.includes("api_key_route_mismatch") ||
     m.includes("live_execution_required") ||
-    m.includes("live_execution_blocked_whitelist_mismatch")
+    m.includes("live_execution_blocked_whitelist_mismatch") ||
+    m.includes("margin") ||
+    m.includes("insufficient") ||
+    m.includes("broker rejected") ||
+    m.includes("invalid order") ||
+    m.includes("invalid product")
   );
 };
 
@@ -300,11 +306,18 @@ export const initTradeExecutionWorker = () => {
         });
 
         const responseData = resp?.data || {};
+        const parsedOrder = parseAngelOrderPlacement(resp);
         const responsePayload =
           responseData?.data && typeof responseData.data === "object" ? responseData.data : responseData;
-        const orderId = responseData?.orderid || responseData?.data?.orderid;
+        const orderId = parsedOrder.brokerOrderId || parsedOrder.uniqueOrderId || (parsedOrder.accepted ? clientOrderId : undefined);
         const brokerOrderStatus = normalizeBrokerOrderStatus(responsePayload);
-        const brokerMessage = String(responseData?.message || resp?.message || "");
+        const brokerMessage = String(
+          parsedOrder.rejectionReason ||
+            parsedOrder.brokerMessage ||
+            responseData?.message ||
+            resp?.message ||
+            ""
+        );
         const loweredMessage = brokerMessage.toLowerCase();
         const isRejectedMessage =
           loweredMessage.includes("reject") ||
@@ -317,7 +330,7 @@ export const initTradeExecutionWorker = () => {
           String(orderId || "").toUpperCase().startsWith("PAPER-");
         const treatSimulatedAsSuccess = isSimulated && !requireLiveExecution;
         const isBrokerSubmissionSuccess =
-          Boolean(orderId) &&
+          parsedOrder.accepted &&
           (resp?.status === 200 || resp?.ok === true || resp?.status === true) &&
           !isRejectedMessage &&
           !isSimulated;
@@ -364,6 +377,9 @@ export const initTradeExecutionWorker = () => {
                 $set: {
                   status: "FAILED",
                   errorMessage: rejectedMessage,
+                  brokerRejectReason: rejectedMessage,
+                  brokerOrderStatus: parsedOrder.errorCode || "BROKER_REJECTED",
+                  brokerResponse: parsedOrder.rawResponse || responseData,
                   executedAt: new Date(),
                   correlationId,
                   ipAddress: networkMeta.usedIpLabel,
@@ -384,6 +400,7 @@ export const initTradeExecutionWorker = () => {
               orderId,
               executedAt: new Date(),
               errorMessage: undefined,
+              brokerRejectReason: undefined,
               ipAddress: networkMeta.usedIpLabel,
               brokerOrderStatus: isBrokerSubmissionSuccess
                 ? brokerOrderStatus || "PENDING_BROKER"
@@ -414,6 +431,7 @@ export const initTradeExecutionWorker = () => {
             $set: {
               status: "FAILED",
               errorMessage: message,
+              brokerRejectReason: message,
               executedAt: new Date(),
               correlationId,
               ipAddress: networkMeta.usedIpLabel,

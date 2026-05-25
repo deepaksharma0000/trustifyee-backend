@@ -5,6 +5,7 @@ import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
 import AngelTokensModel from "../models/AngelTokens";
 import { decrypt } from "../utils/encryption";
 import log from "../utils/logger";
+import { parseAngelRows } from "../utils/angelResponseParser";
 
 export type ReconciliationState = "RECON_PENDING" | "RECON_ESCALATED" | "RECON_RECOVERED" | "RECON_FAILED" | "RECON_CONFIRMED";
 
@@ -106,24 +107,28 @@ export class ReconciliationService {
       
       // Query current active position data directly from AngelOne
       const brokerResponse = await adapter.getPositions(decJwtToken);
+      log.info("FULL_BROKER_RESPONSE", {
+        context: "reconciliation_positions",
+        clientCode,
+        response: JSON.stringify(brokerResponse?.data ?? brokerResponse ?? null, null, 2),
+      });
 
-      // [FIX] Ensure we have an array before attempting iteration
-      const brokerRows = Array.isArray(brokerResponse?.data)
-        ? brokerResponse.data
-        : Array.isArray(brokerResponse?.data?.data)
-        ? brokerResponse.data.data
-        : null;
-
-      if (!brokerRows) {
-        log.error(`[Reconciliation] Invalid broker response for ${clientCode}`, {
+      const parsedRows = parseAngelRows(brokerResponse);
+      if (!parsedRows.ok) {
+        const parsed = parsedRows.parsed;
+        log.warn(`[Reconciliation] Broker response could not be converted to position rows for ${clientCode}`, {
           hasResponse: Boolean(brokerResponse),
           hasData: Boolean(brokerResponse?.data),
           responseType: typeof brokerResponse?.data,
           responseKeys: brokerResponse?.data ? Object.keys(brokerResponse.data).slice(0, 10) : [],
+          success: parsed.success,
+          message: parsed.brokerMessage,
+          errorCode: parsed.errorCode,
+          rejectionReason: parsed.rejectionReason,
         });
         return;
       }
-      const brokerPositions = brokerRows;
+      const brokerPositions = parsedRows.rows;
 
       // 1. Map broker positions by token for O(1) comparison
       const brokerMap = new Map<string, any>();

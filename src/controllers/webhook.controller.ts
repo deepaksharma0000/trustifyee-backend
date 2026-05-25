@@ -6,6 +6,7 @@ import User from "../models/User";
 import { placeOrderForClient } from "../services/OrderService";
 import { Position } from "../models/Position.model";
 import { decrypt } from "../utils/encryption";
+import { parseAngelOrderPlacement } from "../utils/angelResponseParser";
 
 export const handleWebhookSignal = async (req: Request, res: Response) => {
     try {
@@ -72,12 +73,14 @@ export const handleWebhookSignal = async (req: Request, res: Response) => {
                     symboltoken: targetOption.symboltoken
                 });
 
-                if (resp && resp.status === 200) {
+                const parsed = parseAngelOrderPlacement(resp);
+                if (resp && resp.status === 200 && parsed.accepted) {
+                    const orderid = parsed.brokerOrderId || parsed.uniqueOrderId || `WEBHOOK-${Date.now()}`;
                     // Save to Database
                     await Position.create({
                         userId: user._id,
                         clientcode,
-                        orderid: resp.data.orderid,
+                        orderid,
                         tradingsymbol: targetOption.tradingsymbol,
                         symboltoken: targetOption.symboltoken,
                         exchange: "NFO",
@@ -86,9 +89,14 @@ export const handleWebhookSignal = async (req: Request, res: Response) => {
                         entryPrice: Number(resp.data.ltp) || 0,
                         status: "OPEN"
                     });
-                    return { user: user.user_name, status: "Success", orderid: resp.data.orderid };
+                    return { user: user.user_name, status: "Success", orderid };
                 } else {
-                    return { user: user.user_name, status: "Failed", error: resp.message };
+                    return {
+                        user: user.user_name,
+                        status: "Failed",
+                        error: parsed.rejectionReason || parsed.brokerMessage || resp?.message || "Broker rejected order",
+                        errorCode: parsed.errorCode,
+                    };
                 }
             } catch (err: any) {
                 return { user: user.user_name, status: "Error", error: err.message };
