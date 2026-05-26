@@ -82,14 +82,12 @@ router.post('/generate-session', auth, async (req: any, res) => {
             password = await ensureEncrypted(profile, 'broker_password', `user_${userId}`);
         }
 
-        // Step 4: Resolve API Key (Request Body > User Profile > Env Config)
+        // Step 4: Resolve API Key (Request Body > User Profile)
         let resolvedApiKey = "";
         let keySource = 'None';
-        const allowEnvApiKeyFallback = process.env.ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK === "true";
 
         const bodyApiKey = cleanCredentialInput(req.body.api_key || req.body.apiKey);
         const profileApiKey = profile.api_key ? await ensureEncrypted(profile, 'api_key', `user_${userId}`) : "";
-        const envApiKey = config.angelApiKey || "";
 
         if (bodyApiKey) {
             resolvedApiKey = bodyApiKey;
@@ -97,10 +95,6 @@ router.post('/generate-session', auth, async (req: any, res) => {
         } else if (profileApiKey) {
             resolvedApiKey = profileApiKey;
             keySource = 'USER';
-        } else if (allowEnvApiKeyFallback && envApiKey) {
-            resolvedApiKey = envApiKey;
-            keySource = 'SYSTEM';
-            log.info(`[API_KEY_SOURCE] SYSTEM | Injecting global key for ${client_code}`);
         }
 
         if (!resolvedApiKey) {
@@ -111,10 +105,6 @@ router.post('/generate-session', auth, async (req: any, res) => {
             });
         }
 
-        if (keySource === 'SYSTEM') {
-            log.warn(`[API_KEY_SOURCE] SYSTEM fallback used for ${client_code}. Multi-user isolation requires per-user SmartAPI keys.`);
-        }
-        
         if (keySource === 'USER') {
             log.info(`[API_KEY_SOURCE] USER (masked) | Using provided key for ${client_code}`);
         }

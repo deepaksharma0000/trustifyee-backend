@@ -80,26 +80,44 @@ function shouldRefresh(session: any, forceRefresh?: boolean) {
   return expiresAt - Date.now() <= PROACTIVE_REFRESH_MS;
 }
 
-async function loadProfile(userId: string) {
-  const user =
-    (await User.findById(userId)
-      .select("+client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +agent_url dedicated_ip_enabled")
-      .lean()) ||
-    (await Admin.findById(userId)
-      .select("+client_key +panel_client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +agent_url")
-      .lean());
-  return user;
+async function loadProfile(userId: string): Promise<{ type: "user" | "admin"; profile: any } | null> {
+  const user = await User.findById(userId)
+    .select("+client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +agent_url dedicated_ip_enabled")
+    .lean();
+  if (user) return { type: "user", profile: user };
+
+  const admin = await Admin.findById(userId)
+    .select("+client_key +panel_client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +agent_url")
+    .lean();
+  if (admin) return { type: "admin", profile: admin };
+
+  return null;
 }
 
 async function resolveApiKey(session: any, userId: string, purpose: string) {
-  const profile = await loadProfile(userId);
+  const loaded = await loadProfile(userId);
+  const profile = loaded?.profile;
   const resolved = await resolveConsistentApiKey({
     angelTokens: session,
     profile,
     userId,
     clientcode: String(session?.clientcode || ""),
   });
-  return resolved.apiKey;
+
+  const apiKey = resolved.apiKey;
+
+  // Hard guard: never allow end-user execution to run on the global/system API key.
+  // This is the most common cause of "Invalid API Key" (AG8004) + admin leakage symptoms in multi-tenant setups.
+  if (loaded?.type === "user" && config.nodeEnv === "production" && config.angelApiKey) {
+    const globalKey = String(config.angelApiKey || "").trim();
+    if (globalKey && apiKey && globalKey === apiKey) {
+      throw new Error(
+        "BROKER_API_KEY_GLOBAL_FALLBACK_DETECTED: User session is using the system API key. User must reconnect broker with their own SmartAPI app key."
+      );
+    }
+  }
+
+  return apiKey;
 }
 
 function assertNoAdminSessionLeak(input: SessionInput, session: any) {

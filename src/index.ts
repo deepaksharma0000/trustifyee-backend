@@ -146,6 +146,9 @@ async function start() {
   try {
     setupProcessGuards();
 
+    // Fail-fast on unsafe production config (prevents global fallback + leakage)
+    validateConfig();
+
     // 1. Run all startup dependency checks (includes exponential Mongo retry & Redis compatibility validation)
     await StartupDiagnostics.runAllChecks();
 
