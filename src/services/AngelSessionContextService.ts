@@ -77,6 +77,43 @@ export function primeAngelSessionCache(sessionDoc: any) {
   entries.forEach((key) => sessionCache.set(key, cached));
 }
 
+/**
+ * Strict session lookup for order execution — never falls back to clientcode-only
+ * or global/admin sessions. Prevents admin session leakage into user trades.
+ */
+export async function resolveAngelSessionForExecution(input: {
+  userId: string;
+  clientcode: string;
+  purpose: string;
+}): Promise<any | null> {
+  const userId = normalize(input.userId);
+  const clientcode = normalize(input.clientcode);
+
+  if (!userId) {
+    log.error("[SESSION_CONTEXT] Execution lookup rejected: missing userId", {
+      purpose: input.purpose,
+    });
+    return null;
+  }
+
+  if (!clientcode) {
+    log.error("[SESSION_CONTEXT] Execution lookup rejected: missing clientcode", {
+      purpose: input.purpose,
+      userId,
+    });
+    return null;
+  }
+
+  return resolveAngelSessionContext({
+    userId,
+    clientcode,
+    purpose: input.purpose,
+    allowGlobalFallback: false,
+    strictIdentity: true,
+    requireJwt: true,
+  });
+}
+
 export async function resolveAngelSessionContext(input: SessionLookupInput): Promise<any | null> {
   const lookup: SessionLookupInput = {
     ...input,
@@ -116,7 +153,8 @@ export async function resolveAngelSessionContext(input: SessionLookupInput): Pro
     }
   }
 
-  if (!session && clientcode) {
+  const isExecutionPurpose = /order|execution|trade|place/i.test(String(lookup.purpose || ""));
+  if (!session && clientcode && !isExecutionPurpose) {
     session = await AngelTokensModel.findOne(withJwtFilter({ clientcode }, requireJwt))
       .sort({ updatedAt: -1 })
       .lean();

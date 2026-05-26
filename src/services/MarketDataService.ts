@@ -8,7 +8,7 @@ import { config } from "../config";
 import log from "../utils/logger";
 import { ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
-import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { getOrCreateUserAngelAdapter, SYSTEM_DATA_SCOPE_USER_ID } from "./AngelAdapterRegistry";
 import { resolveAngelSessionContext } from "./AngelSessionContextService";
 import { validateInstrumentFromMaster } from "./InstrumentValidationService";
 
@@ -264,9 +264,16 @@ async function refreshAngelSession(session: any) {
     return { jwtToken: recovery.jwtToken, apiKey: sessionApiKey };
 }
 
-async function getLtpInternal(jwtToken: string, exchange: string, symbol: string, token: string, apiKey: string) {
+async function getLtpInternal(
+    jwtToken: string,
+    exchange: string,
+    symbol: string,
+    token: string,
+    apiKey: string,
+    scopeUserId = SYSTEM_DATA_SCOPE_USER_ID
+) {
     const key = `${exchange}:${symbol}:${token}`;
-    const dynamicAdapter = getOrCreateAngelAdapter(apiKey);
+    const dynamicAdapter = getOrCreateUserAngelAdapter(scopeUserId, apiKey);
     return await throttledFetch(key, () => dynamicAdapter.getLtp(jwtToken, exchange, symbol, token));
 }
 
@@ -282,6 +289,7 @@ function isDataClientSession(session: any) {
 }
 
 async function attemptLiveTokenRepair(
+    scopeUserId: string,
     sessionApiKey: string,
     jwtToken: string,
     exchange: string,
@@ -297,7 +305,7 @@ async function attemptLiveTokenRepair(
     }
 
     try {
-        const adapter = getOrCreateAngelAdapter(sessionApiKey);
+        const adapter = getOrCreateUserAngelAdapter(scopeUserId, sessionApiKey);
         const response = await adapter.searchScrip(jwtToken, exchange, tradingsymbol);
         const body = response?.data || {};
         const payload = body?.data || body;
@@ -602,6 +610,7 @@ export async function getInstrumentLtp(
                             }
                         } else {
                             const repairedToken = await attemptLiveTokenRepair(
+                                String(session?.userId || SYSTEM_DATA_SCOPE_USER_ID),
                                 sessionApiKey,
                                 jwtForRequest,
                                 normalizedExchange,
@@ -717,7 +726,10 @@ export async function getMultipleInstrumentsLtp(
                 }
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', 'batch_ltp_val');
                 
-                const dynamicAdapter = getOrCreateAngelAdapter(sessionApiKey);
+                const dynamicAdapter = getOrCreateUserAngelAdapter(
+                    String(session?.userId || SYSTEM_DATA_SCOPE_USER_ID),
+                    sessionApiKey
+                );
                 const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));
                 
                 if (resp && resp.status === 200 && resp.data && resp.data.data) {

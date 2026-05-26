@@ -1,7 +1,7 @@
 // src/services/SessionAuthority.ts
 import AngelTokensModel from "../models/AngelTokens";
 import { decrypt, ensureEncrypted } from "../utils/encryption";
-import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { getOrCreateUserAngelAdapter } from "./AngelAdapterRegistry";
 import { tickEngineService } from "./TickEngineService";
 import log from "../utils/logger";
 
@@ -40,7 +40,11 @@ export class SessionAuthority {
     log.info(`[SessionAuthority] Configured Startup Correlation ID: ${id}`);
   }
 
-  private sessions = new Map<string, SessionRecord>(); // clientCode -> SessionRecord
+  private sessions = new Map<string, SessionRecord>(); // userId|clientCode -> SessionRecord
+
+  private sessionKey(userId: string, clientCode: string) {
+    return `${userId}|${clientCode}`;
+  }
   
   // Staggering parameters
   private readonly REFRESH_JITTER_RANGE_MS = 600000; // 10 minutes jitter range
@@ -71,14 +75,15 @@ export class SessionAuthority {
    * Enforces transition to SESSION_ROTATING, and implements staggering to prevent login storm.
    */
   public async rotateSession(userId: string, clientCode: string): Promise<boolean> {
-    const session = this.sessions.get(clientCode);
+    const key = this.sessionKey(userId, clientCode);
+    const session = this.sessions.get(key);
     if (session && session.state === "SESSION_ROTATING") {
       this.metrics.splitBrainPreventionsCount += 1;
-      log.warn(`[SessionAuthority] Rotation already in progress for ${clientCode}. Preventing duplicate trigger.`);
+      log.warn(`[SessionAuthority] Rotation already in progress for ${userId}/${clientCode}. Preventing duplicate trigger.`);
       return false;
     }
 
-    log.info(`[SessionAuthority] Initiating staged Dual-Session Rotation for ${clientCode}`);
+    log.info(`[SessionAuthority] Initiating staged Dual-Session Rotation for ${userId}/${clientCode}`);
     const rotationStartTime = Date.now();
 
     // 1. Stagger refresh with randomized jitter to protect TOTP gateway
@@ -86,7 +91,7 @@ export class SessionAuthority {
     await new Promise((resolve) => setTimeout(resolve, jitter));
 
     try {
-      this.updateState(clientCode, "SESSION_ROTATING");
+      this.updateState(key, userId, clientCode, "SESSION_ROTATING");
 
       const tokens = await AngelTokensModel.findOne({ userId, clientcode: clientCode });
       if (!tokens || !tokens.refreshToken) {
@@ -95,7 +100,7 @@ export class SessionAuthority {
 
       const decRefreshToken = decrypt(tokens.refreshToken);
       const decApiKey = decrypt(tokens.apiKey || "");
-      const adapter = getOrCreateAngelAdapter(decApiKey);
+      const adapter = getOrCreateUserAngelAdapter(userId, decApiKey);
 
       // Request fresh tokens from AngelOne gateway
       const rotationResp = await adapter.generateTokensUsingRefresh(decRefreshToken);
@@ -114,10 +119,10 @@ export class SessionAuthority {
       await tokens.save();
 
       // 2. Establish SESSION_OVERLAP stage
-      const currentSession = this.sessions.get(clientCode);
+      const currentSession = this.sessions.get(key);
       const oldJwt = currentSession ? currentSession.activeJwt : "";
 
-      this.sessions.set(clientCode, {
+      this.sessions.set(key, {
         userId,
         clientCode,
         state: "SESSION_OVERLAP",
@@ -135,26 +140,26 @@ export class SessionAuthority {
 
       // 4. Staged retirement of old JWT after 10-second warm-up overlap window
       setTimeout(() => {
-        this.retireOldSession(clientCode);
+        this.retireOldSession(key);
       }, 10000);
 
       return true;
 
     } catch (err: any) {
       log.error(`[SessionAuthority] Token rotation failed for ${clientCode}:`, err.message);
-      this.updateState(clientCode, "SESSION_INVALID");
+      this.updateState(key, userId, clientCode, "SESSION_INVALID");
       return false;
     }
   }
 
-  private updateState(clientCode: string, state: SessionState) {
-    const existing = this.sessions.get(clientCode);
+  private updateState(key: string, userId: string, clientCode: string, state: SessionState) {
+    const existing = this.sessions.get(key);
     if (existing) {
       existing.state = state;
       existing.updatedAt = Date.now();
     } else {
-      this.sessions.set(clientCode, {
-        userId: "",
+      this.sessions.set(key, {
+        userId,
         clientCode,
         state,
         activeJwt: "",
@@ -163,8 +168,8 @@ export class SessionAuthority {
     }
   }
 
-  private retireOldSession(clientCode: string) {
-    const session = this.sessions.get(clientCode);
+  private retireOldSession(key: string) {
+    const session = this.sessions.get(key);
     if (session && session.state === "SESSION_OVERLAP") {
       session.state = "SESSION_RETIRED";
       session.overlappingJwt = undefined;
@@ -172,7 +177,7 @@ export class SessionAuthority {
       session.updatedAt = Date.now();
       
       this.metrics.sessionOverlapDurationMs = 10000;
-      log.info(`[SessionAuthority] Staged retirement complete. Old JWT closed for ${clientCode}. State: SESSION_ACTIVE`);
+      log.info(`[SessionAuthority] Staged retirement complete. Old JWT closed for ${session.clientCode}. State: SESSION_ACTIVE`);
       session.state = "SESSION_ACTIVE";
     }
   }
@@ -193,8 +198,8 @@ export class SessionAuthority {
     }
   }
 
-  public getActiveJwt(clientCode: string): string | undefined {
-    const session = this.sessions.get(clientCode);
+  public getActiveJwt(userId: string, clientCode: string): string | undefined {
+    const session = this.sessions.get(this.sessionKey(userId, clientCode));
     if (!session) return undefined;
     
     // Fallback: If inside overlap window, return the newly verified JWT

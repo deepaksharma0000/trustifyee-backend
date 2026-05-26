@@ -5,7 +5,7 @@ import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
 import { ensureEncrypted, encrypt, decrypt } from "../utils/encryption";
 import log from "../utils/logger";
 import { invalidateAngelSessionCache, primeAngelSessionCache } from "./AngelSessionContextService";
-import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { getOrCreateUserAngelAdapter } from "./AngelAdapterRegistry";
 import { resolveConsistentApiKey, validateApiKeyFormat } from "./BrokerSessionValidator";
 
 type RecoveryMode = "REFRESH" | "RELOGIN";
@@ -114,7 +114,7 @@ async function attemptRefresh(sessionDoc: any, context: string): Promise<Session
     return { ok: false, reason: `REFRESH_INVALID_API_KEY:${keyFormat.reason}` };
   }
 
-  const adapter = getOrCreateAngelAdapter(sessionApiKey);
+  const adapter = getOrCreateUserAngelAdapter(userId, sessionApiKey);
   const response = await adapter.generateTokensUsingRefresh(refreshToken);
   const parsed = extractTokenPayload(response);
 
@@ -185,7 +185,7 @@ async function attemptFreshLogin(sessionDoc: any, context: string): Promise<Sess
     };
   }
 
-  const adapter = getOrCreateAngelAdapter(apiKey, {
+  const adapter = getOrCreateUserAngelAdapter(userId, apiKey, {
     outgoingIp: profile?.outgoing_ip || undefined,
     agentUrl: profile?.agent_url || undefined,
   });

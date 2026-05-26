@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { redisBullConnection } from "../utils/redis";
-import { placeOrderForClient, fetchBrokerOrder } from "../services/OrderService";
+import { fetchBrokerOrder } from "../services/OrderService";
+import { TradeExecutionService } from "../services/TradeExecutionService";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
 import { CircuitBreakerService } from "../services/CircuitBreakerService";
 import { AlertService } from "../services/AlertService";
@@ -314,13 +315,19 @@ export const initTradeExecutionWorker = () => {
           logger.debug("Broker idempotency check could not confirm an existing order. Continuing fresh placement.", checkErr);
         }
 
-        const resp = await placeOrderForClient(userId, clientCode, {
-          ...orderData,
+        const resp = await TradeExecutionService.executeUserOrder({
+          userId,
+          clientCode,
+          signalId,
           clientOrderId,
+          correlationId,
           outgoingIp,
           agentUrl,
           dedicatedIpEnabled,
-          requireLiveExecution,
+          orderData: {
+            ...orderData,
+            requireLiveExecution,
+          },
         });
 
         const responseData = resp?.data || {};

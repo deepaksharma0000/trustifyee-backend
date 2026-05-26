@@ -10,7 +10,7 @@ import { RiskManagementService } from "./RiskManagementService";
 import User from "../models/User";
 import { decrypt, ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
-import { getOrCreateAngelAdapter } from "./AngelAdapterRegistry";
+import { getOrCreateUserAngelAdapter } from "./AngelAdapterRegistry";
 import { validateInstrumentFromMaster } from "./InstrumentValidationService";
 import { apiKeyFingerprint, buildApiKeyRouteBinding, normalizeIpv4 } from "../utils/apiKeyRouteBinding";
 import { eventSourcedOMS } from "./EventSourcedOMS";
@@ -366,7 +366,7 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
           const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_ltp_val`);
           const userApiKey = await ensureEncrypted(tokens, 'apiKey', `user_${userId}_ltp_check`);
           
-          const ltpAdapter = getOrCreateAngelAdapter(userApiKey);
+          const ltpAdapter = getOrCreateUserAngelAdapter(String(userId), userApiKey);
           const ltpRes = await ltpAdapter.getLtp(decJwtToken, orderInput.exchange || "NFO", orderInput.tradingsymbol, orderInput.symboltoken || "");
           const ltp = Number(ltpRes?.data?.ltp || 0);
           

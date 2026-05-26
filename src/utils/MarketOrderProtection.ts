@@ -1,4 +1,3 @@
-import { getOrCreateAngelAdapter } from "../services/AngelAdapterRegistry";
 import log from "./logger";
 
 export interface ProtectedOrderResult {

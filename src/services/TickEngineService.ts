@@ -623,8 +623,13 @@ export class TickEngineService {
 
     const context = "tick_engine_auth";
     try {
+      const tokenOwnerUserId = tokenDoc?.userId ? String(tokenDoc.userId) : "";
+      if (!tokenOwnerUserId) {
+        throw new Error("TickEngine session missing userId on AngelTokens document");
+      }
+
       const validSession = await ensureValidSession({
-        userId: tokenDoc?.userId ? String(tokenDoc.userId) : undefined,
+        userId: tokenOwnerUserId,
         clientcode: clientCode,
         purpose: context,
       });

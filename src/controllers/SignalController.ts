@@ -4,7 +4,7 @@ import InstrumentModel from '../models/Instrument';
 import UpstoxInstrumentModel from '../models/UpstoxInstrument';
 import { Signal } from '../models/Signal';
 import { SignalExecutionResult } from '../models/SignalExecutionResult';
-import { getTradeQueueForBroker } from '../utils/tradeQueue';
+import { SignalExecutionQueueService } from '../services/SignalExecutionQueueService';
 import { SignalBroadcastService } from '../services/SignalBroadcastService';
 import log from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
@@ -135,15 +135,13 @@ export const queueExecution = async (req: Request, res: Response) => {
             { upsert: true, new: true, setDefaultsOnInsert: true }
         );
 
-        const broker = String(user.broker || "ANGELONE").toUpperCase();
-        const queue = getTradeQueueForBroker(broker);
-
-        await queue.add(`exec-${clientOrderId}`, {
-            userId,
-            signalId,
+        await SignalExecutionQueueService.enqueueUserExecution({
+            userId: String(userId),
+            clientCode: resolvedClientCode,
+            signalId: String(signalId),
+            broker: user.broker || "ANGELONE",
             clientOrderId,
             correlationId,
-            clientCode: resolvedClientCode,
             outgoingIp: Boolean((user as any)?.dedicated_ip_enabled === true) ? (user.outgoing_ip || undefined) : undefined,
             agentUrl: Boolean((user as any)?.dedicated_ip_enabled === true) ? ((user as any).agent_url || undefined) : undefined,
             dedicatedIpEnabled: Boolean((user as any)?.dedicated_ip_enabled === true),
@@ -154,12 +152,8 @@ export const queueExecution = async (req: Request, res: Response) => {
                 quantity: (Number(lots) || 1) * signal.quantity,
                 strategy: signal.strategy || "Manual",
                 symboltoken,
-                broker: user.broker || "ANGELONE"
-            }
-        }, {
-            attempts: 3,
-            backoff: { type: "exponential", delay: 2000 },
-            jobId: `signal-exec-${clientOrderId}`
+                orderType: "MARKET",
+            },
         });
 
         return res.json({
