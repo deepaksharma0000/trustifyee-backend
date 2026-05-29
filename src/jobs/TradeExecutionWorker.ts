@@ -10,6 +10,35 @@ import log from "../utils/logger";
 import { getAllTradeQueueNames } from "../utils/tradeQueue";
 import { config } from "../config";
 import { parseAngelOrderPlacement } from "../utils/angelResponseParser";
+import { broadcastToUser } from "../services/UserSocketService";
+
+const notifyUserExecution = (
+  userId: string,
+  payload: {
+    signalId?: string;
+    clientOrderId?: string;
+    orderId?: string;
+    status: "SUCCESS" | "FAILED" | "PENDING" | "QUEUED";
+    tradingsymbol?: string;
+    side?: string;
+    message?: string;
+    source?: string;
+  }
+) => {
+  const delivered = broadcastToUser(String(userId), {
+    type: "TRADE_EXECUTION_UPDATE",
+    data: {
+      ...payload,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  log.info("[USER_EXECUTION_NOTIFY]", {
+    userId,
+    status: payload.status,
+    tradingsymbol: payload.tradingsymbol,
+    delivered,
+  });
+};
 
 const toSafeMessage = (error: unknown) => {
   if (!error) return "Unknown execution failure";
@@ -412,6 +441,16 @@ export const initTradeExecutionWorker = () => {
               }
             ).catch(() => undefined);
             await CircuitBreakerService.recordFailure(broker, "ORDER").catch(() => undefined);
+            notifyUserExecution(userId, {
+              signalId,
+              clientOrderId,
+              orderId: orderId || undefined,
+              status: "FAILED",
+              tradingsymbol: orderData?.tradingsymbol,
+              side: orderData?.side,
+              message: rejectedMessage,
+              source: "ADMIN_SERVER_EXECUTION",
+            });
             return;
           }
           throw new Error(rejectedMessage);
@@ -440,6 +479,18 @@ export const initTradeExecutionWorker = () => {
         logger.info("Trade execution accepted", {
           orderId,
           status: isBrokerSubmissionSuccess ? "PENDING_BROKER_SYNC" : "SIMULATED_SUCCESS",
+        });
+        notifyUserExecution(userId, {
+          signalId,
+          clientOrderId,
+          orderId: orderId || undefined,
+          status: isBrokerSubmissionSuccess ? "PENDING" : "SUCCESS",
+          tradingsymbol: orderData?.tradingsymbol,
+          side: orderData?.side,
+          message: isBrokerSubmissionSuccess
+            ? `Order placed on Angel One — Order ID ${orderId}`
+            : "Order executed in paper/demo mode",
+          source: "ADMIN_SERVER_EXECUTION",
         });
       } catch (error: any) {
         const message = toSafeMessage(error);
@@ -492,6 +543,16 @@ export const initTradeExecutionWorker = () => {
 
         await CircuitBreakerService.recordFailure(broker, "ORDER").catch((cbErr) => {
           logger.error("Failed to update circuit breaker failure counter", cbErr);
+        });
+
+        notifyUserExecution(userId, {
+          signalId,
+          clientOrderId,
+          status: "FAILED",
+          tradingsymbol: orderData?.tradingsymbol,
+          side: orderData?.side,
+          message,
+          source: "ADMIN_SERVER_EXECUTION",
         });
 
         if (job.attemptsMade + 1 >= Number(job.opts.attempts || 1)) {
