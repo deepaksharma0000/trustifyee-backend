@@ -538,8 +538,10 @@ export class SignalBroadcastService {
 
       executions.push({
         userName,
+        userId: String(user._id),
         licence: user.licence || "Live",
         status: "QUEUED",
+        message: "Server execution queued — processing on broker worker.",
         correlationId,
         usedIp: networkMeta.usedIpLabel,
         networkRoute: networkMeta.networkRoute,

@@ -236,26 +236,48 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       return res.status(400).json({ error: "Instrument not found and symboltoken missing" });
     }
 
+    const { validateInstrumentFromMaster } = await import("../services/InstrumentValidationService");
+    const instrumentCheck = await validateInstrumentFromMaster({
+      exchange: orderPayload.exchange,
+      tradingsymbol: orderPayload.tradingsymbol,
+      requestedToken: orderPayload.symboltoken,
+      allowExpired: false,
+    });
+    if (!instrumentCheck.valid) {
+      const reason = instrumentCheck.reason || "INSTRUMENT_INVALID";
+      log.warn("[PLACE_ALL] Rejected broadcast — instrument validation failed", {
+        tradingsymbol: orderPayload.tradingsymbol,
+        exchange: orderPayload.exchange,
+        reason,
+      });
+      return res.status(400).json({
+        ok: false,
+        status: false,
+        code: reason,
+        error:
+          reason === "EXPIRED_OPTION_CONTRACT"
+            ? `Option contract expired: ${orderPayload.exchange}:${orderPayload.tradingsymbol}. Refresh option chain and select current expiry.`
+            : `${reason}: ${orderPayload.exchange}:${orderPayload.tradingsymbol}`,
+      });
+    }
+    if (instrumentCheck.symboltoken) {
+      orderPayload.symboltoken = instrumentCheck.symboltoken;
+    }
+
     const targetStrategy = req.body.strategy || "Manual";
     const preflightOnly =
       req.body?.preflightOnly === true ||
       String(req.query?.preflightOnly || "").toLowerCase() === "true";
 
+    // Admin broadcast defaults to SERVER: enqueue per-user broker jobs on the VPS worker.
+    // CLIENT mode only when explicitly requested (browser signal executor path).
     const requestedExecutionMode = String(
-      req.body?.executionMode || req.query?.executionMode || ""
+      req.body?.executionMode || req.query?.executionMode || "SERVER"
     )
       .trim()
       .toUpperCase();
-    const configExecutionMode = String(config.executionMode || "USER_ONLY")
-      .trim()
-      .toUpperCase();
-    const userOnlyMode = configExecutionMode === "USER_ONLY";
-    const clientDispatchRequested =
-      requestedExecutionMode === "CLIENT" ||
-      requestedExecutionMode === "USER_ONLY";
-    // If admin explicitly wants server-side, or we are in server-auto mode, override client dispatch
-    const forceServerDispatch = requestedExecutionMode === "SERVER";
-    let forceClientDispatch = (userOnlyMode || clientDispatchRequested) && !forceServerDispatch;
+    const forceClientDispatch = requestedExecutionMode === "CLIENT";
+    const forceServerDispatch = !forceClientDispatch;
 
     const allowClientFallbackOnBlocked =
       String(process.env.PLACE_ALL_CLIENT_FALLBACK_ON_BLOCK || "false").toLowerCase() === "true";
@@ -299,8 +321,12 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const hasStaticIpRiskForAllUsers =
       readiness.totalUsers > 0 && blockedStaticIpCount > 0 && blockedStaticIpCount === readiness.totalUsers;
 
-    if (!forceClientDispatch && autoClientOnIpRisk && hasStaticIpRiskForAllUsers) {
-      forceClientDispatch = true;
+    let useClientDispatch = forceClientDispatch;
+    if (forceServerDispatch && autoClientOnIpRisk && hasStaticIpRiskForAllUsers) {
+      log.warn("[PLACE_ALL] Static IP risk detected for all users but SERVER dispatch retained.", {
+        strategy: targetStrategy,
+        blockedStaticIpCount,
+      });
     }
 
     if (preflightOnly) {
@@ -321,7 +347,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
 
     const { SignalService } = await import("../services/SignalService");
 
-    if (forceClientDispatch) {
+    if (useClientDispatch) {
       const connectedUserIds = getConnectedUserIds();
       log.info("[PLACE_ALL_CLIENT_DISPATCH]", {
         strategy: targetStrategy,
