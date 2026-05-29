@@ -141,16 +141,20 @@ router.post("/angel/login", auth, async (req: any, res) => {
     const isValidIPv4 = (ip?: string): boolean => 
         !!ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
 
-    const rawIp = (user as any)?.outgoing_ip || config.publicIp;
-    const outgoingIp = isValidIPv4(rawIp) ? rawIp : config.publicIp;
     const binding = buildApiKeyRouteBinding(apiKey, {
       outgoingIp: (user as any)?.outgoing_ip,
       agentUrl: (user as any)?.agent_url,
       dedicatedIpEnabled: Boolean((user as any)?.dedicated_ip_enabled === true),
     });
+    const routeHeaderIp = isValidIPv4(binding.routeIp) ? binding.routeIp : config.publicIp;
 
-    log.info(`[BROKER_AUTH] Final IP: ${outgoingIp} (raw was: ${rawIp})`);
-    const adapter = new AngelOneAdapter(apiKey, outgoingIp);
+    log.info(`[BROKER_AUTH] Route IP for headers: ${routeHeaderIp} (routeType=${binding.routeType})`);
+    const adapter = new AngelOneAdapter(
+      apiKey,
+      routeHeaderIp,
+      false,
+      binding.agentUrl || undefined
+    );
 
     // Call Angel One API
     const resp: AngelSessionResp = await adapter.generateSession({ clientcode, password, totp });

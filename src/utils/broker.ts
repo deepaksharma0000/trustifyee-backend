@@ -60,8 +60,10 @@ export async function createAngelAdapter(userIdOrDoc: string | Types.ObjectId | 
         throw new Error("Invalid Decrypted API Key. Please reconnect broker in your profile.");
     }
 
+    const dedicatedIpEnabled = Boolean((user as any)?.dedicated_ip_enabled === true);
+
     return getOrCreateUserAngelAdapter(toUserId(user._id), decKey, {
-        outgoingIp: user.outgoing_ip,
-        agentUrl: (user as any).agent_url,
+        outgoingIp: dedicatedIpEnabled ? user.outgoing_ip : undefined,
+        agentUrl: dedicatedIpEnabled ? (user as any).agent_url : undefined,
     });
 }

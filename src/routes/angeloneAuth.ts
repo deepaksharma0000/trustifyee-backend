@@ -155,22 +155,26 @@ router.post('/generate-session', auth, async (req: any, res) => {
         const isValidIPv4 = (ip?: string): boolean => 
             !!ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
 
-        const rawIp = profile.outgoing_ip || config.publicIp;
-        const outgoingIp = isValidIPv4(rawIp) ? rawIp : config.publicIp;
         const binding = buildApiKeyRouteBinding(decryptedApiKey, {
             outgoingIp: (profile as any).outgoing_ip,
             agentUrl: (profile as any).agent_url,
             dedicatedIpEnabled: Boolean((profile as any).dedicated_ip_enabled === true),
         });
+        const routeHeaderIp = isValidIPv4(binding.routeIp) ? binding.routeIp : config.publicIp;
 
-        log.info(`[BROKER_AUTH] Final IP: ${outgoingIp} (raw was: ${rawIp})`);
+        log.info(`[BROKER_AUTH] Route IP for headers: ${routeHeaderIp} (routeType=${binding.routeType}, profileIp=${(profile as any).outgoing_ip || "none"})`);
         log.info('[IP_WHITELIST_DIAGNOSTICS]', buildIpWhitelistDiagnostics({
             dedicatedIpEnabled: Boolean((profile as any).dedicated_ip_enabled === true),
             userOutgoingIp: (profile as any).outgoing_ip,
         }));
 
         // Step 7: Call AngelOne API
-        const adapter = new AngelOneAdapter(decryptedApiKey, outgoingIp);
+        const adapter = new AngelOneAdapter(
+            decryptedApiKey,
+            routeHeaderIp,
+            false,
+            binding.agentUrl || undefined
+        );
         const loginResp = await adapter.generateSession({
             clientcode: client_code,
             password: password,

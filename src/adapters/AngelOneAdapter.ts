@@ -67,8 +67,10 @@ export class AngelOneAdapter {
   private resolveHeaderIdentity() {
     const identity = getAngelNetworkIdentity();
     const configuredIp = this.normalizeIpv4(this.outgoingIp);
-    const publicIp = configuredIp || identity.publicIp;
-    const localIp = configuredIp || identity.localIp || publicIp;
+    const sharedIp = identity.publicIp;
+    // When no dedicated route is configured, always advertise the VPS/shared IP in Angel headers.
+    const publicIp = configuredIp || sharedIp;
+    const localIp = configuredIp || identity.localIp || sharedIp;
 
     return {
       ...identity,

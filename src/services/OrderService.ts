@@ -181,6 +181,24 @@ async function enforceApiKeyRoutePairValidation(
   let expectedRouteIp = String(user?.validated_route_ip || "").trim();
   let expectedRouteType = String(user?.validated_route_type || "").trim();
 
+  if (!routing?.dedicatedRoutingEnabled && config.forceSharedVpsRoute) {
+    const sharedRouteIp =
+      normalizeIpv4(binding.routeIp) ||
+      normalizeIpv4(config.publicIp) ||
+      normalizeIpv4(process.env.ANGEL_CLIENT_PUBLIC_IP);
+    if (sharedRouteIp) {
+      if (expectedRouteIp && normalizeIpv4(expectedRouteIp) !== sharedRouteIp) {
+        log.warn("[ORDER_PRECHECK] Ignoring stale validated_route_ip for shared VPS admin execution.", {
+          clientcode,
+          storedRouteIp: expectedRouteIp,
+          sharedRouteIp,
+        });
+      }
+      expectedRouteIp = sharedRouteIp;
+      expectedRouteType = "SERVER_SHARED_IP";
+    }
+  }
+
   if (!isVerified || !expectedKeyFp || !expectedRouteIp) {
     if (!strictPrecheck) {
       log.warn("[ORDER_PRECHECK_SOFT_BYPASS] Missing key/route verification state. Allowing broker attempt in non-strict mode.", {

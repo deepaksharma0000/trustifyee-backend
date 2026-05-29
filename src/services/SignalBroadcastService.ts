@@ -8,7 +8,7 @@ import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { v4 as uuidv4 } from "uuid";
 import { config } from "../config";
-import { apiKeyFingerprint } from "../utils/apiKeyRouteBinding";
+import { apiKeyFingerprint, resolveRouteBinding } from "../utils/apiKeyRouteBinding";
 
 const BATCH_SIZE = 50;
 const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX"]);
@@ -30,56 +30,17 @@ function normalizeIpv4(value?: string) {
 }
 
 function resolveUserNetworkMeta(user: any) {
-  const localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
-  const profileIp = normalizeIpv4(user?.outgoing_ip);
-  const publicIp = normalizeIpv4(config.publicIp);
-  const agentUrl = String(user?.agent_url || "").trim();
   const dedicatedIpEnabled = Boolean(user?.dedicated_ip_enabled === true);
-
-  if (config.forceSharedVpsRoute && !dedicatedIpEnabled) {
-    return {
-      usedIp: publicIp || null,
-      usedIpLabel: publicIp || "UNKNOWN",
-      networkRoute: "SERVER_SHARED_IP",
-    };
-  }
-
-  if (agentUrl) {
-    return {
-      usedIp: profileIp || null,
-      usedIpLabel: profileIp || "AGENT_ROUTE",
-      networkRoute: "AGENT_ROUTE",
-    };
-  }
-
-  if (profileIp && !localBindingEnabled) {
-    return {
-      usedIp: publicIp || null,
-      usedIpLabel: publicIp || "UNKNOWN",
-      networkRoute: "SERVER_SHARED_IP",
-    };
-  }
-
-  if (profileIp) {
-    return {
-      usedIp: profileIp,
-      usedIpLabel: profileIp,
-      networkRoute: "USER_STATIC_IP",
-    };
-  }
-
-  if (publicIp) {
-    return {
-      usedIp: publicIp,
-      usedIpLabel: publicIp,
-      networkRoute: "SERVER_SHARED_IP",
-    };
-  }
+  const route = resolveRouteBinding({
+    outgoingIp: user?.outgoing_ip,
+    agentUrl: user?.agent_url,
+    dedicatedIpEnabled,
+  });
 
   return {
-    usedIp: null,
-    usedIpLabel: "UNKNOWN",
-    networkRoute: "UNKNOWN",
+    usedIp: route.routeIp || null,
+    usedIpLabel: route.routeIp || "UNKNOWN",
+    networkRoute: route.routeType,
   };
 }
 
@@ -159,7 +120,9 @@ export class SignalBroadcastService {
   private static buildReadinessEntry(user: any, latestResponse: any) {
     const userId = String(user?._id || "");
     const broker = normalizeBroker(user?.broker);
+    const dedicatedIpEnabled = Boolean(user?.dedicated_ip_enabled === true);
     const networkMeta = resolveUserNetworkMeta(user);
+    const strictRoutePrecheck = process.env.STRICT_API_KEY_ROUTE_VALIDATION === "true";
     const rawClientCode = user?.client_key ? decrypt(user.client_key) : "";
     const hasApiKey = Boolean(String(user?.api_key || "").trim());
     const apiKey = hasApiKey ? decrypt(user.api_key || "") : "";
@@ -171,6 +134,7 @@ export class SignalBroadcastService {
     const apiKeyIpPairVerified = Boolean(user?.api_key_ip_pair_verified === true);
     const validatedRouteIp = String(user?.validated_route_ip || "").trim();
     const validatedApiKeyFingerprint = String(user?.validated_api_key_fingerprint || "").trim();
+    const sharedServerIp = normalizeIpv4(config.publicIp);
 
     let ready = true;
     let reason = "READY";
@@ -181,16 +145,29 @@ export class SignalBroadcastService {
     } else if (broker === "ANGELONE" && !hasApiKey) {
       ready = false;
       reason = "Angel API key missing in user profile";
-    } else if (isLiveAngel && !apiKeyIpPairVerified) {
+    } else if (isLiveAngel && !apiKeyIpPairVerified && strictRoutePrecheck) {
       ready = false;
       reason = `Angel API key/IP pair is not verified. Reconnect broker after whitelisting ${networkMeta.usedIpLabel} in Angel One.`;
+    } else if (isLiveAngel && !apiKeyIpPairVerified && !strictRoutePrecheck) {
+      reason = `READY (soft): whitelist ${networkMeta.usedIpLabel} on Angel One and reconnect when convenient`;
     } else if (
       isLiveAngel &&
+      dedicatedIpEnabled &&
       validatedRouteIp &&
       normalizeIpv4(validatedRouteIp) !== normalizeIpv4(networkMeta.usedIp || "")
     ) {
       ready = false;
       reason = `Verified Angel route IP changed from ${validatedRouteIp} to ${networkMeta.usedIpLabel}. Reconnect broker to verify the new route.`;
+    } else if (
+      isLiveAngel &&
+      !dedicatedIpEnabled &&
+      config.forceSharedVpsRoute &&
+      validatedRouteIp &&
+      sharedServerIp &&
+      normalizeIpv4(validatedRouteIp) !== sharedServerIp
+    ) {
+      // Admin/server strategy uses VPS shared IP — do not block on a stale per-user IP verification.
+      reason = `READY: server strategy executes via shared VPS IP ${sharedServerIp} (profile route ${validatedRouteIp} ignored)`;
     } else if (
       isLiveAngel &&
       validatedApiKeyFingerprint &&
