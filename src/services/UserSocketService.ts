@@ -3,6 +3,7 @@
 import { WebSocket } from "ws";
 import log from "../utils/logger";
 import jwt, { JwtPayload } from "jsonwebtoken";
+import User from "../models/User";
 
 const USER_ACCESS_SECRET = process.env.USER_ACCESS_SECRET || "user_access_secret_123";
 const ADMIN_ACCESS_SECRET = process.env.ADMIN_ACCESS_SECRET || "admin_access_secret_123";
@@ -47,6 +48,12 @@ export function registerUserSocket(userId: string, ws: WebSocket): void {
   }
 
   userSockets.set(userId, ws);
+  User.updateOne({ _id: userId }, { $set: { is_online: true, is_login: true } }).catch((err) => {
+    log.warn("[UserSocket] Failed to mark user online", {
+      userId,
+      message: err?.message || String(err),
+    });
+  });
   log.info(`[UserSocket] User ${userId} connected. Total connected: ${userSockets.size}`);
 }
 
@@ -63,6 +70,12 @@ export function removeUserSocket(userId: string, closingSocket?: WebSocket): voi
   }
 
   userSockets.delete(userId);
+  User.updateOne({ _id: userId }, { $set: { is_online: false } }).catch((err) => {
+    log.warn("[UserSocket] Failed to mark user offline", {
+      userId,
+      message: err?.message || String(err),
+    });
+  });
   log.info(`[UserSocket] User ${userId} disconnected. Total connected: ${userSockets.size}`);
 }
 

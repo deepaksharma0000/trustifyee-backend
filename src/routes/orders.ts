@@ -290,15 +290,22 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     const executionRows = (readiness.details || []).map((d: any) => {
       const isSocketConnected = Boolean(d?.userId && isUserSocketConnected(String(d.userId)));
       const online = Boolean(d?.isOnlineDb) || isSocketConnected;
+      const serverQueueable = forceServerDispatch && d?.ready !== false;
+      const clientQueueable = forceClientDispatch && online;
+      const queueable = serverQueueable || clientQueueable;
       return {
         userId: d.userId || null,
         userName: d.userName || d.email || null,
         licence: d.licence || "Live",
         broker: d.broker || null,
-        online,
-        status: online ? "QUEUED" : "OFFLINE",
-        message: online
+        online: forceServerDispatch ? queueable : online,
+        status: queueable ? "QUEUED" : forceServerDispatch ? "BLOCKED" : "OFFLINE",
+        message: serverQueueable
+          ? "Server execution queued - processing on broker worker."
+          : clientQueueable
           ? "Signal dispatched for user-side execution."
+          : forceServerDispatch
+          ? d?.reason || "User broker route is not ready for server-side execution."
           : "User device is offline. Signal will execute when user reconnects and polls pending signals.",
         usedIp: d.usedIp || null,
         networkRoute: d.routeType || null,

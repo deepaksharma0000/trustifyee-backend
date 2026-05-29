@@ -181,36 +181,6 @@ async function enforceApiKeyRoutePairValidation(
   let expectedRouteIp = String(user?.validated_route_ip || "").trim();
   let expectedRouteType = String(user?.validated_route_type || "").trim();
 
-  if ((!isVerified || !expectedKeyFp || !expectedRouteIp) && binding.routeIp) {
-    const bootstrapUpdate = {
-      api_key_ip_pair_verified: true,
-      validated_api_key_fingerprint: binding.apiKeyFingerprint,
-      validated_route_ip: binding.routeIp,
-      validated_route_type: binding.routeType,
-      validated_pair_at: new Date(),
-    };
-
-    try {
-      await User.updateOne({ _id: userId }, { $set: bootstrapUpdate });
-      Object.assign(user, bootstrapUpdate);
-      isVerified = true;
-      expectedKeyFp = bootstrapUpdate.validated_api_key_fingerprint;
-      expectedRouteIp = bootstrapUpdate.validated_route_ip;
-      expectedRouteType = bootstrapUpdate.validated_route_type;
-      log.warn("[ORDER_PRECHECK_BOOTSTRAP] Auto-verified missing API key/IP pair from runtime route binding.", {
-        clientcode,
-        apiKey: binding.apiKeyFingerprint,
-        routeIp: binding.routeIp,
-        routeType: binding.routeType,
-      });
-    } catch (bootstrapErr: any) {
-      log.warn("[ORDER_PRECHECK_BOOTSTRAP_WARN] Failed persisting bootstrap key/route verification.", {
-        clientcode,
-        message: bootstrapErr?.message,
-      });
-    }
-  }
-
   if (!isVerified || !expectedKeyFp || !expectedRouteIp) {
     if (!strictPrecheck) {
       log.warn("[ORDER_PRECHECK_SOFT_BYPASS] Missing key/route verification state. Allowing broker attempt in non-strict mode.", {

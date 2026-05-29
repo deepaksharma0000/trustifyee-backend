@@ -162,8 +162,15 @@ export class SignalBroadcastService {
     const networkMeta = resolveUserNetworkMeta(user);
     const rawClientCode = user?.client_key ? decrypt(user.client_key) : "";
     const hasApiKey = Boolean(String(user?.api_key || "").trim());
+    const apiKey = hasApiKey ? decrypt(user.api_key || "") : "";
+    const currentApiKeyFingerprint = hasApiKey ? apiKeyFingerprint(apiKey) : "EMPTY";
     const latestMessage = String(latestResponse?.message || "");
     const latestUsedIp = String(latestResponse?.usedIp || "") || networkMeta.usedIpLabel;
+    const licence = String(user?.licence || "Live").toLowerCase();
+    const isLiveAngel = licence === "live" && broker === "ANGELONE";
+    const apiKeyIpPairVerified = Boolean(user?.api_key_ip_pair_verified === true);
+    const validatedRouteIp = String(user?.validated_route_ip || "").trim();
+    const validatedApiKeyFingerprint = String(user?.validated_api_key_fingerprint || "").trim();
 
     let ready = true;
     let reason = "READY";
@@ -174,6 +181,23 @@ export class SignalBroadcastService {
     } else if (broker === "ANGELONE" && !hasApiKey) {
       ready = false;
       reason = "Angel API key missing in user profile";
+    } else if (isLiveAngel && !apiKeyIpPairVerified) {
+      ready = false;
+      reason = `Angel API key/IP pair is not verified. Reconnect broker after whitelisting ${networkMeta.usedIpLabel} in Angel One.`;
+    } else if (
+      isLiveAngel &&
+      validatedRouteIp &&
+      normalizeIpv4(validatedRouteIp) !== normalizeIpv4(networkMeta.usedIp || "")
+    ) {
+      ready = false;
+      reason = `Verified Angel route IP changed from ${validatedRouteIp} to ${networkMeta.usedIpLabel}. Reconnect broker to verify the new route.`;
+    } else if (
+      isLiveAngel &&
+      validatedApiKeyFingerprint &&
+      validatedApiKeyFingerprint !== currentApiKeyFingerprint
+    ) {
+      ready = false;
+      reason = "Angel API key changed after route verification. Reconnect broker to verify this key/IP pair.";
     } else if (broker === "ANGELONE" && shouldBlockForRecentStaticRejection(latestResponse, networkMeta.usedIp)) {
       ready = false;
       reason = latestMessage || "Static IP mapping rejected by broker for this user API key";
@@ -189,7 +213,7 @@ export class SignalBroadcastService {
       ready,
       reason,
       clientCode: rawClientCode || null,
-      apiKeyFingerprint: hasApiKey ? apiKeyFingerprint(decrypt(user.api_key || "")) : "EMPTY",
+      apiKeyFingerprint: currentApiKeyFingerprint,
       routeType: networkMeta.networkRoute,
       usedIp: networkMeta.usedIpLabel,
       dedicatedIpEnabled: Boolean(user?.dedicated_ip_enabled === true),
@@ -197,8 +221,8 @@ export class SignalBroadcastService {
       lastBrokerMessage: latestMessage || null,
       lastBrokerUsedIp: latestUsedIp || null,
       lastBrokerAt: latestResponse?.createdAt || null,
-      apiKeyIpPairVerified: Boolean(user?.api_key_ip_pair_verified === true),
-      validatedRouteIp: user?.validated_route_ip || null,
+      apiKeyIpPairVerified,
+      validatedRouteIp: validatedRouteIp || null,
       validatedRouteType: user?.validated_route_type || null,
     };
   }
@@ -225,7 +249,7 @@ export class SignalBroadcastService {
       ...strategyQuery,
     })
       .select(
-        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type is_online is_login"
+        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login"
       )
       .lean();
 
@@ -319,7 +343,7 @@ export class SignalBroadcastService {
 
     const usersQuery = User.find(userFilter)
       .select(
-        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_route_ip validated_route_type is_online is_login"
+        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login"
       )
       .lean();
 
