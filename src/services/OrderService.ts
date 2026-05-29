@@ -1157,3 +1157,60 @@ export async function fetchBrokerOrder(
     return null;
   }
 }
+
+function normalizeAngelOrderBookRow(row: any) {
+  return {
+    orderid: String(row?.orderid || row?.orderId || "").trim(),
+    uniqueorderid: String(row?.uniqueorderid || row?.uniqueOrderId || "").trim(),
+    tradingsymbol: String(row?.tradingsymbol || row?.tradingSymbol || "").trim(),
+    exchange: String(row?.exchange || "").trim(),
+    transactiontype: String(row?.transactiontype || row?.transactionType || "").trim(),
+    ordertype: String(row?.ordertype || row?.orderType || "").trim(),
+    producttype: String(row?.producttype || row?.productType || "").trim(),
+    quantity: Number(row?.quantity || row?.qty || 0),
+    price: Number(row?.price || 0),
+    triggerprice: Number(row?.triggerprice || row?.triggerPrice || 0),
+    orderstatus: String(row?.orderstatus || row?.status || row?.orderStatus || "")
+      .trim()
+      .toUpperCase(),
+    statusmessage: String(row?.text || row?.statusmessage || row?.message || "").trim(),
+    updatetime: String(row?.updatetime || row?.updateTime || row?.exchtime || "").trim(),
+    fillshares: Number(row?.fillshares || row?.filledshares || 0),
+    averageprice: Number(row?.averageprice || row?.avgPrice || 0),
+  };
+}
+
+export async function getAngelOrderBookForClient(userId: string, clientcode: string) {
+  const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+  if (!angelTokens?.jwtToken) {
+    throw new Error("No active Angel session. Please reconnect broker from profile settings.");
+  }
+
+  const orderBookResp = await executeWithSessionRecovery(
+    {
+      userId: String(userId),
+      clientcode,
+      purpose: "angel_order_book",
+    },
+    (session) => session.adapter.getOrderBook(session.jwtToken)
+  );
+
+  const parsedRows = parseAngelRows(orderBookResp);
+  if (!parsedRows.ok) {
+    const reason =
+      parsedRows.parsed.rejectionReason ||
+      parsedRows.parsed.brokerMessage ||
+      "Failed to fetch Angel One order book";
+    throw new Error(reason);
+  }
+
+  const rows = (parsedRows.rows || []).map(normalizeAngelOrderBookRow);
+  rows.sort((a, b) => String(b.updatetime || "").localeCompare(String(a.updatetime || "")));
+
+  return {
+    clientcode,
+    fetchedAt: new Date().toISOString(),
+    total: rows.length,
+    orders: rows,
+  };
+}

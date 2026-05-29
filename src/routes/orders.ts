@@ -3,6 +3,7 @@ import express from "express";
 import {
   placeOrderForClient,
   getOrderStatusForClient,
+  getAngelOrderBookForClient,
   PlaceOrderInput
 } from "../services/OrderService";
 import log from "../utils/logger";
@@ -24,6 +25,8 @@ import {
 import moment from "moment-timezone";
 import { findUserByClientCode } from "../utils/clientCodeLookup";
 import { config } from "../config";
+import { decrypt } from "../utils/encryption";
+import User from "../models/User";
 import { getConnectedUserIds, isUserSocketConnected } from "../services/UserSocketService";
 import { v4 as uuidv4 } from "uuid";
 
@@ -874,6 +877,64 @@ router.get("/broker-responses", auth, async (req: any, res) => {
     res.json({ ok: true, data: responses });
   } catch (err: any) {
     res.status(500).json({ ok: false, message: err.message || String(err) });
+  }
+});
+
+router.get("/angel-order-book", auth, async (req: any, res) => {
+  try {
+    let userId = String(req.id || "");
+    let clientcode = "";
+
+    if (req.userType === "admin") {
+      if (req.query.userId) {
+        userId = String(req.query.userId);
+      }
+      if (req.query.clientcode) {
+        clientcode = String(req.query.clientcode).trim().toUpperCase();
+      } else if (userId) {
+        const targetUser = await User.findById(userId).select("+client_key").lean();
+        if (targetUser?.client_key) {
+          clientcode = decrypt(targetUser.client_key, `angel_order_book_${userId}`).trim().toUpperCase();
+        }
+      }
+    } else {
+      const user = await User.findById(userId).select("+client_key").lean();
+      if (!user?.client_key) {
+        return res.status(400).json({ ok: false, message: "Client code missing. Connect broker first." });
+      }
+      clientcode = decrypt(user.client_key, `angel_order_book_${userId}`).trim().toUpperCase();
+    }
+
+    if (!clientcode) {
+      return res.status(400).json({ ok: false, message: "Client code required" });
+    }
+
+    if (req.userType === "user") {
+      const user = await User.findById(userId).select("+client_key").lean();
+      if (!user?.client_key || !matchesEncryptedValue(user.client_key, clientcode)) {
+        return res.status(403).json({ ok: false, message: "Unauthorized access to this Angel One account" });
+      }
+    }
+
+    const orderBook = await getAngelOrderBookForClient(userId, clientcode);
+
+    const platformExecutions = await SignalExecutionResult.find({ userId })
+      .sort({ updatedAt: -1 })
+      .limit(50)
+      .select(
+        "signalId status orderId clientOrderId brokerOrderStatus brokerRejectReason errorMessage executedAt updatedAt ipAddress source"
+      )
+      .lean();
+
+    return res.json({
+      ok: true,
+      clientcode,
+      angelOne: orderBook,
+      platformExecutions,
+    });
+  } catch (err: any) {
+    log.error("[angel-order-book] fetch failed", { message: err?.message });
+    return res.status(500).json({ ok: false, message: err.message || "Failed to fetch Angel One order book" });
   }
 });
 
