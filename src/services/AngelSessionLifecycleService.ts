@@ -7,6 +7,8 @@ import log from "../utils/logger";
 import { invalidateAngelSessionCache, primeAngelSessionCache } from "./AngelSessionContextService";
 import { getOrCreateUserAngelAdapter } from "./AngelAdapterRegistry";
 import { resolveConsistentApiKey, validateApiKeyFormat } from "./BrokerSessionValidator";
+import { resolveRouteBinding } from "../utils/apiKeyRouteBinding";
+import { config } from "../config";
 
 type RecoveryMode = "REFRESH" | "RELOGIN";
 
@@ -26,6 +28,27 @@ const RECOVERY_COOLDOWN_MS = 60_000;
 
 const toSessionKey = (sessionDoc: any) =>
   String(sessionDoc?._id || `${sessionDoc?.userId || "UNKNOWN"}:${sessionDoc?.clientcode || "UNKNOWN"}`);
+
+function resolveAdapterNetworkOptions(profile?: any) {
+  const dedicatedIpEnabled = Boolean(profile?.dedicated_ip_enabled === true);
+  const binding = resolveRouteBinding({
+    outgoingIp: profile?.outgoing_ip,
+    agentUrl: profile?.agent_url,
+    dedicatedIpEnabled,
+  });
+
+  if (dedicatedIpEnabled) {
+    return {
+      outgoingIp: binding.routeIp || undefined,
+      agentUrl: binding.agentUrl || undefined,
+    };
+  }
+
+  return {
+    outgoingIp: binding.routeIp || config.publicIp || undefined,
+    agentUrl: undefined,
+  };
+}
 
 const extractTokenPayload = (response: any) => {
   const axiosData = response?.data ?? response ?? {};
@@ -47,13 +70,19 @@ const extractTokenPayload = (response: any) => {
   return { ok, jwtToken, refreshToken, feedToken, errorCode, message, raw: axiosData };
 };
 
-const persistRecoveredTokens = async (sessionDoc: any, tokens: { jwtToken: string; refreshToken?: string; feedToken?: string }) => {
-  const updatedPayload = {
+const persistRecoveredTokens = async (
+  sessionDoc: any,
+  tokens: { jwtToken: string; refreshToken?: string; feedToken?: string; apiKey?: string }
+) => {
+  const updatedPayload: Record<string, unknown> = {
     jwtToken: encrypt(tokens.jwtToken),
     refreshToken: tokens.refreshToken ? encrypt(tokens.refreshToken) : sessionDoc.refreshToken,
     feedToken: tokens.feedToken ? encrypt(tokens.feedToken) : sessionDoc.feedToken,
     expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
   };
+  if (tokens.apiKey) {
+    updatedPayload.apiKey = encrypt(tokens.apiKey);
+  }
 
   await AngelTokensModel.updateOne(
     { _id: sessionDoc._id },
@@ -71,7 +100,7 @@ const persistRecoveredTokens = async (sessionDoc: any, tokens: { jwtToken: strin
 
 const getProfileWithSecrets = async (userId: string) => {
   const userDoc = await User.findById(userId)
-    .select("+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url")
+    .select("+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url dedicated_ip_enabled")
     .lean();
 
   if (userDoc) {
@@ -114,7 +143,7 @@ async function attemptRefresh(sessionDoc: any, context: string): Promise<Session
     return { ok: false, reason: `REFRESH_INVALID_API_KEY:${keyFormat.reason}` };
   }
 
-  const adapter = getOrCreateUserAngelAdapter(userId, sessionApiKey);
+  const adapter = getOrCreateUserAngelAdapter(userId, sessionApiKey, resolveAdapterNetworkOptions(loaded?.profile));
   const response = await adapter.generateTokensUsingRefresh(refreshToken);
   const parsed = extractTokenPayload(response);
 
@@ -130,6 +159,7 @@ async function attemptRefresh(sessionDoc: any, context: string): Promise<Session
     jwtToken: parsed.jwtToken,
     refreshToken: parsed.refreshToken,
     feedToken: parsed.feedToken,
+    apiKey: sessionApiKey,
   });
 
   return {
@@ -185,10 +215,7 @@ async function attemptFreshLogin(sessionDoc: any, context: string): Promise<Sess
     };
   }
 
-  const adapter = getOrCreateUserAngelAdapter(userId, apiKey, {
-    outgoingIp: profile?.outgoing_ip || undefined,
-    agentUrl: profile?.agent_url || undefined,
-  });
+  const adapter = getOrCreateUserAngelAdapter(userId, apiKey, resolveAdapterNetworkOptions(profile));
   const loginResponse = await adapter.generateSession({
     clientcode: clientCode,
     password,
@@ -221,6 +248,7 @@ async function attemptFreshLogin(sessionDoc: any, context: string): Promise<Sess
     jwtToken: parsed.jwtToken,
     refreshToken: parsed.refreshToken,
     feedToken: parsed.feedToken,
+    apiKey,
   });
 
   if (loaded.type === "user") {

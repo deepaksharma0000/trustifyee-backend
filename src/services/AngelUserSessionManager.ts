@@ -10,7 +10,8 @@ import {
   logBrokerExecutionContext,
   resolveConsistentApiKey,
 } from "./BrokerSessionValidator";
-import { apiKeyFingerprint } from "../utils/apiKeyRouteBinding";
+import { apiKeyFingerprint, resolveRouteBinding } from "../utils/apiKeyRouteBinding";
+import { getPlatformAngelApiKey, shouldUsePlatformAngelApiKey } from "../utils/platformAngelApiKey";
 import { getAngelNetworkIdentity } from "../utils/angelNetworkIdentity";
 import { config } from "../config";
 import { parseAngelResponse } from "../utils/angelResponseParser";
@@ -104,20 +105,7 @@ async function resolveApiKey(session: any, userId: string, purpose: string) {
     clientcode: String(session?.clientcode || ""),
   });
 
-  const apiKey = resolved.apiKey;
-
-  // Hard guard: never allow end-user execution to run on the global/system API key.
-  // This is the most common cause of "Invalid API Key" (AG8004) + admin leakage symptoms in multi-tenant setups.
-  if (loaded?.type === "user" && config.nodeEnv === "production" && config.angelApiKey) {
-    const globalKey = String(config.angelApiKey || "").trim();
-    if (globalKey && apiKey && globalKey === apiKey) {
-      throw new Error(
-        "BROKER_API_KEY_GLOBAL_FALLBACK_DETECTED: User session is using the system API key. User must reconnect broker with their own SmartAPI app key."
-      );
-    }
-  }
-
-  return apiKey;
+  return { apiKey: resolved.apiKey, source: resolved.source, profile, loaded };
 }
 
 function assertNoAdminSessionLeak(input: SessionInput, session: any) {
@@ -184,16 +172,59 @@ export async function getIsolatedAngelSession(input: SessionInput): Promise<Isol
 
   const userId = String(session.userId || input.userId);
   const clientcode = String(session.clientcode || input.clientcode).trim();
-  const jwtToken = session.jwtToken
+  let jwtToken = session.jwtToken
     ? await ensureEncrypted(session, "jwtToken", `${input.purpose}_jwt_${clientcode}`)
     : "";
-  const feedToken = session.feedToken
+  let feedToken = session.feedToken
     ? await ensureEncrypted(session, "feedToken", `${input.purpose}_feed_${clientcode}`)
     : "";
-  const refreshToken = session.refreshToken
+  let refreshToken = session.refreshToken
     ? await ensureEncrypted(session, "refreshToken", `${input.purpose}_refresh_${clientcode}`)
     : "";
-  const apiKey = await resolveApiKey(session, userId, input.purpose);
+
+  let keyResolution = await resolveApiKey(session, userId, input.purpose);
+  let apiKey = keyResolution.apiKey;
+  const profile = keyResolution.profile;
+
+  // Re-login with platform SmartAPI key when an old per-user key session is still cached.
+  if (
+    shouldUsePlatformAngelApiKey(profile) &&
+    keyResolution.source === "PLATFORM" &&
+    apiKey
+  ) {
+    const tokenStoredKey = session.apiKey
+      ? await ensureEncrypted(session, "apiKey", `${input.purpose}_token_api_${clientcode}`)
+      : "";
+    const platformKey = getPlatformAngelApiKey();
+    if (tokenStoredKey && tokenStoredKey !== platformKey) {
+      log.warn("[ANGEL_PLATFORM_KEY_RESYNC] Session JWT was issued with a different API key. Re-authenticating with platform key.", {
+        userId,
+        clientcode,
+        purpose: input.purpose,
+      });
+      const recovered = await recoverSessionByRefreshOrLogin(session, `${input.purpose}_platform_key_resync`);
+      if (!recovered.ok) {
+        throw new Error(
+          `ANGEL_PLATFORM_KEY_RESYNC_FAILED: ${recovered.reason || "Reconnect broker from profile settings."}`
+        );
+      }
+      session = await AngelTokensModel.findById(session._id).lean();
+      if (!session) {
+        throw new Error("ANGEL_PLATFORM_KEY_RESYNC_FAILED: session missing after platform re-login");
+      }
+      jwtToken = session.jwtToken
+        ? await ensureEncrypted(session, "jwtToken", `${input.purpose}_jwt_resync_${clientcode}`)
+        : "";
+      feedToken = session.feedToken
+        ? await ensureEncrypted(session, "feedToken", `${input.purpose}_feed_resync_${clientcode}`)
+        : "";
+      refreshToken = session.refreshToken
+        ? await ensureEncrypted(session, "refreshToken", `${input.purpose}_refresh_resync_${clientcode}`)
+        : "";
+      keyResolution = await resolveApiKey(session, userId, input.purpose);
+      apiKey = keyResolution.apiKey;
+    }
+  }
 
   if (!clientcode || !jwtToken || !apiKey) {
     throw new Error("ANGEL_SESSION_INVALID: clientcode, jwtToken, or apiKey missing after validation.");
@@ -208,8 +239,19 @@ export async function getIsolatedAngelSession(input: SessionInput): Promise<Isol
     );
   }
 
+  const dedicatedIpEnabled = Boolean(profile?.dedicated_ip_enabled === true);
+  const routeBinding = resolveRouteBinding({
+    outgoingIp: profile?.outgoing_ip,
+    agentUrl: profile?.agent_url,
+    dedicatedIpEnabled,
+  });
+  const adapterOutgoingIp =
+    input.outgoingIp ||
+    (dedicatedIpEnabled ? routeBinding.routeIp || undefined : routeBinding.routeIp || config.publicIp || undefined);
+  const adapterAgentUrl = input.agentUrl || (dedicatedIpEnabled ? routeBinding.agentUrl || undefined : undefined);
+
   const identity = getAngelNetworkIdentity();
-  const requestIp = input.outgoingIp || identity.publicIp || config.publicIp || "UNKNOWN";
+  const requestIp = adapterOutgoingIp || identity.publicIp || config.publicIp || "UNKNOWN";
 
   logBrokerExecutionContext({
     userId,
@@ -218,9 +260,9 @@ export async function getIsolatedAngelSession(input: SessionInput): Promise<Isol
     purpose: input.purpose,
     apiKeyLast4: apiKey.slice(-4),
     apiKeyFingerprint: apiKeyFingerprint(apiKey),
-    apiKeySource: "TOKEN",
+    apiKeySource: keyResolution.source === "PLATFORM" ? "PLATFORM" : "TOKEN",
     requestIp,
-    routeType: input.agentUrl ? "AGENT_ROUTE" : input.outgoingIp ? "DEDICATED" : "SERVER_SHARED_IP",
+    routeType: adapterAgentUrl ? "AGENT_ROUTE" : dedicatedIpEnabled ? "DEDICATED" : "SERVER_SHARED_IP",
     tokenOwner: userId,
     executionMode: process.env.EXECUTION_MODE || "SERVER_SHARED_IP",
     jwtClientCode,
@@ -228,8 +270,8 @@ export async function getIsolatedAngelSession(input: SessionInput): Promise<Isol
   });
 
   const adapter = getOrCreateUserAngelAdapter(userId, apiKey, {
-    outgoingIp: input.outgoingIp,
-    agentUrl: input.agentUrl,
+    outgoingIp: adapterOutgoingIp,
+    agentUrl: adapterAgentUrl,
   });
 
   const isolated: IsolatedAngelSession = {

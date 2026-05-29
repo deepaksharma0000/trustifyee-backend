@@ -10,6 +10,7 @@ import { auth } from '../middleware/auth.middleware';
 import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
 import { buildApiKeyRouteBinding } from '../utils/apiKeyRouteBinding';
 import { assertApiKeyJwtPair, buildIpWhitelistDiagnostics, validateApiKeyFormat } from '../services/BrokerSessionValidator';
+import { getPlatformAngelApiKey, shouldUsePlatformAngelApiKey } from '../utils/platformAngelApiKey';
 import { isMigrated } from '../utils/encryption';
 import {
     assertEncryptedRoundTrip,
@@ -111,14 +112,26 @@ router.post('/generate-session', auth, async (req: any, res) => {
         
         const decryptedApiKey = resolvedApiKey; // For clarity with existing code
 
-        if (isMigrated(decryptedApiKey) || String(decryptedApiKey).startsWith('enc::')) {
+        const usePlatformKey = userType !== 'admin' && shouldUsePlatformAngelApiKey(profile);
+        const sessionApiKey = usePlatformKey ? getPlatformAngelApiKey() : decryptedApiKey;
+        if (usePlatformKey) {
+            log.info(`[AUTH] Using platform SmartAPI key for shared VPS broker connect (${client_code})`);
+        }
+        if (!sessionApiKey) {
+            return res.status(400).json({
+                status: false,
+                error: 'Platform ANGEL_API_KEY is missing. Set ANGEL_API_KEY in server environment for shared VPS execution.',
+            });
+        }
+
+        if (isMigrated(sessionApiKey) || String(sessionApiKey).startsWith('enc::')) {
             return res.status(400).json({
                 status: false,
                 error: 'API key must be plaintext SmartAPI Private Key, not an encrypted database value.',
             });
         }
 
-        const apiKeyFormat = validateApiKeyFormat(decryptedApiKey);
+        const apiKeyFormat = validateApiKeyFormat(sessionApiKey);
         if (!apiKeyFormat.valid) {
             return res.status(400).json({
                 status: false,
@@ -155,7 +168,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
         const isValidIPv4 = (ip?: string): boolean => 
             !!ip && /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
 
-        const binding = buildApiKeyRouteBinding(decryptedApiKey, {
+        const binding = buildApiKeyRouteBinding(sessionApiKey, {
             outgoingIp: (profile as any).outgoing_ip,
             agentUrl: (profile as any).agent_url,
             dedicatedIpEnabled: Boolean((profile as any).dedicated_ip_enabled === true),
@@ -170,7 +183,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
 
         // Step 7: Call AngelOne API
         const adapter = new AngelOneAdapter(
-            decryptedApiKey,
+            sessionApiKey,
             routeHeaderIp,
             false,
             binding.agentUrl || undefined
@@ -220,7 +233,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
         }
 
         try {
-            assertApiKeyJwtPair(decryptedApiKey, jwtToken, client_code);
+            assertApiKeyJwtPair(sessionApiKey, jwtToken, client_code);
         } catch (pairErr: any) {
             log.error(`[AUTH] API key / JWT pair validation failed for ${client_code}`, { message: pairErr?.message });
             return res.status(400).json({
@@ -230,7 +243,8 @@ router.post('/generate-session', auth, async (req: any, res) => {
         }
 
         // Step 8: Save tokens to DB
-        const encryptedApiKey = encrypt(decryptedApiKey);
+        const encryptedSessionApiKey = encrypt(sessionApiKey);
+        const encryptedProfileApiKey = encrypt(decryptedApiKey);
         await AngelTokensModel.findOneAndUpdate(
             { userId, clientcode: client_code },
             {
@@ -239,7 +253,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
                 jwtToken: encrypt(jwtToken),
                 refreshToken: encrypt(refreshToken),
                 feedToken: encrypt(feedToken),
-                apiKey: encryptedApiKey,
+                apiKey: encryptedSessionApiKey,
                 expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
             },
             { upsert: true, new: true }
@@ -273,7 +287,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
             assertEncryptedRoundTrip('broker_password', password, updatePayload.broker_password);
         }
         if (bodyApiKey || decryptedApiKey) {
-            updatePayload.api_key = encryptedApiKey;
+            updatePayload.api_key = encryptedProfileApiKey;
             assertEncryptedRoundTrip('api_key', decryptedApiKey, updatePayload.api_key);
         }
         // FIX #4: Encrypt TOTP secret before persisting to DB

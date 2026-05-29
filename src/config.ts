@@ -71,6 +71,7 @@ export const config = {
     : "SERVER_SHARED_IP"
   ),
   forceSharedVpsRoute: process.env.FORCE_SHARED_VPS_ROUTE !== "false",
+  usePlatformAngelApiKey: process.env.USE_PLATFORM_ANGEL_API_KEY !== "false",
 
   // Dedicated Data Feed
   dataClientCode: process.env.DATA_CLIENT_CODE || "",
@@ -118,8 +119,10 @@ export const validateConfig = () => {
     throw new Error("FATAL: ALLOW_GLOBAL_SESSION_FALLBACK must be false in production.");
   }
 
-  if (config.nodeEnv === "production" && process.env.ANGEL_ENABLE_LOCAL_BINDING === "true") {
-    throw new Error("FATAL: ANGEL_ENABLE_LOCAL_BINDING must be false in production shared VPS mode.");
+  if (config.nodeEnv === "production" && config.forceSharedVpsRoute && config.usePlatformAngelApiKey) {
+    if (!String(config.angelApiKey || "").trim()) {
+      throw new Error("FATAL: ANGEL_API_KEY is required in production when USE_PLATFORM_ANGEL_API_KEY is enabled (default). Whitelist PUBLIC_IP on this SmartAPI app in Angel One.");
+    }
   }
 
   // Notice: We don't throw for angelApiKey here because it should be per-user now.

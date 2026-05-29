@@ -23,6 +23,8 @@
    - `ANGEL_USER_TYPE=USER`
    - `ANGEL_REFRESH_TOKENS_PATH=/rest/auth/angelbroking/jwt/v1/generateTokens`
    - `ANGEL_ENABLE_LOCAL_BINDING=false`
+   - `ANGEL_API_KEY=<platform SmartAPI private key>` (whitelist `PUBLIC_IP` once on this app — all users share it)
+   - `USE_PLATFORM_ANGEL_API_KEY=true` (default; set false only if every user whitelists VPS IP on their own SmartAPI app)
    - `ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK=false`
    - `ALLOW_GLOBAL_SESSION_FALLBACK=false`
    - `ENABLE_LIVE_TOKEN_REPAIR=false`

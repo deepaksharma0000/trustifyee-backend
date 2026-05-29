@@ -6,6 +6,10 @@ import { decrypt, ensureEncrypted, isMigrated } from "../utils/encryption";
 import { parseAngelResponse } from "../utils/angelResponseParser";
 import { StartupDiagnostics } from "../utils/startupDiagnostics";
 import log from "../utils/logger";
+import {
+  getPlatformAngelApiKey,
+  shouldUsePlatformAngelApiKey,
+} from "../utils/platformAngelApiKey";
 
 export type BrokerExecutionContext = {
   userId: string;
@@ -14,7 +18,7 @@ export type BrokerExecutionContext = {
   purpose: string;
   apiKeyLast4: string;
   apiKeyFingerprint: string;
-  apiKeySource: "TOKEN" | "PROFILE" | "NONE";
+  apiKeySource: "TOKEN" | "PROFILE" | "PLATFORM" | "NONE";
   requestIp: string;
   routeType: string;
   tokenOwner: string;
@@ -25,7 +29,7 @@ export type BrokerExecutionContext = {
 
 export type ResolvedApiKeyPair = {
   apiKey: string;
-  source: "TOKEN" | "PROFILE";
+  source: "TOKEN" | "PROFILE" | "PLATFORM";
   synced: boolean;
   mismatchDetected: boolean;
 };
@@ -101,6 +105,18 @@ export async function resolveConsistentApiKey(input: {
   clientcode: string;
 }): Promise<ResolvedApiKeyPair> {
   const { angelTokens, profile, userId, clientcode } = input;
+
+  if (shouldUsePlatformAngelApiKey(profile)) {
+    const platformKey = getPlatformAngelApiKey();
+    if (platformKey) {
+      return {
+        apiKey: platformKey,
+        source: "PLATFORM",
+        synced: false,
+        mismatchDetected: false,
+      };
+    }
+  }
 
   const tokenApiKey = angelTokens?.apiKey
     ? await ensureEncrypted(angelTokens, "apiKey", `user_${userId}_session_api_${clientcode}`)
@@ -218,8 +234,8 @@ export function buildIpWhitelistDiagnostics(input?: {
     dedicatedIpEnabled: Boolean(input?.dedicatedIpEnabled),
     userOutgoingIp: input?.userOutgoingIp || null,
     explanation:
-      "Server config match only verifies PUBLIC_IP env equals VPS egress. Each user's SmartAPI app must still whitelist that IP in the Angel One developer portal.",
-    perUserPortalActionRequired: true,
+      "Server config match only verifies PUBLIC_IP env equals VPS egress. With USE_PLATFORM_ANGEL_API_KEY (default), all users share ANGEL_API_KEY — whitelist that app once. Otherwise each user SmartAPI app must whitelist the VPS IP.",
+    perUserPortalActionRequired: process.env.USE_PLATFORM_ANGEL_API_KEY === "false",
   };
 }
 
