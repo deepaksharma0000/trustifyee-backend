@@ -787,7 +787,7 @@ export async function placeOrderForClient(
         quantity: String(orderInput.quantity),
         squareoff: "0",
         stoploss: "0",
-        clientref: clientOrderId
+        ordertag: String(clientOrderId).slice(0, 20)
       };
 
       log.info("[PLACE_ORDER_PAYLOAD]", {

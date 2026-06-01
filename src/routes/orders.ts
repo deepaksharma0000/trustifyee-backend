@@ -167,6 +167,12 @@ router.post("/place", async (req, res, next) => {
             strategy: req.body.strategy || "AdminManual",
             symboltoken: signal?.symboltoken || symboltoken,
             broker,
+            ordertype: orderPayload.ordertype,
+            price: orderPayload.price,
+            producttype: orderPayload.producttype,
+            duration: orderPayload.duration,
+            transactiontype: orderPayload.transactiontype,
+            triggerPrice: orderPayload.triggerPrice,
           },
         },
         {
