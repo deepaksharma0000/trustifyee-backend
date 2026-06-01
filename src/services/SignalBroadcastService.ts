@@ -125,8 +125,16 @@ export class SignalBroadcastService {
     const strictRoutePrecheck = process.env.STRICT_API_KEY_ROUTE_VALIDATION === "true";
     const rawClientCode = user?.client_key ? decrypt(user.client_key) : "";
     const hasApiKey = Boolean(String(user?.api_key || "").trim());
-    const apiKey = hasApiKey ? decrypt(user.api_key || "") : "";
-    const currentApiKeyFingerprint = hasApiKey ? apiKeyFingerprint(apiKey) : "EMPTY";
+    let apiKey = hasApiKey ? decrypt(user.api_key || "") : "";
+    
+    // Apply platform key override logic mirroring connection
+    const { getPlatformAngelApiKey, shouldUsePlatformAngelApiKey } = require("../utils/platformAngelApiKey");
+    if (shouldUsePlatformAngelApiKey(user)) {
+       const pKey = getPlatformAngelApiKey();
+       if (pKey) apiKey = pKey;
+    }
+    
+    const currentApiKeyFingerprint = apiKey ? apiKeyFingerprint(apiKey) : "EMPTY";
     const latestMessage = String(latestResponse?.message || "");
     const latestUsedIp = String(latestResponse?.usedIp || "") || networkMeta.usedIpLabel;
     const licence = String(user?.licence || "Live").toLowerCase();
