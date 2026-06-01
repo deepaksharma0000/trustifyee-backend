@@ -600,32 +600,55 @@ export class TickEngineService {
     }
 
     let tokenDoc: any = await AngelTokensModel.findOne({ clientcode: clientCode }).lean();
+    const isEnvConfigured = Boolean(process.env.DATA_PASSWORD && process.env.DATA_TOTP_SECRET);
 
     if (!tokenDoc) {
-      const allUsers = await User.find({}).select("+client_key +broker_password +broker_totp_secret +api_key").lean() as any[];
-      const matchingUser = allUsers.find((u) => {
+      const allUsers = await User.find({}).select("+client_key +broker_password +broker_totp_secret +api_key +clientcode").lean() as any[];
+      let matchingUser = allUsers.find((u) => {
         const decryptedKey = u.client_key ? decrypt(u.client_key) : "";
         return decryptedKey === clientCode || u.clientcode === clientCode;
       });
 
+      if (!matchingUser) {
+        const Admin = require("../models/Admin").default || require("../models/Admin");
+        const allAdmins = await Admin.find({}).select("+client_key +panel_client_key +broker_password +broker_totp_secret +api_key +clientcode").lean() as any[];
+        matchingUser = allAdmins.find((a: any) => {
+          const decryptedKey = a.client_key ? decrypt(a.client_key) : "";
+          const decryptedPanelKey = a.panel_client_key ? decrypt(a.panel_client_key) : "";
+          return decryptedKey === clientCode || decryptedPanelKey === clientCode || a.clientcode === clientCode;
+        });
+      }
+
+      if (!matchingUser && isEnvConfigured) {
+        const mongoose = require("mongoose");
+        log.warn(`[TickEngine] System client code ${clientCode} user profile not found in database. Using dummy System User context from ENV.`);
+        matchingUser = { 
+          _id: new mongoose.Types.ObjectId("000000000000000000000000"),
+          api_key: process.env.DATA_API_KEY || process.env.ANGEL_API_KEY || ""
+        };
+      }
+
       if (matchingUser) {
-        log.info(`[TickEngine] Creating new AngelTokens record for system user ${matchingUser._id}`);
+        log.info(`[TickEngine] Creating new AngelTokens record for system user/admin ${matchingUser._id}`);
         tokenDoc = await AngelTokensModel.create({
           userId: matchingUser._id,
           clientcode: clientCode,
-          apiKey: matchingUser.api_key,
+          apiKey: matchingUser.api_key || process.env.DATA_API_KEY || process.env.ANGEL_API_KEY || "",
         });
         tokenDoc = (tokenDoc as any).toObject();
       } else {
-        throw new Error(`System client code ${clientCode} user profile not found in database.`);
+        throw new Error(`System client code ${clientCode} user profile not found in database and ENV credentials missing.`);
       }
     }
 
     const context = "tick_engine_auth";
+    const apiKeyRaw = tokenDoc!.apiKey ? decrypt(tokenDoc!.apiKey) : (process.env.DATA_API_KEY || process.env.ANGEL_API_KEY || "");
+    const apiKeyToUse = apiKeyRaw || tokenDoc!.apiKey || "";
+
     try {
       const tokenOwnerUserId = tokenDoc?.userId ? String(tokenDoc.userId) : "";
-      if (!tokenOwnerUserId) {
-        throw new Error("TickEngine session missing userId on AngelTokens document");
+      if (!tokenOwnerUserId || tokenOwnerUserId === "000000000000000000000000") {
+        throw new Error("TickEngine session using dummy/missing userId");
       }
 
       const validSession = await ensureValidSession({
@@ -641,7 +664,7 @@ export class TickEngineService {
         clientCode,
       };
     } catch (err: any) {
-      log.warn("[TickEngine] ensureValidSession failed, falling back to legacy recovery path", {
+      log.warn("[TickEngine] ensureValidSession failed or dummy user, falling back to recovery path", {
         clientCode,
         message: err?.message,
       });
@@ -649,18 +672,55 @@ export class TickEngineService {
 
     const decryptedJwt = tokenDoc!.jwtToken ? decrypt(tokenDoc!.jwtToken) : "";
     const decryptedFeed = tokenDoc!.feedToken ? decrypt(tokenDoc!.feedToken) : "";
-    const decryptedApiKey = tokenDoc!.apiKey ? decrypt(tokenDoc!.apiKey) : "";
 
-    if (!decryptedJwt || !decryptedFeed || !decryptedApiKey) {
+    if (!decryptedJwt || !decryptedFeed) {
       log.info(`[TickEngine] Tokens missing in session for ${clientCode}. Triggering recovery.`);
+      
+      if (isEnvConfigured) {
+        log.info(`[TickEngine] Using system environment credentials to authenticate data account.`);
+        const { getOrCreateUserAngelAdapter } = require("./AngelAdapterRegistry");
+        const adapter = getOrCreateUserAngelAdapter("system_data", apiKeyToUse, {});
+        const loginResponse = await adapter.generateSession({
+            clientcode: clientCode,
+            password: process.env.DATA_PASSWORD || "",
+            totp: "",
+            totp_secret: process.env.DATA_TOTP_SECRET || ""
+        });
+        
+        if (loginResponse && loginResponse.status && loginResponse.data) {
+            const jwtToken = loginResponse.data.jwtToken;
+            const feedToken = loginResponse.data.feedToken;
+            const refreshToken = loginResponse.data.refreshToken;
+            
+            const { encrypt } = require("../utils/encryption");
+            await AngelTokensModel.updateOne({ _id: tokenDoc._id }, {
+                $set: {
+                    jwtToken: encrypt(jwtToken),
+                    feedToken: encrypt(feedToken),
+                    refreshToken: encrypt(refreshToken),
+                    apiKey: encrypt(apiKeyToUse),
+                    updatedAt: new Date()
+                }
+            });
+            return {
+                jwtToken,
+                feedToken,
+                apiKey: apiKeyToUse,
+                clientCode
+            };
+        } else {
+            throw new Error(`Failed to recover system data session natively: ${loginResponse?.message || "Invalid credentials"}`);
+        }
+      }
+
       const recovery = await recoverSessionByRefreshOrLogin(tokenDoc, context);
       if (!recovery.ok || !recovery.jwtToken || !recovery.feedToken) {
-        throw new Error(`Failed to recover system session: ${recovery.reason}`);
+        throw new Error(`Failed to recover system session via DB: ${recovery.reason}`);
       }
       return {
         jwtToken: recovery.jwtToken,
         feedToken: recovery.feedToken,
-        apiKey: decryptedApiKey || (tokenDoc!.apiKey ? decrypt(tokenDoc!.apiKey) : ""),
+        apiKey: apiKeyToUse,
         clientCode,
       };
     }
@@ -668,7 +728,7 @@ export class TickEngineService {
     return {
       jwtToken: decryptedJwt,
       feedToken: decryptedFeed,
-      apiKey: decryptedApiKey,
+      apiKey: apiKeyToUse,
       clientCode,
     };
   }
