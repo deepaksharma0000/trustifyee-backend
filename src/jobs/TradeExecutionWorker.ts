@@ -65,7 +65,9 @@ const isNoRetryRejection = (message: string) => {
     m.includes("insufficient") ||
     m.includes("broker rejected") ||
     m.includes("invalid order") ||
-    m.includes("invalid product")
+    m.includes("invalid product") ||
+    m.includes("invalid app") ||
+    m.includes("ab1034")
   );
 };
 
