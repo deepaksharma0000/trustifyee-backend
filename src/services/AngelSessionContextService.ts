@@ -15,7 +15,8 @@ type CachedSession = {
   doc: any;
 };
 
-const SESSION_CACHE_TTL_MS = 10_000;
+const SESSION_CACHE_TTL_MS = 3_000; // Reduced from 10s to minimize stale-JWT window after refresh
+const EXECUTION_CACHE_TTL_MS = 0;   // Execution path: NEVER cache — always fetch fresh from DB
 const sessionCache = new Map<string, CachedSession>();
 const GLOBAL_FALLBACK_ENABLED = process.env.ALLOW_GLOBAL_SESSION_FALLBACK === "true";
 const fallbackWarnedPurposes = new Set<string>();
@@ -80,6 +81,8 @@ export function primeAngelSessionCache(sessionDoc: any) {
 /**
  * Strict session lookup for order execution — never falls back to clientcode-only
  * or global/admin sessions. Prevents admin session leakage into user trades.
+ * ALWAYS fetches fresh from MongoDB — bypasses in-memory cache to guarantee
+ * the latest JWT is used, preventing AG8001 after token refresh.
  */
 export async function resolveAngelSessionForExecution(input: {
   userId: string;
@@ -104,14 +107,23 @@ export async function resolveAngelSessionForExecution(input: {
     return null;
   }
 
-  return resolveAngelSessionContext({
+  // CRITICAL FIX: Execution path ALWAYS bypasses cache and fetches directly from MongoDB.
+  // The 3s cache window after token refresh is exactly when trades fire — a cached stale
+  // JWT causes AG8001 at the broker. We pay the DB round-trip cost to guarantee freshness.
+  const session = await AngelTokensModel.findOne({
     userId,
     clientcode,
-    purpose: input.purpose,
-    allowGlobalFallback: false,
-    strictIdentity: true,
-    requireJwt: true,
-  });
+    jwtToken: { $exists: true, $ne: "" },
+  })
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  if (!session) {
+    log.warn("[SESSION_CONTEXT] No session found for execution", { userId, clientcode, purpose: input.purpose });
+    return null;
+  }
+
+  return session;
 }
 
 export async function resolveAngelSessionContext(input: SessionLookupInput): Promise<any | null> {

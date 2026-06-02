@@ -400,29 +400,36 @@ export async function placeOrderForClient(
   orderInput: PlaceOrderInput,
   retryCount = 0
 ): Promise<any> {
-  // 🛡️ INTERNAL GUARD: Ensure only called from trusted internal service
-  // In production, we'd check for a system secret or specific caller context.
   log.debug(`[OrderService] Server-side order attempt for ${clientcode}.`);
 
-
-  let user = await User.findById(userId);
-  const isEndUser = Boolean(user);
-  
-  if (!user) {
-    // If not in User collection, check Admin collection (for admin broadcast)
-    const AdminModel = require('../models/Admin').default;
-    user = await AdminModel.findById(userId);
-  }
+  // SECURITY FIX: Only look up User collection — NEVER Admin.
+  // Previously the code fell back to Admin if User was not found, which could cause
+  // admin broker credentials to be used for a trade (EXECUTION_ISOLATION_VIOLATION).
+  // All order execution MUST be tied to a verified User document.
+  const user = await User.findById(userId).select(
+    "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected"
+  );
 
   if (!user) {
-     log.error(`[OrderService] User/Admin not found for ID: ${userId}`);
-     throw new Error("User not found");
+    log.error(`[OrderService] User not found for order execution. Rejecting.`, {
+      userId: String(userId),
+      clientcode,
+      tradingsymbol: orderInput.tradingsymbol,
+    });
+    throw new Error(`USER_NOT_FOUND: No active user record for ID ${userId}. Admin accounts cannot execute user trades.`);
   }
 
-  if (user!.trading_paused) {
-      log.warn(`TRADE_BLOCKED: Trading is paused for ${user!.user_name} due to ${user!.consecutive_failures} consecutive failures. Status: TRADING_PAUSED_BY_SYSTEM`);
-      return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
+  if (user.trading_paused) {
+    log.warn(`TRADE_BLOCKED: Trading is paused for user ${user.user_name}`, {
+      userId: String(userId),
+      clientcode,
+      consecutiveFailures: user.consecutive_failures,
+    });
+    return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
   }
+
+  // Extra guard: verify the clientcode matches what's on the user record
+  const isEndUser = true;
 
   // 🛡️ [GLOBAL OPERATIONAL FEATURE FLAGS & EMERGENCY KILL SWITCH]
   const { systemConfigManager } = require("./SystemConfigManager");

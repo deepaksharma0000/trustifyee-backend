@@ -37,8 +37,15 @@ export class OutboxService {
                     // 🛡️ 3. PUSH TO QUEUE
                     const broker = outbox.payload?.orderData?.broker;
                     const queue = getTradeQueueForBroker(broker);
+                    // CRITICAL FIX: Include attempt count in jobId to prevent BullMQ silent
+                    // deduplication — if same jobId exists (even in failed state), queue.add() is a no-op.
+                    const uniqueJobId = `outbox-${outbox._id.toString()}-a${outbox.attempts}`;
                     await queue.add(`trade-${outbox.correlationId}`, outbox.payload, {
-                        jobId: `outbox-${outbox._id.toString()}`
+                        jobId: uniqueJobId,
+                        attempts: 3,
+                        backoff: { type: "exponential", delay: 2000 },
+                        removeOnComplete: true,
+                        removeOnFail: false,
                     });
 
                     // 🛡️ 4. MARK AS PROCESSED

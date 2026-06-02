@@ -9,6 +9,12 @@ import { decrypt } from "../utils/encryption";
 import { v4 as uuidv4 } from "uuid";
 import { config } from "../config";
 import { apiKeyFingerprint, resolveRouteBinding } from "../utils/apiKeyRouteBinding";
+import { buildIpWhitelistActionPlan } from "../utils/brokerHealthDiagnostics";
+
+// Log the IP whitelist action plan once at startup so operators have immediate visibility
+// into whether the Angel One portal configuration is correct.
+log.info("[SignalBroadcastService] IP whitelist status:\n" + buildIpWhitelistActionPlan());
+
 
 const BATCH_SIZE = 50;
 const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX"]);

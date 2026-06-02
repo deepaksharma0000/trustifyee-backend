@@ -20,6 +20,7 @@ export type SessionRecoveryResult = {
   feedToken?: string;
   reason?: string;
   errorCode?: string;
+  isPermanentFailure?: boolean; // FIX: distinguish permanent vs transient errors
 };
 
 const inFlightRecoveries = new Map<string, Promise<SessionRecoveryResult>>();
@@ -28,6 +29,46 @@ const RECOVERY_COOLDOWN_MS = 60_000;
 
 const toSessionKey = (sessionDoc: any) =>
   String(sessionDoc?._id || `${sessionDoc?.userId || "UNKNOWN"}:${sessionDoc?.clientcode || "UNKNOWN"}`);
+
+/**
+ * FIX 6: Classifies Angel One error codes into PERMANENT vs TRANSIENT.
+ *
+ * PERMANENT failures warrant clearing broker_connected:
+ *   - AB1008: Invalid MPIN / max login attempts exceeded
+ *   - AG8004: Invalid API key
+ *   - Credential validation failures (wrong password, account locked)
+ *
+ * TRANSIENT failures do NOT warrant clearing broker_connected:
+ *   - Network timeouts
+ *   - Angel One server 5xx errors
+ *   - Rate limiting / temporary service unavailable
+ *   - AB1034: Session already active (not a real failure)
+ */
+function classifyErrorPermanence(reason: string, errorCode?: string): "PERMANENT" | "TRANSIENT" {
+  const code = String(errorCode || "").toUpperCase().trim();
+  const msg = String(reason || "").toLowerCase();
+
+  // Permanent: account-level issues that won't self-heal
+  const permanentCodes = ["AB1008", "AG8004", "AB1010", "AB1011", "AB1012"];
+  const permanentMessages = [
+    "invalid mpin",
+    "invalid password",
+    "maximum attempts",
+    "account locked",
+    "invalid api key",
+    "invalid credentials",
+    "account suspended",
+    "user not found",
+    "relogin_missing_required_credentials",
+    "profile_not_found_for_relogin",
+    "missing_user_id_for_relogin",
+  ];
+
+  if (permanentCodes.includes(code)) return "PERMANENT";
+  if (permanentMessages.some((m) => msg.includes(m))) return "PERMANENT";
+
+  return "TRANSIENT";
+}
 
 function resolveAdapterNetworkOptions(profile?: any) {
   const dedicatedIpEnabled = Boolean(profile?.dedicated_ip_enabled === true);
@@ -174,12 +215,12 @@ async function attemptRefresh(sessionDoc: any, context: string): Promise<Session
 async function attemptFreshLogin(sessionDoc: any, context: string): Promise<SessionRecoveryResult> {
   const userId = String(sessionDoc?.userId || "");
   if (!userId) {
-    return { ok: false, reason: "MISSING_USER_ID_FOR_RELOGIN" };
+    return { ok: false, reason: "MISSING_USER_ID_FOR_RELOGIN", isPermanentFailure: true };
   }
 
   const loaded = await getProfileWithSecrets(userId);
   if (!loaded?.profile) {
-    return { ok: false, reason: "PROFILE_NOT_FOUND_FOR_RELOGIN" };
+    return { ok: false, reason: "PROFILE_NOT_FOUND_FOR_RELOGIN", isPermanentFailure: true };
   }
 
   const profile: any = loaded.profile;
@@ -197,6 +238,7 @@ async function attemptFreshLogin(sessionDoc: any, context: string): Promise<Sess
   const apiKey = resolved.apiKey;
 
   if (!clientCode || !password || !totpSecret || !apiKey) {
+    // PERMANENT: Missing credentials — must reconnect from UI
     if (loaded.type === "user") {
       await User.updateOne(
         { _id: userId },
@@ -212,35 +254,97 @@ async function attemptFreshLogin(sessionDoc: any, context: string): Promise<Sess
     return {
       ok: false,
       reason: "RELOGIN_MISSING_REQUIRED_CREDENTIALS",
+      isPermanentFailure: true,
     };
   }
 
-  const adapter = getOrCreateUserAngelAdapter(userId, apiKey, resolveAdapterNetworkOptions(profile));
-  const loginResponse = await adapter.generateSession({
-    clientcode: clientCode,
-    password,
-    totp: "",
-    totp_secret: totpSecret,
-  });
+  let loginResponse: any;
+  try {
+    const adapter = getOrCreateUserAngelAdapter(userId, apiKey, resolveAdapterNetworkOptions(profile));
+    loginResponse = await adapter.generateSession({
+      clientcode: clientCode,
+      password,
+      totp: "",
+      totp_secret: totpSecret,
+    });
+  } catch (loginErr: any) {
+    const errorMsg = String(loginErr?.message || loginErr?.response?.data?.message || "");
+    const errorCode = String(loginErr?.response?.data?.errorcode || "").toUpperCase();
+    const permanence = classifyErrorPermanence(errorMsg, errorCode);
 
-  const parsed = extractTokenPayload(loginResponse);
-  if (!parsed.ok || !parsed.jwtToken) {
-    if (loaded.type === "user") {
+    log.warn("[SESSION_RECOVERY] Login HTTP call failed", {
+      context,
+      userId,
+      clientcode: sessionDoc.clientcode,
+      errorCode,
+      errorMsg,
+      permanence,
+    });
+
+    // CRITICAL FIX: Only clear broker_connected on PERMANENT failures.
+    // Network timeouts, 5xx errors, rate limits are TRANSIENT — clearing broker_connected
+    // for transient errors permanently blocks users from receiving signals until manual reconnect.
+    if (permanence === "PERMANENT" && loaded.type === "user") {
+      log.error("[SESSION_RECOVERY] Permanent credential failure — clearing broker_connected", {
+        userId,
+        clientcode: sessionDoc.clientcode,
+        errorCode,
+      });
       await User.updateOne(
         { _id: userId },
         { $set: { broker_connected: false } }
       );
     } else {
+      log.warn("[SESSION_RECOVERY] Transient login failure — preserving broker_connected state", {
+        userId,
+        clientcode: sessionDoc.clientcode,
+        errorCode,
+        note: "User will be retried on next scheduler tick",
+      });
+    }
+
+    return {
+      ok: false,
+      reason: errorMsg || "RELOGIN_HTTP_FAILED",
+      errorCode,
+      isPermanentFailure: permanence === "PERMANENT",
+    };
+  }
+
+  const parsed = extractTokenPayload(loginResponse);
+  if (!parsed.ok || !parsed.jwtToken) {
+    const permanence = classifyErrorPermanence(parsed.message, parsed.errorCode);
+
+    // CRITICAL FIX: Same — only clear broker_connected for permanent broker rejections
+    if (permanence === "PERMANENT" && loaded.type === "user") {
+      log.error("[SESSION_RECOVERY] Permanent broker rejection on login — clearing broker_connected", {
+        userId,
+        clientcode: sessionDoc.clientcode,
+        errorCode: parsed.errorCode,
+        message: parsed.message,
+      });
+      await User.updateOne(
+        { _id: userId },
+        { $set: { broker_connected: false } }
+      );
+    } else if (permanence === "PERMANENT" && loaded.type === "admin") {
       await Admin.updateOne(
         { _id: userId },
         { $set: { broker_connected: false } }
       );
+    } else {
+      log.warn("[SESSION_RECOVERY] Transient broker login rejection — preserving broker_connected", {
+        userId,
+        clientcode: sessionDoc.clientcode,
+        errorCode: parsed.errorCode,
+      });
     }
 
     return {
       ok: false,
       reason: parsed.message || "RELOGIN_FAILED",
       errorCode: parsed.errorCode,
+      isPermanentFailure: permanence === "PERMANENT",
     };
   }
 

@@ -1,6 +1,7 @@
 // src/utils/tradeQueue.ts
 import { Queue } from "bullmq";
 import { redisBullConnection } from "./redis";
+import log from "./logger";
 
 /**
  * STRICT JOB SCHEMA
@@ -119,7 +120,5 @@ export async function shutdownTradeQueues() {
   log.info("[TradeQueue] All queues closed cleanly.");
 }
 
-// Simple helper logger import just in case
-import log from "./logger";
 
 export default tradeQueue;
