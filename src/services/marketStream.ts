@@ -25,8 +25,19 @@ export const quoteCache = new Map<
 >();
 
 export function startMarketStream(server: any) {
-  const wss = new WebSocketServer({ server, path: "/ws/market" });
-  log.info("Event-Driven Market stream WS running on /ws/market");
+  const wss = new WebSocketServer({ noServer: true });
+  log.info("Event-Driven Market stream WS running (manual upgrade)");
+
+  server.on("upgrade", (req: any, socket: any, head: any) => {
+    const path = req.url ? req.url.split("?")[0] : "/";
+    if (path !== "/ws/market") {
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  });
 
   wss.on("connection", (ws: WebSocket) => {
     let subRedis: Redis | null = null;
