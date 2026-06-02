@@ -63,9 +63,15 @@ function getBrokerErrorPayload(errorOrResponse: any) {
 export function isAngelInvalidToken(errorOrResponse: any): boolean {
   const parsed = parseAngelResponse(getBrokerErrorPayload(errorOrResponse));
   const msg = String(parsed.brokerMessage || parsed.rejectionReason || "").toLowerCase();
+  const code = parsed.errorCode.toUpperCase();
   return (
-    parsed.errorCode.toUpperCase() === "AG8001" ||
+    code === "AG8001" ||
+    code === "AB1010" ||
     msg.includes("invalid token") ||
+    msg.includes("invalid session") ||
+    msg.includes("session expired") ||
+    msg.includes("token expired") ||
+    msg.includes("expired") ||
     isAngelApiKeyError(errorOrResponse)
   );
 }
