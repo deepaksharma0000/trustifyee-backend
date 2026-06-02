@@ -348,7 +348,7 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
   if (orderInput.isDynamicQty && orderInput.riskPercent) {
       // We need LTP for calculation
       try {
-          const tokens = await AngelTokensModel.findOne({ userId, clientcode });
+          const tokens = await AngelTokensModel.findOne({ userId });
           if (!tokens?.apiKey) throw new Error("API Key missing in tokens");
           
           const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_ltp_val`);
@@ -620,7 +620,7 @@ export async function placeOrderForClient(
       }
 
       // 2. Fetch tokens and resolve API Key
-      const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
+      const angelTokens = await AngelTokensModel.findOne({ userId });
       if (!angelTokens?.jwtToken) throw new Error("No Angel session");
 
 
@@ -1054,7 +1054,7 @@ export async function placeOrderForClient(
  */
 async function attemptTokenRefresh(userId: string, clientcode: string): Promise<boolean> {
     try {
-        const angelTokens = await AngelTokensModel.findOne({ userId, clientcode });
+        const angelTokens = await AngelTokensModel.findOne({ userId });
         if (!angelTokens) return false;
 
         const recovered = await recoverSessionByRefreshOrLogin(angelTokens, "order_service");
@@ -1076,7 +1076,7 @@ export async function getOrderStatusForClient(
   outgoingIp?: string,
   symbolMatch?: string // Optional: Find by symbol if orderId is synthetic
 ) {
-  const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+  const angelTokens = await AngelTokensModel.findOne({ userId }).lean() as any;
   if (angelTokens?.jwtToken) {
     const orderBookResp = await executeWithSessionRecovery(
       {
@@ -1188,7 +1188,7 @@ function normalizeAngelOrderBookRow(row: any) {
 }
 
 export async function getAngelOrderBookForClient(userId: string, clientcode: string) {
-  const angelTokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+  const angelTokens = await AngelTokensModel.findOne({ userId }).lean() as any;
   if (!angelTokens?.jwtToken) {
     throw new Error("No active Angel session. Please reconnect broker from profile settings.");
   }

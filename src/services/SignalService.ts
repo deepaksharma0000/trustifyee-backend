@@ -1,10 +1,10 @@
 // src/services/SignalService.ts
-// FIX #1 (Signal Push) + FIX #7 (Duplicate prevention)
+// FIX #1 (Signal Push) + FIX #7 (Duplicate prevention) + FIX #9 (Pending filter)
 import { Signal } from "../models/Signal";
 import { SignalExecutionResult } from "../models/SignalExecutionResult";
 import User from "../models/User";
 import log from "../utils/logger";
-import { broadcastToAllUsers, broadcastToUser } from "./UserSocketService";
+import { broadcastToAllUsers } from "./UserSocketService";
 
 export class SignalService {
   /**
@@ -27,7 +27,7 @@ export class SignalService {
     strategy?: string;
     adminOrderId?: string;
     signalType: "ENTRY" | "EXIT";
-    executionMode?: "SERVER" | "CLIENT"; // [NEW] Distinguish execution source
+    executionMode?: "SERVER" | "CLIENT";
   }) {
     try {
       // ── FIX #7: Dedup check — prevent creating identical signal twice in 60s ──
@@ -73,7 +73,7 @@ export class SignalService {
           quantity: signal.quantity,
           strategy: signal.strategy,
           signalType: signal.signalType,
-          executionMode: signal.executionMode || 'CLIENT', // Default to client if not specified
+          executionMode: signal.executionMode || "CLIENT",
           createdAt: (signal as any).createdAt,
         },
       });
@@ -91,22 +91,47 @@ export class SignalService {
   }
 
   /**
-   * Get active signals for a specific user.
+   * Get active CLIENT-mode signals for a specific user.
    * Used as HTTP fallback when WebSocket is not connected (FIX #9).
+   *
+   * CRITICAL FIX: Excludes:
+   * 1. Signals already executed (SUCCESS), already queued (QUEUED), or pending (PENDING)
+   * 2. Signals already handled SERVER_QUEUE — the BullMQ worker executes these,
+   *    NOT the browser. Returning them creates infinite duplicate-suppression loops.
+   * 3. Signals older than 30 minutes (expired market windows)
    */
   static async getActiveSignalsForUser(userId: string) {
     const user = await User.findById(userId).lean();
     if (!user) return [];
 
-    // Return only ACTIVE signals not yet executed by this user
-    const executedSignalIds = await SignalExecutionResult.distinct("signalId", {
+    // Exclude signals already in any execution state for this user
+    const handledSignalIds = await SignalExecutionResult.distinct("signalId", {
       userId,
-      status: "SUCCESS",
+      status: { $in: ["SUCCESS", "QUEUED", "PENDING"] },
     });
+
+    // Also exclude any signal that has a SERVER_QUEUE record for this user —
+    // these are being processed by the backend BullMQ worker, not the browser
+    const serverQueuedSignalIds = await SignalExecutionResult.distinct("signalId", {
+      userId,
+      source: "SERVER_QUEUE",
+    });
+
+    const allExcludedIds = [
+      ...new Set([
+        ...handledSignalIds.map(String),
+        ...serverQueuedSignalIds.map(String),
+      ]),
+    ];
+
+    // Only fetch CLIENT-mode signals within the last 30 minutes
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60_000);
 
     const signals = await Signal.find({
       status: "ACTIVE",
-      _id: { $nin: executedSignalIds },
+      executionMode: { $in: ["CLIENT", null] },
+      _id: { $nin: allExcludedIds },
+      createdAt: { $gte: thirtyMinAgo },
     })
       .sort({ createdAt: -1 })
       .limit(10)

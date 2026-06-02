@@ -94,7 +94,7 @@ export class ReconciliationService {
     this.metrics.sweepsCompleted += 1;
 
     try {
-      const tokens = await AngelTokensModel.findOne({ userId, clientcode: clientCode }).lean();
+      const tokens = await AngelTokensModel.findOne({ userId }).lean();
       if (!tokens || !tokens.jwtToken) {
         log.warn(`[Reconciliation] Session credentials missing for ${clientCode}. Skipping audit.`);
         return;

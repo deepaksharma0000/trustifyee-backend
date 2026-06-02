@@ -13,8 +13,6 @@ export interface MarginInfo {
 }
 
 export class RiskManagementService {
-    // Removed static adapter to enforce per-user keys
-    // private static adapter = new AngelOneAdapter();
     private static MAX_MARGIN_USAGE = 0.7; // Max usage limit: 70%
 
     /**
@@ -22,7 +20,7 @@ export class RiskManagementService {
      */
     static async getAvailableMargin(userId: string, clientcode: string): Promise<{ status: boolean; data?: MarginInfo; message?: string }> {
         try {
-            const tokens = await AngelTokensModel.findOne({ userId, clientcode });
+            const tokens = await AngelTokensModel.findOne({ userId }).lean() as any;
             if (!tokens?.jwtToken) {
                 return { status: false, message: "No session for RMS check" };
             }

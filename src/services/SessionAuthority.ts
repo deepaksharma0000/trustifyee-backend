@@ -93,7 +93,7 @@ export class SessionAuthority {
     try {
       this.updateState(key, userId, clientCode, "SESSION_ROTATING");
 
-      const tokens = await AngelTokensModel.findOne({ userId, clientcode: clientCode });
+      const tokens = await AngelTokensModel.findOne({ userId });
       if (!tokens || !tokens.refreshToken) {
         throw new Error("Missing active refreshToken. Cannot rotate session.");
       }

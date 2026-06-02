@@ -6,9 +6,6 @@ const profileCache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export class ProfileValidationService {
-    // Removed global static adapter to prevent startup crash
-    // private static adapter = new AngelOneAdapter();
-
     static async validateUserSession(userId: string, clientcode: string) {
         const cacheKey = `${userId}-${clientcode}`;
         const cached = profileCache.get(cacheKey);
@@ -19,7 +16,7 @@ export class ProfileValidationService {
         }
 
         try {
-            const tokens = await AngelTokensModel.findOne({ userId, clientcode }).lean() as any;
+            const tokens = await AngelTokensModel.findOne({ userId }).lean() as any;
             if (!tokens?.jwtToken) {
                 return { status: false, message: "No active broker session found" };
             }
@@ -34,10 +31,6 @@ export class ProfileValidationService {
             );
 
             if (profile && profile.status === 200) {
-                // Check for exchange permission
-                // [DEPRECATED] Internal segment check removed. Letting broker handle segment validation directly.
-                // profileCache.set(cacheKey, { data: profile.data, timestamp: Date.now() });
-
                 // Cache it
                 profileCache.set(cacheKey, { data: profile.data, timestamp: Date.now() });
 
