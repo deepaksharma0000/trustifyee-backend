@@ -401,6 +401,8 @@ export const initTradeExecutionWorker = () => {
         await BrokerResponse.create({
           userId,
           clientcode: clientCode || "UNKNOWN",
+          clientOrderId,
+          correlationId,
           tradingsymbol: orderData?.tradingsymbol || "UNKNOWN",
           orderid: orderId || "REJECTED",
           action: "PLACE_ORDER",
@@ -415,7 +417,8 @@ export const initTradeExecutionWorker = () => {
           brokerError: isRealSuccess
             ? undefined
             : {
-                ...(responseData || resp || {}),
+                requestPayload: orderData,
+                responsePayload: responseData || resp || {},
                 usedIp: networkMeta.usedIpLabel,
                 networkRoute: networkMeta.routeType,
                 agentUrl: networkMeta.agentUrl,
@@ -524,6 +527,8 @@ export const initTradeExecutionWorker = () => {
           await BrokerResponse.create({
             userId,
             clientcode: clientCode || "UNKNOWN",
+            clientOrderId,
+            correlationId,
             tradingsymbol: orderData?.tradingsymbol || "UNKNOWN",
             orderid: "REJECTED",
             action: "PLACE_ORDER",
@@ -532,12 +537,14 @@ export const initTradeExecutionWorker = () => {
             usedIp: networkMeta.usedIp,
             networkRoute: networkMeta.routeType,
             brokerError: {
-              error: message,
-              stack: error?.stack,
-              usedIp: networkMeta.usedIpLabel,
-              networkRoute: networkMeta.routeType,
-              agentUrl: networkMeta.agentUrl,
-            },
+                error: message,
+                stack: error?.stack,
+                requestPayload: orderData,
+                responsePayload: error?.response?.data || error?.response || null,
+                usedIp: networkMeta.usedIpLabel,
+                networkRoute: networkMeta.routeType,
+                agentUrl: networkMeta.agentUrl,
+              },
           });
         } catch (brokerLogErr) {
           logger.error("Failed to log broker rejection payload", brokerLogErr);

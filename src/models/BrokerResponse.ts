@@ -3,6 +3,8 @@ import { Schema, model, Document } from "mongoose";
 export interface IBrokerResponse extends Document {
     userId: string;
     clientcode: string;
+    clientOrderId?: string;
+    correlationId?: string;
     orderid?: string;
     tradingsymbol?: string;
     action: string; // e.g. "PLACE_ORDER", "CLOSE_POSITION", "SQUARE_OFF"
@@ -18,6 +20,8 @@ const BrokerResponseSchema = new Schema<IBrokerResponse>(
     {
         userId: { type: String, required: true, index: true },
         clientcode: { type: String, required: true, index: true },
+        clientOrderId: { type: String, index: true },
+        correlationId: { type: String, index: true },
         orderid: { type: String },
         tradingsymbol: { type: String },
         action: { type: String, required: true },

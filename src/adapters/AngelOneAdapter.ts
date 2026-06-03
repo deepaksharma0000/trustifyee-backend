@@ -323,11 +323,18 @@ export class AngelOneAdapter {
       };
 
       try {
-        return await axios.post(`${this.agentUrl}/place-order`, agentPayload, { timeout: 15000 });
+        const response = await axios.post(`${this.agentUrl}/place-order`, agentPayload, { timeout: 15000 });
+        log.info("FULL_BROKER_RESPONSE", {
+          context: "angel_place_order_agent",
+          agentUrl: this.agentUrl,
+          response: JSON.stringify(response?.data ?? null, null, 2),
+        });
+        return response;
       } catch (err: any) {
         log.error("[AGENT_ERROR] Failed order routing to agent", {
           agentUrl: this.agentUrl,
           message: err?.message,
+          response: err?.response?.data,
         });
         throw err;
       }
@@ -350,7 +357,7 @@ export class AngelOneAdapter {
       }
 
       try {
-        return await axios.post(
+        const response = await axios.post(
           `${this.forcedBaseUrl}/rest/secure/angelbroking/order/v1/placeOrder`,
           payload,
           {
@@ -359,6 +366,12 @@ export class AngelOneAdapter {
             timeout: 60000,
           }
         );
+        log.info("FULL_BROKER_RESPONSE", {
+          context: "angel_place_order_local_bind",
+          outgoingIp: this.outgoingIp || "",
+          response: JSON.stringify(response?.data ?? null, null, 2),
+        });
+        return response;
       } catch (err: any) {
         const code = String(err?.code || "");
         if (code !== "EADDRNOTAVAIL" && code !== "EINVAL") {

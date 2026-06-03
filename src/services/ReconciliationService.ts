@@ -1,11 +1,11 @@
 // src/services/ReconciliationService.ts
 import { positionRegistry, ActivePosition } from "./PositionRegistry";
 import { eventSourcedOMS } from "./EventSourcedOMS";
-import AngelTokensModel from "../models/AngelTokens";
 import log from "../utils/logger";
 import { parseAngelRows } from "../utils/angelResponseParser";
 import { executeWithSessionRecovery } from "./AngelSessionManager";
 import { isAngelApiKeyError } from "./BrokerSessionValidator";
+import { findAngelTokensForUserClient } from "./AngelSessionContextService";
 
 export type ReconciliationState = "RECON_PENDING" | "RECON_ESCALATED" | "RECON_RECOVERED" | "RECON_FAILED" | "RECON_CONFIRMED";
 
@@ -94,9 +94,9 @@ export class ReconciliationService {
     this.metrics.sweepsCompleted += 1;
 
     try {
-      const tokens = await AngelTokensModel.findOne({ userId }).lean();
-      if (!tokens || !tokens.jwtToken) {
-        log.warn(`[Reconciliation] Session credentials missing for ${clientCode}. Skipping audit.`);
+      const tokens = await findAngelTokensForUserClient(userId, clientCode);
+      if (!tokens?.jwtToken) {
+        log.warn(`[Reconciliation] Session credentials missing for ${userId}/${clientCode}. Skipping audit.`);
         return;
       }
 

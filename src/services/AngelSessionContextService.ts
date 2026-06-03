@@ -19,6 +19,8 @@ const SESSION_CACHE_TTL_MS = 3_000; // Reduced from 10s to minimize stale-JWT wi
 const EXECUTION_CACHE_TTL_MS = 0;   // Execution path: NEVER cache — always fetch fresh from DB
 const sessionCache = new Map<string, CachedSession>();
 const GLOBAL_FALLBACK_ENABLED = process.env.ALLOW_GLOBAL_SESSION_FALLBACK === "true";
+const USERID_ONLY_FALLBACK_ENABLED = process.env.ALLOW_USERID_ONLY_SESSION_LOOKUP === "true";
+const CLIENTCODE_ONLY_FALLBACK_ENABLED = process.env.ALLOW_CLIENTCODE_ONLY_SESSION_LOOKUP === "true";
 const fallbackWarnedPurposes = new Set<string>();
 
 const normalize = (value?: string) => (value || "").toString().trim();
@@ -84,6 +86,31 @@ export function primeAngelSessionCache(sessionDoc: any) {
  * ALWAYS fetches fresh from MongoDB — bypasses in-memory cache to guarantee
  * the latest JWT is used, preventing AG8001 after token refresh.
  */
+/**
+ * Canonical Mongo lookup for a user's broker session — always scoped by userId + clientcode.
+ * Use this for pre-checks (margin, profile, RMS) so JWT/API key match the execution path.
+ */
+export async function findAngelTokensForUserClient(
+  userId: string,
+  clientcode: string,
+  requireJwt = true
+): Promise<any | null> {
+  const uid = normalize(userId);
+  const cc = normalize(clientcode);
+
+  if (!uid || !cc) {
+    log.warn("[SESSION_CONTEXT] findAngelTokensForUserClient rejected: missing identity", {
+      userId: uid || undefined,
+      clientcode: cc || undefined,
+    });
+    return null;
+  }
+
+  return AngelTokensModel.findOne(withJwtFilter({ userId: uid, clientcode: cc }, requireJwt))
+    .sort({ updatedAt: -1 })
+    .lean();
+}
+
 export async function resolveAngelSessionForExecution(input: {
   userId: string;
   clientcode: string;
@@ -156,22 +183,38 @@ export async function resolveAngelSessionContext(input: SessionLookupInput): Pro
     }
   }
 
-  if (!session && userId) {
+  const isExecutionPurpose = /order|execution|trade|place|risk|margin|profile|reconciliation/i.test(
+    String(lookup.purpose || "")
+  );
+
+  // Never resolve another clientCode's JWT when the caller supplied an explicit clientcode.
+  const allowUserIdOnly =
+    USERID_ONLY_FALLBACK_ENABLED && !clientcode && !isExecutionPurpose && !strictIdentity;
+
+  if (!session && userId && allowUserIdOnly) {
     session = await AngelTokensModel.findOne(withJwtFilter({ userId }, requireJwt))
       .sort({ updatedAt: -1 })
       .lean();
-    if (strictIdentity && !session) {
-      return null;
-    }
   }
 
-  const isExecutionPurpose = /order|execution|trade|place/i.test(String(lookup.purpose || ""));
-  if (!session && clientcode && !isExecutionPurpose) {
+  const allowClientcodeOnly =
+    CLIENTCODE_ONLY_FALLBACK_ENABLED &&
+    !session &&
+    clientcode &&
+    !userId &&
+    !isExecutionPurpose &&
+    !strictIdentity;
+
+  if (!session && allowClientcodeOnly) {
     session = await AngelTokensModel.findOne(withJwtFilter({ clientcode }, requireJwt))
       .sort({ updatedAt: -1 })
       .lean();
-    if (strictIdentity && !session) {
-      return null;
+    if (session) {
+      log.warn("[SESSION_CONTEXT] Resolved session via clientcode-only fallback (non-execution)", {
+        purpose: lookup.purpose,
+        resolvedUserId: String(session.userId || ""),
+        clientcode,
+      });
     }
   }
 

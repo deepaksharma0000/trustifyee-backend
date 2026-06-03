@@ -13,20 +13,74 @@
 module.exports = {
   apps: [
     {
-      name: "trustifyee-backend",
+      name: "trustifyee-api",
       script: "dist/index.js",
       cwd: "./",
-
-      // Use 'fork' mode (NOT cluster) — BullMQ workers must run in a single instance
-      // to prevent multiple workers consuming the same queue job.
       instances: 1,
       exec_mode: "fork",
-
-      // Environment
       node_args: "--max-old-space-size=1024",
       env_production: {
         NODE_ENV: "production",
         PORT: 5000,
+        PROCESS_ROLE: "api",
+      },
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "900M",
+      restart_delay: 5000,
+      exp_backoff_restart_delay: 100,
+      max_restarts: 10,
+      kill_timeout: 15000,
+      listen_timeout: 10000,
+      log_date_format: "YYYY-MM-DD HH:mm:ss.SSS Z",
+      out_file: "./logs/pm2-api-out.log",
+      error_file: "./logs/pm2-api-error.log",
+      merge_logs: true,
+      cron_restart: "30 3 * * *",
+      source_map_support: true,
+      env: {
+        NODE_ENV: "production",
+        PROCESS_ROLE: "api",
+      },
+    },
+    {
+      name: "trustifyee-workers",
+      script: "dist/index.js",
+      cwd: "./",
+      instances: 1,
+      exec_mode: "fork",
+      node_args: "--max-old-space-size=768",
+      env_production: {
+        NODE_ENV: "production",
+        PROCESS_ROLE: "workers",
+      },
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "700M",
+      restart_delay: 5000,
+      exp_backoff_restart_delay: 100,
+      max_restarts: 10,
+      kill_timeout: 15000,
+      log_date_format: "YYYY-MM-DD HH:mm:ss.SSS Z",
+      out_file: "./logs/pm2-workers-out.log",
+      error_file: "./logs/pm2-workers-error.log",
+      merge_logs: true,
+      env: {
+        NODE_ENV: "production",
+        PROCESS_ROLE: "workers",
+      },
+    },
+    {
+      name: "trustifyee-backend",
+      script: "dist/index.js",
+      cwd: "./",
+      instances: 1,
+      exec_mode: "fork",
+      node_args: "--max-old-space-size=1024",
+      env_production: {
+        NODE_ENV: "production",
+        PORT: 5000,
+        PROCESS_ROLE: "all",
       },
 
       // Restart Policy
@@ -71,6 +125,7 @@ module.exports = {
       // Environment variables passed to the process
       env: {
         NODE_ENV: "production",
+        PROCESS_ROLE: "all",
       },
     },
   ],

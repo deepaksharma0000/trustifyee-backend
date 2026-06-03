@@ -382,9 +382,14 @@ export class SignalBroadcastService {
       user: any,
       clientOrderId: string,
       correlationId: string,
-      reason: string
+      reason: string,
+      clientcodeHint?: string
     ) => {
       const networkMeta = resolveUserNetworkMeta(user);
+      const auditClientCode =
+        clientcodeHint ||
+        (user?.client_key ? decrypt(user.client_key) : "") ||
+        "UNKNOWN";
 
       await SignalExecutionResult.findOneAndUpdate(
         { signalId, userId: user?._id },
@@ -410,21 +415,25 @@ export class SignalBroadcastService {
 
       try {
         const doc = {
-          userId: String(user?._id || ""),
-          clientcode: "UNKNOWN",
-          tradingsymbol: signal?.tradingsymbol || "UNKNOWN",
-          orderid: "SKIPPED",
-          action: "SKIP_EXECUTION",
-          status: "REJECTED",
-          message: reason,
-          usedIp: networkMeta.usedIp,
-          networkRoute: networkMeta.networkRoute,
-          brokerError: {
-            reason,
-            signalId: String(signalId),
-            usedIp: networkMeta.usedIpLabel,
+            userId: String(user?._id || ""),
+            clientcode: auditClientCode,
+            clientOrderId,
+            correlationId,
+            tradingsymbol: signal?.tradingsymbol || "UNKNOWN",
+            orderid: "SKIPPED",
+            action: "SKIP_EXECUTION",
+            status: "REJECTED",
+            message: reason,
+            usedIp: networkMeta.usedIp,
             networkRoute: networkMeta.networkRoute,
-          },
+            brokerError: {
+                reason,
+                signalId: String(signalId),
+                clientOrderId,
+                correlationId,
+                usedIp: networkMeta.usedIpLabel,
+                networkRoute: networkMeta.networkRoute,
+            },
         };
 
         if (session) {

@@ -599,7 +599,13 @@ export class TickEngineService {
       throw new Error("System DATA_CLIENT_CODE is not configured");
     }
 
-    let tokenDoc: any = await AngelTokensModel.findOne({ clientcode: clientCode }).lean();
+    // Prefer system DATA_CLIENT_CODE row keyed by clientcode; never use another user's JWT.
+    let tokenDoc: any = await AngelTokensModel.findOne({
+      clientcode: clientCode,
+      jwtToken: { $exists: true, $ne: "" },
+    })
+      .sort({ updatedAt: -1 })
+      .lean();
     const isEnvConfigured = Boolean(process.env.DATA_PASSWORD && process.env.DATA_TOTP_SECRET);
 
     if (!tokenDoc) {

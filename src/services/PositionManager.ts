@@ -2,8 +2,8 @@ import { Position } from "../models/Position.model";
 import { getInstrumentLtp } from "./MarketDataService";
 import log from "../utils/logger";
 import InstrumentModel from "../models/Instrument";
-import AngelTokensModel from "../models/AngelTokens";
 import User from "../models/User";
+import { findAngelTokensForUserClient } from "./AngelSessionContextService";
 
 // Removed global adapter to prevent startup crash
 // const adapter = new AngelOneAdapter();
@@ -116,11 +116,14 @@ async function checkAndManagePositions() {
                             log.warn(`[POSITION_MANAGER] Skipping auto-exit broker call due to missing userId for ${p.clientcode}`);
                             continue;
                         }
-                        const tokens = await AngelTokensModel.findOne({ userId: p.userId }).lean() as any;
+                        const clientcode = String((p as any).clientcode || "").trim();
+                        const tokens = clientcode
+                          ? await findAngelTokensForUserClient(String(p.userId), clientcode)
+                          : null;
                         if (tokens?.jwtToken) {
                             await executeExit(p, tokens.jwtToken, exitReason);
                         } else {
-                            log.error(`Cannot auto-exit ${p.tradingsymbol}: No token for ${p.clientcode}`);
+                            log.error(`Cannot auto-exit ${p.tradingsymbol}: No token for ${clientcode || p.userId}`);
                         }
                     }
                 }

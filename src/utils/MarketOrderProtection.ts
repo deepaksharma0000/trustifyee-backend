@@ -29,7 +29,9 @@ export class MarketOrderProtection {
       duration?: string;
     },
     decJwtToken: string,
-    userApiKey: string
+    userApiKey: string,
+    userId?: string,
+    clientcode?: string
   ): Promise<ProtectedOrderResult> {
     const exchange = String(orderInput.exchange || "NFO").toUpperCase().trim();
     const tradingsymbol = String(orderInput.tradingsymbol || "").toUpperCase().trim();
@@ -55,7 +57,10 @@ export class MarketOrderProtection {
       let ltp = 0;
       try {
         const { getInstrumentLtp } = require("../services/MarketDataService");
-        ltp = await getInstrumentLtp(exchange, tradingsymbol, orderInput.symboltoken || "");
+        ltp = await getInstrumentLtp(exchange, tradingsymbol, orderInput.symboltoken || "", {
+          userId,
+          clientcode,
+        });
       } catch (err: any) {
         log.error(`[MARKET_PROTECTION] Failed to fetch live LTP for price protection validation: ${err.message}`);
         throw new Error(`MARKET_ORDER_PROTECTION_ERROR: Unable to verify live LTP for safety check on ${exchange}:${tradingsymbol}`);

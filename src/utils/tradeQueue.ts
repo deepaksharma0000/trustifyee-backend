@@ -22,7 +22,14 @@ export type TradeJob = {
     quantity: number;
     strategy: string;
     symboltoken?: string;
-    orderType: "MARKET" | "LIMIT";
+    orderType?: "MARKET" | "LIMIT";
+    ordertype?: "MARKET" | "LIMIT";
+    transactiontype?: "BUY" | "SELL";
+    producttype?: string;
+    broker?: string;
+    price?: number;
+    duration?: string;
+    triggerPrice?: number;
   };
   timestamp: number;
 };

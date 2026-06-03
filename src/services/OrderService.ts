@@ -20,7 +20,8 @@ import { logLiveExecution } from "../utils/executionAudit";
 import { MarketOrderProtection } from "../utils/MarketOrderProtection";
 import { normalizeFiniteNumber } from "../utils/price";
 import { parseAngelOrderPlacement, parseAngelRows } from "../utils/angelResponseParser";
-import { executeWithSessionRecovery } from "./AngelSessionManager";
+import { executeWithSessionRecovery, isAngelInvalidToken } from "./AngelSessionManager";
+import { findAngelTokensForUserClient } from "./AngelSessionContextService";
 import {
   assertApiKeyJwtPair,
   buildIpWhitelistDiagnostics,
@@ -323,7 +324,7 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
   let profileRes = await ProfileValidationService.validateUserSession(userId, clientcode);
   
   // 🔄 [ISSUE 1 FIX] - Handle Token Expiry during validation
-  if (!profileRes.status && (profileRes.message.toLowerCase().includes("invalid token") || profileRes.message.includes("AG8001")) && retryCount < 1) {
+  if (!profileRes.status && (isAngelInvalidToken(profileRes.message) || isAngelInvalidToken(profileRes)) && retryCount < 1) {
       log.info(`[OrderService] Token expired during validation for ${clientcode}. Attempting refresh...`);
       const refreshed = await attemptTokenRefresh(userId, clientcode);
       if (refreshed) {
@@ -348,7 +349,7 @@ async function runPreTradeValidation(userId: string, clientcode: string, orderIn
   if (orderInput.isDynamicQty && orderInput.riskPercent) {
       // We need LTP for calculation
       try {
-          const tokens = await AngelTokensModel.findOne({ userId });
+          const tokens = await findAngelTokensForUserClient(String(userId), clientcode);
           if (!tokens?.apiKey) throw new Error("API Key missing in tokens");
           
           const decJwtToken = await ensureEncrypted(tokens, 'jwtToken', `user_${userId}_ltp_val`);
@@ -402,6 +403,14 @@ export async function placeOrderForClient(
 ): Promise<any> {
   log.debug(`[OrderService] Server-side order attempt for ${clientcode}.`);
 
+  const orderTypeAlias = (orderInput as any).orderType;
+  if (!orderInput.ordertype && orderTypeAlias) {
+    orderInput.ordertype = orderTypeAlias;
+  }
+  if (!orderInput.transactiontype && orderInput.side) {
+    orderInput.transactiontype = orderInput.side;
+  }
+
   // SECURITY FIX: Only look up User collection — NEVER Admin.
   // Previously the code fell back to Admin if User was not found, which could cause
   // admin broker credentials to be used for a trade (EXECUTION_ISOLATION_VIOLATION).
@@ -428,7 +437,16 @@ export async function placeOrderForClient(
     return { status: false, message: "TRADING_PAUSED_BY_SYSTEM" };
   }
 
-  // Extra guard: verify the clientcode matches what's on the user record
+  const profileClientCode = user.client_key
+    ? decrypt(String(user.client_key)).trim().toUpperCase()
+    : "";
+  const requestedClientCode = String(clientcode || "").trim().toUpperCase();
+  if (profileClientCode && requestedClientCode && profileClientCode !== requestedClientCode) {
+    throw new Error(
+      `CLIENTCODE_MISMATCH: profile=${profileClientCode} request=${requestedClientCode}`
+    );
+  }
+
   const isEndUser = true;
 
   // 🛡️ [GLOBAL OPERATIONAL FEATURE FLAGS & EMERGENCY KILL SWITCH]
@@ -619,9 +637,11 @@ export async function placeOrderForClient(
           throw new Error(validation.message || "Validation failed");
       }
 
-      // 2. Fetch tokens and resolve API Key
-      const angelTokens = await AngelTokensModel.findOne({ userId });
-      if (!angelTokens?.jwtToken) throw new Error("No Angel session");
+      // 2. Fetch tokens scoped to this user + clientcode (never userId-only — prevents wrong JWT)
+      const angelTokens = await findAngelTokensForUserClient(String(userId), clientcode);
+      if (!angelTokens?.jwtToken) {
+        throw new Error(`No Angel session for user ${userId} / client ${clientcode}. Reconnect broker.`);
+      }
 
 
 
@@ -684,7 +704,9 @@ export async function placeOrderForClient(
       const protectionResult = await MarketOrderProtection.enforceProtection(
         orderInput,
         decJwtToken,
-        resolvedApiKey
+        resolvedApiKey,
+        String(userId),
+        clientcode
       );
 
       const correlationId = (orderInput as any).correlationId || `corr_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -830,10 +852,12 @@ export async function placeOrderForClient(
         tradingsymbol: orderInput.tradingsymbol,
         statusCode: resp?.status,
         brokerStatus: resp?.data?.status ?? resp?.data?.success,
+        orderState: resp?.data?.orderstatus ?? resp?.data?.orderStatus ?? resp?.data?.data?.orderstatus ?? resp?.data?.data?.orderStatus,
         errorCode: parsedOrder.errorCode,
         message: parsedOrder.brokerMessage,
         orderId: parsedOrder.brokerOrderId || null,
         uniqueOrderId: parsedOrder.uniqueOrderId || null,
+        rawResponse: resp?.data,
       });
 
       const brokerData = resp?.data || {};
@@ -957,7 +981,7 @@ export async function placeOrderForClient(
       }
 
       // 🔄 [AUTO-REFRESH TOKEN LOGIC]
-      const isInvalidToken = err.message.toLowerCase().includes("invalid token") || err.message.includes("AG8001");
+      const isInvalidToken = isAngelInvalidToken(err);
       const isApiKeyIpMismatch = /(api key mismatch against app found with static ip in request|unregistered ip|register your ip before retrying)/i.test(
         String(err.message || "")
       );
@@ -1054,7 +1078,7 @@ export async function placeOrderForClient(
  */
 async function attemptTokenRefresh(userId: string, clientcode: string): Promise<boolean> {
     try {
-        const angelTokens = await AngelTokensModel.findOne({ userId });
+        const angelTokens = await findAngelTokensForUserClient(String(userId), clientcode);
         if (!angelTokens) return false;
 
         const recovered = await recoverSessionByRefreshOrLogin(angelTokens, "order_service");
@@ -1076,7 +1100,7 @@ export async function getOrderStatusForClient(
   outgoingIp?: string,
   symbolMatch?: string // Optional: Find by symbol if orderId is synthetic
 ) {
-  const angelTokens = await AngelTokensModel.findOne({ userId }).lean() as any;
+  const angelTokens = await findAngelTokensForUserClient(String(userId || ""), clientcode);
   if (angelTokens?.jwtToken) {
     const orderBookResp = await executeWithSessionRecovery(
       {
@@ -1188,7 +1212,7 @@ function normalizeAngelOrderBookRow(row: any) {
 }
 
 export async function getAngelOrderBookForClient(userId: string, clientcode: string) {
-  const angelTokens = await AngelTokensModel.findOne({ userId }).lean() as any;
+  const angelTokens = await findAngelTokensForUserClient(userId, clientcode);
   if (!angelTokens?.jwtToken) {
     throw new Error("No active Angel session. Please reconnect broker from profile settings.");
   }

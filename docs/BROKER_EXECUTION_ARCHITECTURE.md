@@ -56,8 +56,37 @@ Admin strategy trades succeeded while user copies failed because execution could
 ```env
 ALLOW_GLOBAL_SESSION_FALLBACK=false
 ALLOW_GLOBAL_ANGEL_API_KEY_FALLBACK=false
+ALLOW_USERID_ONLY_SESSION_LOOKUP=false
+ALLOW_CLIENTCODE_ONLY_SESSION_LOOKUP=false
 ANGEL_PROACTIVE_REFRESH_MS=1800000
+FORCE_SHARED_VPS_ROUTE=true
+PUBLIC_IP=<your-vps-egress-ipv4>
+PROCESS_ROLE=all
 ```
+
+For scaled VPS deploy (recommended):
+
+```bash
+pm2 start ecosystem.config.js --only trustifyee-api,trustifyee-workers --env production
+```
+
+- `trustifyee-api` — HTTP, outbox drain, token refresh, WebSocket (`PROCESS_ROLE=api`)
+- `trustifyee-workers` — BullMQ trade execution only (`PROCESS_ROLE=workers`)
+
+Verify isolation after deploy:
+
+```bash
+npm run verify:broker
+```
+
+## Fixes applied (session / execution)
+
+| Issue | Fix |
+|-------|-----|
+| `AngelTokensModel.findOne({ userId })` without `clientcode` | `findAngelTokensForUserClient(userId, clientcode)` in Order, Risk, Profile, Reconciliation, PositionManager |
+| `SessionAuthority.rotateSession` used wrong refresh token | Scoped lookup + `recoverSessionByRefreshOrLogin` |
+| Loose session context fallbacks | userId-only / clientcode-only disabled unless explicit env flags |
+| Execution JWT cache staleness | `resolveAngelSessionForExecution` always reads MongoDB (no cache) |
 
 ## Scaling recommendations
 

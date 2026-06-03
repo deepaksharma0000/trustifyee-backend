@@ -85,6 +85,16 @@ router.post("/place", async (req, res, next) => {
       return res.status(404).json({ error: "User with this clientcode not found" });
     }
 
+    const profileClientCode = targetUser.client_key
+      ? decrypt(String(targetUser.client_key)).trim().toUpperCase()
+      : "";
+    const requestedClientCode = String(clientcode).trim().toUpperCase();
+    if (profileClientCode && profileClientCode !== requestedClientCode) {
+      return res.status(400).json({
+        error: `clientcode mismatch: profile has ${profileClientCode}, request sent ${requestedClientCode}`,
+      });
+    }
+
     // Capture LTP as fallback
     let broadcastLtp = 0;
     try {
@@ -115,95 +125,66 @@ router.post("/place", async (req, res, next) => {
       exchange: orderPayload.exchange,
       side: orderPayload.side as any,
       tradingsymbol: orderPayload.tradingsymbol,
+      symboltoken: orderPayload.symboltoken || symboltoken,
       price: Number(orderPayload.price) || 0,
       quantity: orderPayload.quantity,
       strategy: req.body.strategy || "AdminManual",
       signalType: req.body.signalType || "ENTRY",
-      executionMode: req.body.executionMode === "SERVER" || req.body.clientcode ? "SERVER" : "CLIENT"
+      executionMode: "SERVER",
     });
 
-    // If admin explicitly targets a client, queue execution only for that user.
-    if (req.body.clientcode) {
-      const clientOrderId = `ADMIN-${String(signal?._id).slice(-4)}-${String(targetUser._id).slice(-4)}-${Date.now().toString().slice(-4)}`;
-      const correlationId = uuidv4();
-      const broker = String(targetUser.broker || "ANGELONE").toUpperCase();
+    const { SignalExecutionQueueService } = await import("../services/SignalExecutionQueueService");
+    const clientOrderId = `ADMIN-${String(signal?._id).slice(-4)}-${String(targetUser._id).slice(-4)}-${Date.now().toString().slice(-4)}`;
+    const correlationId = uuidv4();
+    const broker = String(targetUser.broker || "ANGELONE").toUpperCase();
 
-      await SignalExecutionResult.findOneAndUpdate(
-        { signalId: signal?._id, userId: targetUser._id },
-        {
-          signalId: signal?._id,
-          userId: targetUser._id,
-          clientOrderId,
-          broker,
-          status: "PENDING",
-          correlationId,
-          source: "SERVER_QUEUE",
-          errorMessage: undefined,
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-
-      const queue = getTradeQueueForBroker(broker);
-      await queue.add(
-        `admin-exec-${clientOrderId}`,
-        {
-          userId: String(targetUser._id),
-          signalId: String(signal?._id),
-          clientOrderId,
-          correlationId,
-          clientCode: clientcode,
-          outgoingIp: Boolean((targetUser as any)?.dedicated_ip_enabled === true)
-            ? ((targetUser as any).outgoing_ip || undefined)
-            : undefined,
-          agentUrl: Boolean((targetUser as any)?.dedicated_ip_enabled === true)
-            ? ((targetUser as any).agent_url || undefined)
-            : undefined,
-          dedicatedIpEnabled: Boolean((targetUser as any)?.dedicated_ip_enabled === true),
-          orderData: {
-            exchange: signal?.exchange || orderPayload.exchange,
-            tradingsymbol: signal?.tradingsymbol || orderPayload.tradingsymbol,
-            side: signal?.side || orderPayload.side,
-            quantity: orderPayload.quantity,
-            strategy: req.body.strategy || "AdminManual",
-            symboltoken: signal?.symboltoken || symboltoken,
-            broker,
-            ordertype: orderPayload.ordertype,
-            price: orderPayload.price,
-            producttype: orderPayload.producttype,
-            duration: orderPayload.duration,
-            transactiontype: orderPayload.transactiontype,
-            triggerPrice: orderPayload.triggerPrice,
-          },
-        },
-        {
-          attempts: 3,
-          backoff: { type: "exponential", delay: 2000 },
-          jobId: `admin-signal-exec-${clientOrderId}`,
-        }
-      );
-
-      return res.json({
-        ok: true,
-        message: "Real-time server-side execution queued for selected client.",
+    await SignalExecutionResult.findOneAndUpdate(
+      { signalId: signal?._id, userId: targetUser._id },
+      {
         signalId: signal?._id,
+        userId: targetUser._id,
         clientOrderId,
-      });
-    }
+        broker,
+        status: "PENDING",
+        correlationId,
+        source: "SERVER_QUEUE",
+        errorMessage: undefined,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
 
-    // If admin requests broadcast server-mode, queue across mapped users by strategy.
-    if (req.body.executionMode === "SERVER") {
-      await SignalBroadcastService.executeBroadcast(signal as any);
-      return res.json({
-        ok: true,
-        message: "Real-time server-side strategy execution triggered.",
-        signalId: signal?._id
-      });
-    }
+    const enqueued = await SignalExecutionQueueService.enqueueUserExecution({
+      userId: String(targetUser._id),
+      clientCode: requestedClientCode || clientcode,
+      signalId: String(signal?._id),
+      broker,
+      clientOrderId,
+      correlationId,
+      outgoingIp: Boolean((targetUser as any)?.dedicated_ip_enabled === true)
+        ? ((targetUser as any).outgoing_ip || undefined)
+        : undefined,
+      agentUrl: Boolean((targetUser as any)?.dedicated_ip_enabled === true)
+        ? ((targetUser as any).agent_url || undefined)
+        : undefined,
+      dedicatedIpEnabled: Boolean((targetUser as any)?.dedicated_ip_enabled === true),
+      orderData: {
+        exchange: signal?.exchange || orderPayload.exchange,
+        tradingsymbol: signal?.tradingsymbol || orderPayload.tradingsymbol,
+        side: (signal?.side || orderPayload.side) as "BUY" | "SELL",
+        quantity: orderPayload.quantity,
+        strategy: req.body.strategy || "AdminManual",
+        symboltoken: signal?.symboltoken || symboltoken,
+        orderType: orderPayload.ordertype || "MARKET",
+        broker,
+      },
+    });
 
-    return res.json({ 
-      ok: true, 
-      message: "Signal generated and pushed to user device.", 
-      signalId: signal?._id 
+    return res.json({
+      ok: true,
+      message: "Server-side execution queued for user Angel One account.",
+      signalId: signal?._id,
+      clientOrderId: enqueued.clientOrderId,
+      correlationId: enqueued.correlationId,
     });
   } catch (err: any) {
     log.error("place order (signal) error", err.message || err);
@@ -379,6 +360,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
         exchange: orderPayload.exchange,
         side: orderPayload.side as any,
         tradingsymbol: orderPayload.tradingsymbol,
+        symboltoken: orderPayload.symboltoken,
         price: Number(orderPayload.price) || 0,
         quantity: orderPayload.quantity,
         strategy: targetStrategy,
@@ -429,6 +411,7 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
           exchange: orderPayload.exchange,
           side: orderPayload.side as any,
           tradingsymbol: orderPayload.tradingsymbol,
+          symboltoken: orderPayload.symboltoken,
           price: Number(orderPayload.price) || 0,
           quantity: orderPayload.quantity,
           strategy: targetStrategy,
@@ -501,14 +484,22 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
       exchange: orderPayload.exchange,
       side: orderPayload.side as any,
       tradingsymbol: orderPayload.tradingsymbol,
+      symboltoken: orderPayload.symboltoken,
       price: Number(orderPayload.price) || 0,
       quantity: orderPayload.quantity,
       strategy: targetStrategy,
       signalType: req.body.signalType || "ENTRY",
-      executionMode: "SERVER"
+      executionMode: "SERVER",
     });
 
     const broadcastResult = await BroadcastSvc.broadcast(signal?._id.toString());
+
+    if (broadcastResult?.queued > 0) {
+      const { OutboxService } = await import("../services/OutboxService");
+      OutboxService.processPending().catch((err: any) =>
+        log.warn("[PLACE_ALL] Immediate outbox drain failed (periodic processor will retry)", err?.message)
+      );
+    }
 
     return res.json({
       ok: true,
@@ -859,9 +850,11 @@ router.get("/trade-history/:clientcode", auth, async (req, res) => {
 router.get("/broker-responses", auth, async (req: any, res) => {
   try {
     let userId = req.id;
+    const userType = String(req.userType || "").toLowerCase();
+    const hasScopedFilter = Boolean(req.query.userId || req.query.clientcode);
 
     // Allow admin/sub-admin to view specific user's responses via userId or clientcode
-    if (req.userType === 'admin') {
+    if (userType === 'admin' && hasScopedFilter) {
       if (req.query.userId) {
         userId = req.query.userId as string;
       } else if (req.query.clientcode) {
@@ -874,8 +867,10 @@ router.get("/broker-responses", auth, async (req: any, res) => {
       }
     }
 
-    // Get last 50 responses for this user
-    const responses = await BrokerResponse.find({ userId })
+    const query = userType === "admin" && !hasScopedFilter ? {} : { userId };
+
+    // Get last 50 responses for this user or global recent responses for admin dashboards
+    const responses = await BrokerResponse.find(query)
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
@@ -890,8 +885,10 @@ router.get("/angel-order-book", auth, async (req: any, res) => {
   try {
     let userId = String(req.id || "");
     let clientcode = "";
+    const userType = String(req.userType || "").toLowerCase();
+    const hasScopedFilter = Boolean(req.query.userId || req.query.clientcode);
 
-    if (req.userType === "admin") {
+    if (userType === "admin" && hasScopedFilter) {
       if (req.query.userId) {
         userId = String(req.query.userId);
       }
@@ -912,6 +909,20 @@ router.get("/angel-order-book", auth, async (req: any, res) => {
     }
 
     if (!clientcode) {
+      if (userType === "admin" && !hasScopedFilter) {
+        const platformExecutions = await SignalExecutionResult.find({}).sort({ updatedAt: -1 }).limit(50).select(
+          "signalId status orderId clientOrderId correlationId brokerOrderStatus brokerRejectReason errorMessage executedAt updatedAt ipAddress source"
+        ).lean();
+
+        return res.json({
+          ok: true,
+          clientcode: "ALL",
+          angelOne: { clientcode: "ALL", fetchedAt: new Date().toISOString(), total: 0, orders: [] },
+          angelOneError: "Select a specific client to inspect Angel One order book.",
+          platformExecutions,
+        });
+      }
+
       return res.status(400).json({ ok: false, message: "Client code required" });
     }
 
@@ -922,13 +933,21 @@ router.get("/angel-order-book", auth, async (req: any, res) => {
       }
     }
 
-    const orderBook = await getAngelOrderBookForClient(userId, clientcode);
+    let orderBook: any = null;
+    let orderBookError: any = null;
+    try {
+      orderBook = await getAngelOrderBookForClient(userId, clientcode);
+    } catch (err: any) {
+      log.error("[angel-order-book] fetch failed", { message: err?.message });
+      orderBookError = err.message || "Failed to fetch Angel One order book";
+    }
 
-    const platformExecutions = await SignalExecutionResult.find({ userId })
+    const executionQuery = userType === "admin" && !hasScopedFilter ? {} : { userId };
+    const platformExecutions = await SignalExecutionResult.find(executionQuery)
       .sort({ updatedAt: -1 })
       .limit(50)
       .select(
-        "signalId status orderId clientOrderId brokerOrderStatus brokerRejectReason errorMessage executedAt updatedAt ipAddress source"
+        "signalId status orderId clientOrderId correlationId brokerOrderStatus brokerRejectReason errorMessage executedAt updatedAt ipAddress source brokerResponse"
       )
       .lean();
 
@@ -936,6 +955,7 @@ router.get("/angel-order-book", auth, async (req: any, res) => {
       ok: true,
       clientcode,
       angelOne: orderBook,
+      angelOneError: orderBookError,
       platformExecutions,
     });
   } catch (err: any) {

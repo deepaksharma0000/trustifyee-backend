@@ -14,6 +14,14 @@ export const queueExecution = async (req: Request, res: Response) => {
     try {
         const { signalId, lots } = req.body;
         const userId = (req as any).id;
+        const userType = (req as any).userType;
+
+        if (userType === "admin") {
+            return res.status(403).json({
+                status: false,
+                error: "Admin accounts cannot queue user broker execution. Use /api/orders/place or /place-all.",
+            });
+        }
 
         if (!signalId) return res.status(400).json({ error: "Signal ID is required", status: false });
 
@@ -49,6 +57,14 @@ export const queueExecution = async (req: Request, res: Response) => {
         const signal = await Signal.findById(signalId);
         if (!signal || signal.status === "FAILED") {
             return res.status(404).json({ error: "Signal not found or invalid", status: false });
+        }
+
+        if (String(signal.executionMode || "").toUpperCase() === "SERVER") {
+            return res.status(200).json({
+                status: true,
+                message: "SERVER signal — backend worker executes on your Angel One account. No client action needed.",
+                currentStatus: "SERVER_QUEUE",
+            });
         }
 
         const user = await User.findById(userId)
@@ -151,8 +167,11 @@ export const queueExecution = async (req: Request, res: Response) => {
                 side: signal.side,
                 quantity: (Number(lots) || 1) * signal.quantity,
                 strategy: signal.strategy || "Manual",
-                symboltoken,
+                symboltoken: symboltoken || signal.symboltoken,
                 orderType: "MARKET",
+                ordertype: "MARKET",
+                transactiontype: signal.side,
+                producttype: "INTRADAY",
             },
         });
 
@@ -160,6 +179,7 @@ export const queueExecution = async (req: Request, res: Response) => {
             status: true,
             message: "Execution queued.",
             clientOrderId,
+            correlationId,
             trackingStatus: "PENDING"
         });
     } catch (err: any) {

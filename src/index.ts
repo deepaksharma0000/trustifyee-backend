@@ -161,9 +161,19 @@ async function start() {
     }
 
     // 2. Initialize workers and queues (only after dependencies are proven healthy)
-    initAutoExitWorker();
-    initTradeExecutionWorker();
-    initAlgoRiskWorker();
+    // PROCESS_ROLE: api | workers | all (default all) — scale workers separately in PM2/Docker
+    const processRole = String(process.env.PROCESS_ROLE || "all").toLowerCase();
+    const runWorkers = processRole === "all" || processRole === "workers";
+    const runApi = processRole === "all" || processRole === "api";
+
+    if (runWorkers) {
+      initAutoExitWorker();
+      initTradeExecutionWorker();
+      initAlgoRiskWorker();
+      log.info("[STARTUP] BullMQ workers initialized", { processRole });
+    } else {
+      log.info("[STARTUP] BullMQ workers skipped (PROCESS_ROLE=api)", { processRole });
+    }
 
     runtimeDiagnostics();
 
@@ -176,26 +186,26 @@ async function start() {
       throw new Error("ENCRYPTION_SECRET must be at least 32 characters.");
     }
 
-    await forceFixLotSizes();
-    startPositionWatchdog();
+    if (runApi) {
+      await forceFixLotSizes();
+      startPositionWatchdog();
 
-    await recoverRunningRuns();
-    if (!StartupDiagnostics.isSafeBootMode()) {
-      TokenRefreshScheduler.start();
-    } else {
-      log.warn("[SAFE_BOOT_MODE] TokenRefreshScheduler start bypassed because of startup safety lock.");
-    }
+      await recoverRunningRuns();
+      if (!StartupDiagnostics.isSafeBootMode()) {
+        TokenRefreshScheduler.start();
+      } else {
+        log.warn("[SAFE_BOOT_MODE] TokenRefreshScheduler start bypassed because of startup safety lock.");
+      }
 
-    // Start Single-Instance Streaming Market Tick Engine
-    tickEngineService.start().catch((err) => {
-      log.error("[STARTUP] Failed to initialize system TickEngineService:", err);
-    });
+      tickEngineService.start().catch((err) => {
+        log.error("[STARTUP] Failed to initialize system TickEngineService:", err);
+      });
 
-    // Start Dedicated Real-Time Risk Monitor Pipeline
-    try {
-      realTimeRiskEngine.start();
-    } catch (err: any) {
-      log.error("[STARTUP] Failed to initialize realTimeRiskEngine:", err);
+      try {
+        realTimeRiskEngine.start();
+      } catch (err: any) {
+        log.error("[STARTUP] Failed to initialize realTimeRiskEngine:", err);
+      }
     }
 
     // Recover EventSourcedOMS state and spawn the pending timeout watchdog
@@ -256,6 +266,11 @@ async function start() {
       }
     } else {
       log.warn("[SAFE_BOOT_MODE] Upstox Nifty option chain warmup bypassed because of startup safety lock.");
+    }
+
+    if (!runApi) {
+      log.info("[STARTUP] HTTP API skipped (PROCESS_ROLE=workers). BullMQ workers are active.");
+      return;
     }
 
     const app = express();

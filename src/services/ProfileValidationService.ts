@@ -1,6 +1,6 @@
-import AngelTokensModel from "../models/AngelTokens";
 import log from "../utils/logger";
 import { executeWithSessionRecovery } from "./AngelSessionManager";
+import { findAngelTokensForUserClient } from "./AngelSessionContextService";
 
 const profileCache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -16,9 +16,9 @@ export class ProfileValidationService {
         }
 
         try {
-            const tokens = await AngelTokensModel.findOne({ userId }).lean() as any;
+            const tokens = await findAngelTokensForUserClient(userId, clientcode);
             if (!tokens?.jwtToken) {
-                return { status: false, message: "No active broker session found" };
+                return { status: false, message: `No active broker session for ${clientcode}` };
             }
 
             const profile = await executeWithSessionRecovery(

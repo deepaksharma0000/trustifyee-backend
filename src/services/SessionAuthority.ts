@@ -1,8 +1,7 @@
 // src/services/SessionAuthority.ts
-import AngelTokensModel from "../models/AngelTokens";
-import { decrypt, ensureEncrypted } from "../utils/encryption";
-import { getOrCreateUserAngelAdapter } from "./AngelAdapterRegistry";
 import { tickEngineService } from "./TickEngineService";
+import { findAngelTokensForUserClient } from "./AngelSessionContextService";
+import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
 import log from "../utils/logger";
 
 export type SessionState =
@@ -93,30 +92,17 @@ export class SessionAuthority {
     try {
       this.updateState(key, userId, clientCode, "SESSION_ROTATING");
 
-      const tokens = await AngelTokensModel.findOne({ userId });
-      if (!tokens || !tokens.refreshToken) {
-        throw new Error("Missing active refreshToken. Cannot rotate session.");
+      const tokens = await findAngelTokensForUserClient(userId, clientCode, false);
+      if (!tokens?.refreshToken) {
+        throw new Error(`Missing refreshToken for ${userId}/${clientCode}. Cannot rotate session.`);
       }
 
-      const decRefreshToken = decrypt(tokens.refreshToken);
-      const decApiKey = decrypt(tokens.apiKey || "");
-      const adapter = getOrCreateUserAngelAdapter(userId, decApiKey);
-
-      // Request fresh tokens from AngelOne gateway
-      const rotationResp = await adapter.generateTokensUsingRefresh(decRefreshToken);
-      const brokerData = rotationResp?.data?.data || {};
-
-      const newJwtToken = brokerData.jwtToken;
-      const newRefreshToken = brokerData.refreshToken;
-
-      if (!newJwtToken || !newRefreshToken) {
-        throw new Error("Broker failed to return valid session payload during rotation refresh.");
+      const recovered = await recoverSessionByRefreshOrLogin(tokens, "session_authority_rotate");
+      if (!recovered.ok || !recovered.jwtToken) {
+        throw new Error(recovered.reason || "Broker session refresh failed during rotation.");
       }
 
-      // Encrypt and persist new tokens
-      tokens.jwtToken = await ensureEncrypted(tokens, "jwtToken", newJwtToken);
-      tokens.refreshToken = await ensureEncrypted(tokens, "refreshToken", newRefreshToken);
-      await tokens.save();
+      const newJwtToken = recovered.jwtToken;
 
       // 2. Establish SESSION_OVERLAP stage
       const currentSession = this.sessions.get(key);

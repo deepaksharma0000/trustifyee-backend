@@ -1,9 +1,8 @@
-import AngelTokensModel from "../models/AngelTokens";
 import { config } from "../config";
 import log from "../utils/logger";
 import User from "../models/User";
-import Admin from "../models/Admin";
 import { executeWithSessionRecovery } from "./AngelSessionManager";
+import { findAngelTokensForUserClient } from "./AngelSessionContextService";
 
 export interface MarginInfo {
     availablecash: number;
@@ -20,18 +19,14 @@ export class RiskManagementService {
      */
     static async getAvailableMargin(userId: string, clientcode: string): Promise<{ status: boolean; data?: MarginInfo; message?: string }> {
         try {
-            const tokens = await AngelTokensModel.findOne({ userId }).lean() as any;
+            const tokens = await findAngelTokensForUserClient(userId, clientcode);
             if (!tokens?.jwtToken) {
-                return { status: false, message: "No session for RMS check" };
+                return { status: false, message: `No session for RMS check (${clientcode})` };
             }
 
-            let user = await User.findById(userId);
+            const user = await User.findById(userId);
             if (!user) {
-                user = await Admin.findById(userId);
-            }
-
-            if (!user) {
-                throw new Error("User not found");
+                throw new Error("USER_NOT_FOUND: Risk checks only apply to end-user accounts");
             }
 
             // 🚀 [ISSUE 2 FIX] Ensure user-specific API Key is used (No global fallback)

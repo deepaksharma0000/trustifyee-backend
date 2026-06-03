@@ -1,7 +1,7 @@
 import express from 'express';
 import { getAllSignals, getActiveSignals, queueExecution, getExecutionStatus, getExecutionSummary, broadcastSignal } from '../controllers/SignalController';
 import { executeSignal, recordExecutionResult } from '../controllers/SignalComplianceController';
-import { auth, adminAuth } from '../middleware/auth.middleware';
+import { auth, adminAuth, userAuth } from '../middleware/auth.middleware';
 import { SignalService } from '../services/SignalService';
 
 const router = express.Router();
@@ -10,15 +10,13 @@ router.get('/all', adminAuth, getAllSignals);
 router.get('/active', auth, getActiveSignals);
 router.get('/execution-status/:signalId', auth, getExecutionStatus);
 router.get('/execution-summary/:signalId', adminAuth, getExecutionSummary);
-router.post('/execute', auth, executeSignal); // Keep legacy blocked route
-router.post('/queue-execution', auth, queueExecution);
-
+router.post('/execute', auth, executeSignal);
+router.post('/queue-execution', userAuth, queueExecution);
 
 router.post('/broadcast', auth, adminAuth, broadcastSignal);
 router.post('/execution-events', auth, recordExecutionResult);
 
-// FIX #9: HTTP Fallback for signal polling (when WebSocket is disconnected)
-router.get('/pending', auth, async (req: any, res) => {
+router.get('/pending', userAuth, async (req: any, res) => {
     try {
         const userId = req.id;
         const signals = await SignalService.getActiveSignalsForUser(userId);
@@ -29,4 +27,3 @@ router.get('/pending', auth, async (req: any, res) => {
 });
 
 export default router;
-
