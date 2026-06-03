@@ -10,6 +10,8 @@ import { v4 as uuidv4 } from "uuid";
 import { config } from "../config";
 import { apiKeyFingerprint, resolveRouteBinding } from "../utils/apiKeyRouteBinding";
 import { buildIpWhitelistActionPlan } from "../utils/brokerHealthDiagnostics";
+import AgentModel from "../models/Agent";
+import { WebSocketAgentServer } from "./WebSocketAgentServer";
 
 // Log the IP whitelist action plan once at startup so operators have immediate visibility
 // into whether the Angel One portal configuration is correct.
@@ -508,71 +510,159 @@ export class SignalBroadcastService {
         return;
       }
 
-      await SignalExecutionResult.findOneAndUpdate(
-        { signalId, userId: user._id },
-        {
-          signalId,
-          userId: user._id,
-          clientOrderId,
-          broker: user.broker || "ANGELONE",
-          status: "PENDING",
-          errorMessage: undefined,
-          correlationId,
-          source: "SERVER_QUEUE",
-        },
-        {
-          upsert: true,
-          new: true,
-          session,
-          setDefaultsOnInsert: true,
+      if (normalizeBroker(user.broker) === "ANGELONE" && isLive) {
+        const agent = await AgentModel.findOne({ userId: user._id, status: "active" });
+        if (!agent) {
+          failedCount += 1;
+          const reason = "No active execution agent registered for this account. Angel One live trading requires an agent.";
+          await markFailure(user, clientOrderId, correlationId, reason);
+          executions.push({
+            userName,
+            licence: user.licence || "Live",
+            status: "FAILED",
+            message: reason,
+            usedIp: networkMeta.usedIpLabel,
+            networkRoute: networkMeta.networkRoute,
+          });
+          return;
         }
-      );
 
-      await TradeOutbox.create(
-        [
+        const isAgentOnline = WebSocketAgentServer.isAgentOnline(agent.agentId);
+        if (!isAgentOnline) {
+          failedCount += 1;
+          const reason = `Execution agent (ID: ${agent.agentId}) is offline. Start the agent daemon to execute trades.`;
+          await markFailure(user, clientOrderId, correlationId, reason);
+          executions.push({
+            userName,
+            licence: user.licence || "Live",
+            status: "FAILED",
+            message: reason,
+            usedIp: networkMeta.usedIpLabel,
+            networkRoute: networkMeta.networkRoute,
+          });
+          return;
+        }
+
+        await SignalExecutionResult.findOneAndUpdate(
+          { signalId, userId: user._id },
           {
+            signalId,
+            userId: user._id,
+            agentId: agent.agentId,
+            broker: "ANGELONE",
+            status: "PENDING",
+            errorMessage: undefined,
             correlationId,
-            payload: {
-              userId: String(user._id),
-              signalId: String(signalId),
-              clientOrderId,
-              clientCode: rawClientCode,
-              outgoingIp: Boolean(user.dedicated_ip_enabled) ? (user.outgoing_ip || undefined) : undefined,
-              agentUrl: Boolean(user.dedicated_ip_enabled) ? (user.agent_url || undefined) : undefined,
-              dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true),
-              orderData: {
-                exchange: signal.exchange || "NFO",
-                tradingsymbol: signal.tradingsymbol,
-                symboltoken: signal.symboltoken,
-                side: signal.side,
-                quantity: signal.quantity,
-                ordertype: "MARKET",
-                strategy: targetStrategy,
-                broker: user.broker || "ANGELONE",
+            source: "AGENT_EDGE",
+          },
+          {
+            upsert: true,
+            new: true,
+            session,
+            setDefaultsOnInsert: true,
+          }
+        );
+
+        // Send signal via WebSocket gateway to the agent
+        const sent = await WebSocketAgentServer.sendSignal(agent.agentId, signal, clientOrderId, correlationId);
+        if (!sent) {
+          failedCount += 1;
+          const reason = "Failed to dispatch signal frame over agent WebSocket tunnel.";
+          await markFailure(user, clientOrderId, correlationId, reason);
+          executions.push({
+            userName,
+            licence: user.licence || "Live",
+            status: "FAILED",
+            message: reason,
+            usedIp: networkMeta.usedIpLabel,
+            networkRoute: networkMeta.networkRoute,
+          });
+          return;
+        }
+
+        queuedCount += 1;
+        liveCount += 1;
+
+        executions.push({
+          userName,
+          userId: String(user._id),
+          licence: user.licence || "Live",
+          broker: "ANGELONE",
+          online: true,
+          onlineMode: "AGENT_EDGE",
+          status: "PENDING",
+          message: "Dispatched to user execution agent.",
+          correlationId,
+          usedIp: networkMeta.usedIpLabel,
+          networkRoute: "AGENT_ROUTE",
+        });
+      } else {
+        await SignalExecutionResult.findOneAndUpdate(
+          { signalId, userId: user._id },
+          {
+            signalId,
+            userId: user._id,
+            clientOrderId,
+            broker: user.broker || "ANGELONE",
+            status: "PENDING",
+            errorMessage: undefined,
+            correlationId,
+            source: "SERVER_QUEUE",
+          },
+          {
+            upsert: true,
+            new: true,
+            session,
+            setDefaultsOnInsert: true,
+          }
+        );
+
+        await TradeOutbox.create(
+          [
+            {
+              correlationId,
+              payload: {
+                userId: String(user._id),
+                signalId: String(signalId),
+                clientOrderId,
+                clientCode: rawClientCode,
+                outgoingIp: Boolean(user.dedicated_ip_enabled) ? (user.outgoing_ip || undefined) : undefined,
+                agentUrl: Boolean(user.dedicated_ip_enabled) ? (user.agent_url || undefined) : undefined,
+                dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true),
+                orderData: {
+                  exchange: signal.exchange || "NFO",
+                  tradingsymbol: signal.tradingsymbol,
+                  symboltoken: signal.symboltoken,
+                  side: signal.side,
+                  quantity: signal.quantity,
+                  ordertype: "MARKET",
+                  strategy: targetStrategy,
+                  broker: user.broker || "ANGELONE",
+                },
               },
             },
-          },
-        ],
-        session ? { session } : undefined
-      );
+          ],
+          session ? { session } : undefined
+        );
 
-      queuedCount += 1;
-      if (isLive) liveCount += 1;
-      else demoCount += 1;
+        queuedCount += 1;
+        if (isLive) liveCount += 1;
+        else demoCount += 1;
 
-      executions.push({
-        userName,
-        userId: String(user._id),
-        licence: user.licence || "Live",
-        broker: normalizeBroker(user.broker),
-        online: true,
-        onlineMode: "SERVER_SIDE",
-        status: "QUEUED",
-        message: "Server execution queued — processing on broker worker.",
-        correlationId,
-        usedIp: networkMeta.usedIpLabel,
-        networkRoute: networkMeta.networkRoute,
-      });
+        executions.push({
+          userName,
+          userId: String(user._id),
+          licence: user.licence || "Live",
+          broker: normalizeBroker(user.broker),
+          online: true,
+          onlineMode: "SERVER_SIDE",
+          status: "QUEUED",
+          message: "Server execution queued — processing on broker worker.",
+          correlationId,
+          usedIp: networkMeta.usedIpLabel,
+          networkRoute: networkMeta.networkRoute,
+        });
+      }
     };
 
     for (let i = 0; i < users.length; i += BATCH_SIZE) {

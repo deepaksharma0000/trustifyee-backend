@@ -3,6 +3,7 @@ import { Schema, model, Document, Types } from "mongoose";
 export interface ISignalExecutionResult extends Document {
     signalId: Types.ObjectId;
     userId: Types.ObjectId;
+    agentId?: string;
     broker: string;
     orderId?: string;
     clientOrderId?: string;
@@ -11,7 +12,7 @@ export interface ISignalExecutionResult extends Document {
     executedAt: Date;
     correlationId?: string;
 
-    source?: "USER_DEVICE" | "BACKEND_BLOCKED" | "USER_QUEUE" | "SERVER_QUEUE";
+    source?: "USER_DEVICE" | "BACKEND_BLOCKED" | "USER_QUEUE" | "SERVER_QUEUE" | "AGENT_EDGE";
     orderType?: "LIMIT";
     strategyId?: string;
     ipAddress?: string;
@@ -25,6 +26,7 @@ const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
     {
         signalId: { type: Schema.Types.ObjectId, ref: "Signal", required: true, index: true },
         userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+        agentId: { type: String },
         broker: { type: String, required: true },
         orderId: { type: String },
         clientOrderId: { type: String, unique: true, sparse: true, index: true },
@@ -33,7 +35,7 @@ const SignalExecutionResultSchema = new Schema<ISignalExecutionResult>(
         errorMessage: { type: String },
         executedAt: { type: Date, default: Date.now },
         correlationId: { type: String },
-        source: { type: String, enum: ["USER_DEVICE", "BACKEND_BLOCKED", "USER_QUEUE", "SERVER_QUEUE"] },
+        source: { type: String, enum: ["USER_DEVICE", "BACKEND_BLOCKED", "USER_QUEUE", "SERVER_QUEUE", "AGENT_EDGE"] },
         orderType: { type: String, enum: ["LIMIT"] },
         strategyId: { type: String },
         ipAddress: { type: String },

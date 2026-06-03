@@ -7,6 +7,11 @@ import User from '../models/User';
 import Admin from '../models/Admin';
 import { encrypt, decrypt, ensureEncrypted } from '../utils/encryption';
 import { auth } from '../middleware/auth.middleware';
+import AgentModel from '../models/Agent';
+import AgentHeartbeatModel from '../models/AgentHeartbeat';
+import { BrokerResponse as BrokerResponseModel } from '../models/BrokerResponse';
+import { WebSocketAgentServer } from '../services/WebSocketAgentServer';
+import crypto from 'crypto';
 import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
 import { buildApiKeyRouteBinding } from '../utils/apiKeyRouteBinding';
 import { assertApiKeyJwtPair, buildIpWhitelistDiagnostics, validateApiKeyFormat } from '../services/BrokerSessionValidator';
@@ -343,6 +348,71 @@ router.post('/generate-session', auth, async (req: any, res) => {
             error: msg.includes('generateSession failed:')
                 ? msg.replace('generateSession failed: ', 'Broker rejected: ')
                 : msg
+        });
+    }
+});
+
+// GET /api/angelone/auth/agent-status
+router.get('/agent-status', auth, async (req: any, res) => {
+    const userId = req.id;
+    try {
+        let agent = await AgentModel.findOne({ userId });
+        let justCreated = false;
+        
+        if (!agent) {
+            // Auto-create agent registration for the user
+            const agentId = "AGENT-" + crypto.randomBytes(4).toString('hex').toUpperCase();
+            const rawSecret = crypto.randomBytes(16).toString('hex');
+            const encryptedSecret = encrypt(rawSecret);
+            
+            agent = await AgentModel.create({
+                userId,
+                agentId,
+                agentSecret: encryptedSecret,
+                status: "active",
+                version: "1.0.0"
+            });
+            
+            (agent as any)._rawSecret = rawSecret;
+            justCreated = true;
+        }
+        
+        const isOnline = WebSocketAgentServer.isAgentOnline(agent.agentId);
+        const heartbeat = await AgentHeartbeatModel.findOne({ agentId: agent.agentId }).sort({ timestamp: -1 });
+        
+        // Fetch recent logs
+        const executionResults = await BrokerResponseModel.find({ userId: String(userId) })
+            .sort({ createdAt: -1 })
+            .limit(10)
+            .lean();
+            
+        const decryptedSecret = justCreated ? (agent as any)._rawSecret : decrypt(agent.agentSecret);
+        const displaySecret = justCreated ? decryptedSecret : decryptedSecret.slice(0, 4) + "****************" + decryptedSecret.slice(-4);
+        
+        return res.json({
+            status: true,
+            agentId: agent.agentId,
+            agentSecret: displaySecret,
+            agentStatus: isOnline ? "ONLINE" : "OFFLINE",
+            version: agent.version,
+            lastHeartbeat: heartbeat ? heartbeat.timestamp : null,
+            connectedIp: heartbeat ? heartbeat.publicIp : "N/A",
+            justCreated,
+            logs: executionResults.map((r: any) => ({
+                timestamp: r.createdAt,
+                tradingsymbol: r.tradingsymbol,
+                action: r.action,
+                status: r.status,
+                message: r.message,
+                usedIp: r.usedIp,
+                networkRoute: r.networkRoute
+            }))
+        });
+    } catch (err: any) {
+        log.error(`[AGENT_STATUS_API_ERROR] Error: ${err.message}`);
+        return res.status(500).json({
+            status: false,
+            error: err.message
         });
     }
 });

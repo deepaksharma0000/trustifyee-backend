@@ -59,6 +59,7 @@ import { clockDriftMonitor } from "./services/ClockDriftMonitor";
 import { sessionAuthority } from "./services/SessionAuthority";
 import { strategySandboxRuntime } from "./services/StrategySandboxRuntime";
 import { decrypt } from "./utils/encryption";
+import { WebSocketAgentServer } from "./services/WebSocketAgentServer";
 
 import { StartupDiagnostics } from "./utils/startupDiagnostics";
 import { shutdownAutoExitWorker } from "./jobs/AutoExitWorker";
@@ -102,7 +103,7 @@ function setupProcessGuards() {
     log.error("[PROCESS] Unhandled promise rejection", { reason });
     if (config.nodeEnv === "production") {
       log.info("[PROCESS] Triggering clean shutdown due to promise rejection...");
-      await shutdownAll().catch(() => {});
+      await shutdownAll().catch(() => { });
       process.exit(1);
     }
   });
@@ -110,7 +111,7 @@ function setupProcessGuards() {
   process.on("uncaughtException", async (error) => {
     log.error("[PROCESS] Uncaught exception", error);
     log.info("[PROCESS] Triggering clean shutdown due to uncaught exception...");
-    await shutdownAll().catch(() => {});
+    await shutdownAll().catch(() => { });
     setTimeout(() => process.exit(1), 1500);
   });
 }
@@ -211,7 +212,7 @@ async function start() {
     // Recover EventSourcedOMS state and spawn the pending timeout watchdog
     try {
       await eventSourcedOMS.recoverStateFromDb();
-      
+
       setInterval(() => {
         if (StartupDiagnostics.isSafeBootMode()) return;
         eventSourcedOMS.checkForPendingTimeouts().catch((err) => {
@@ -354,7 +355,7 @@ async function start() {
     app.use("/api/market", marketStatusRoutes);
     app.use("/api/chaos", chaosRoutes);
     app.use("/api/observability", observabilityRoutes);
-    
+
     const executionRoutes = require("./routes/execution.routes").default;
     app.use("/api/execution", executionRoutes);
 
@@ -423,6 +424,7 @@ async function start() {
     const server = http.createServer(app);
     startMarketStream(server);
     startSignalStream(server);
+    WebSocketAgentServer.init(server);
 
     server.on("error", (err: any) => {
       if (err.code === "EADDRINUSE") {
