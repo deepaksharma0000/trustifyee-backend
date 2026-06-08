@@ -429,6 +429,15 @@ export async function placeOrderForClient(
   const user = await User.findById(userId).select(
     "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected"
   );
+  log.error("PRECHECK_DEBUG", {
+    userId: String(userId),
+    clientcode,
+    verified: user?.api_key_ip_pair_verified,
+    fp: user?.validated_api_key_fingerprint,
+    routeIp: user?.validated_route_ip,
+    routeType: user?.validated_route_type
+  });
+
     log.error("[DEBUG_USER_LOADED]", {
     userId,
     clientcode,
