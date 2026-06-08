@@ -182,6 +182,17 @@ async function enforceApiKeyRoutePairValidation(
   let expectedRouteIp = String(user?.validated_route_ip || "").trim();
   let expectedRouteType = String(user?.validated_route_type || "").trim();
 
+
+  log.error("[DEBUG_PRECHECK_STATE]", {
+  clientcode,
+  userId,
+  isVerified,
+  expectedKeyFp,
+  expectedRouteIp,
+  expectedRouteType,
+  userEmail: user?.email,
+});
+
   if (!routing?.dedicatedRoutingEnabled && config.forceSharedVpsRoute) {
     const sharedRouteIp =
       normalizeIpv4(binding.routeIp) ||
