@@ -506,11 +506,16 @@ export class SignalBroadcastService {
           message: "Client code missing or invalid",
           usedIp: networkMeta.usedIpLabel,
           networkRoute: networkMeta.networkRoute,
-        });
+        });if (normalizeBroker(user.broker) === "ANGELONE" && isLive)
         return;
       }
 
-      if (normalizeBroker(user.broker) === "ANGELONE" && isLive) {
+      // if (normalizeBroker(user.broker) === "ANGELONE" && isLive) {
+      if (
+  normalizeBroker(user.broker) === "ANGELONE" &&
+  isLive &&
+  user.dedicated_ip_enabled === true
+) {
         const agent = await AgentModel.findOne({ userId: user._id, status: "active" });
         if (!agent) {
           failedCount += 1;
