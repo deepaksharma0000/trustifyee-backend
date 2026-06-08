@@ -512,10 +512,10 @@ export class SignalBroadcastService {
 
       // if (normalizeBroker(user.broker) === "ANGELONE" && isLive) {
       if (
-  normalizeBroker(user.broker) === "ANGELONE" &&
-  isLive &&
-  user.dedicated_ip_enabled === true
-) {
+          normalizeBroker(user.broker) === "ANGELONE" &&
+          isLive &&
+          user.dedicated_ip_enabled === true
+        ) {
         const agent = await AgentModel.findOne({ userId: user._id, status: "active" });
         if (!agent) {
           failedCount += 1;
