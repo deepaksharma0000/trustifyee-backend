@@ -458,6 +458,17 @@ export async function placeOrderForClient(
     throw new Error(`USER_NOT_FOUND: No active user record for ID ${userId}. Admin accounts cannot execute user trades.`);
   }
 
+  log.error("[DEBUG_USER_KEYS]", {
+  keys: Object.keys(user.toObject())
+  });
+
+  log.error("[DEBUG_USER_FIELDS]", {
+    userId: String(user._id),
+    verified: user.api_key_ip_pair_verified,
+    fp: user.validated_api_key_fingerprint,
+    routeIp: user.validated_route_ip,
+    routeType: user.validated_route_type
+  });
   if (user.trading_paused) {
     log.warn(`TRADE_BLOCKED: Trading is paused for user ${user.user_name}`, {
       userId: String(userId),
