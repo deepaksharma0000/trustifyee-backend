@@ -499,17 +499,28 @@ export class SignalBroadcastService {
       if (!rawClientCode || rawClientCode.trim().length < 3) {
         failedCount += 1;
         await markFailure(user, clientOrderId, correlationId, "Client code missing or invalid");
-        executions.push({
+      //   executions.push({
+      //     userName,
+      //     licence: user.licence || "Live",
+      //     status: "FAILED",
+      //     message: "Client code missing or invalid",
+      //     usedIp: networkMeta.usedIpLabel,
+      //     networkRoute: networkMeta.networkRoute,
+      //   });if (normalizeBroker(user.broker) === "ANGELONE" && isLive)
+      //   return;
+      // }
+      executions.push({
           userName,
           licence: user.licence || "Live",
           status: "FAILED",
           message: "Client code missing or invalid",
           usedIp: networkMeta.usedIpLabel,
           networkRoute: networkMeta.networkRoute,
-        });if (normalizeBroker(user.broker) === "ANGELONE" && isLive)
+        });
+
         return;
       }
-
+      
       // if (normalizeBroker(user.broker) === "ANGELONE" && isLive) {
       if (
           normalizeBroker(user.broker) === "ANGELONE" &&
