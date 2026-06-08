@@ -211,6 +211,18 @@ async function enforceApiKeyRoutePairValidation(
     }
   }
 
+  log.error("[PRECHECK_DEBUG]", {
+  clientcode,
+  isVerified,
+  expectedKeyFp,
+  expectedRouteIp,
+  expectedRouteType,
+  currentKeyFp: binding.apiKeyFingerprint,
+  currentRouteIp: binding.routeIp,
+  currentRouteType: binding.routeType,
+  strictPrecheck
+  });
+  
   if (!isVerified || !expectedKeyFp || !expectedRouteIp) {
     if (!strictPrecheck) {
       log.warn("[ORDER_PRECHECK_SOFT_BYPASS] Missing key/route verification state. Allowing broker attempt in non-strict mode.", {
