@@ -615,9 +615,16 @@ export async function placeOrderForClient(
   // 😇 [DEFAULT / ANGELONE FLOW] - Unmodified production logic
   let clientOrderId = "";
   try {
+      // if (licence === "live") {
+      //   log.error(`[SAFETY_GUARD] Centralized direct order placement blocked for user ${clientcode}. Must route via User Agent.`);
+      //   throw new Error("CENTRALIZED_ORDER_EXECUTION_BLOCKED: Angel One live execution is restricted to user-hosted agents.");
+      // }
+
+      // Allow centralized execution from server
       if (licence === "live") {
-        log.error(`[SAFETY_GUARD] Centralized direct order placement blocked for user ${clientcode}. Must route via User Agent.`);
-        throw new Error("CENTRALIZED_ORDER_EXECUTION_BLOCKED: Angel One live execution is restricted to user-hosted agents.");
+        log.info(
+          `[CENTRALIZED_EXECUTION_ENABLED] Processing live order for ${clientcode} through server route.`
+        );
       }
 
       // 1. Run Validations
