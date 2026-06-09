@@ -222,7 +222,7 @@ async function enforceApiKeyRoutePairValidation(
   currentRouteType: binding.routeType,
   strictPrecheck
   });
-  
+
   if (!isVerified || !expectedKeyFp || !expectedRouteIp) {
     if (!strictPrecheck) {
       log.warn("[ORDER_PRECHECK_SOFT_BYPASS] Missing key/route verification state. Allowing broker attempt in non-strict mode.", {
@@ -438,8 +438,13 @@ export async function placeOrderForClient(
   // Previously the code fell back to Admin if User was not found, which could cause
   // admin broker credentials to be used for a trade (EXECUTION_ISOLATION_VIOLATION).
   // All order execution MUST be tied to a verified User document.
+  // const user = await User.findById(userId).select(
+  //   "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected"
+  // );
   const user = await User.findById(userId).select(
-    "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected"
+  "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url " +
+  "dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected " +
+  "api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type validated_pair_at"
   );
   log.error("PRECHECK_DEBUG", {
     userId: String(userId),
