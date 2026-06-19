@@ -75,11 +75,14 @@ export class AliceBlueAdapter {
   }
 
   async authPost(sessionId: string, path: string, body?: any) {
-    // 🛡️ HARD GUARD: Prevent order placement from server
-    if (path.includes('/orders/place')) {
-        log.error(`[EXECUTION_BLOCKED] Alice: Attempted to call ${path} from server.`);
-        throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+    const isPlaceOrder =
+      path.includes("/orders/place") || path.includes("/orders/placeorder");
+
+    if (isPlaceOrder && !config.aliceAllowServerExecution) {
+      log.error(`[EXECUTION_BLOCKED] Alice: Server-side order placement disabled (${path}).`);
+      throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
     }
+
     try {
       const resp = await this.client.post(path, body || {}, {
         headers: this.baseHeaders(sessionId)
@@ -194,49 +197,64 @@ export class AliceBlueAdapter {
   async placeOrder(
     sessionId: string,
     order: {
-      exchange: string;              // "NSE"
-      tradingsymbol: string;         // "RELIANCE-EQ"
+      exchange: string;
+      tradingsymbol: string;
       transactiontype: "BUY" | "SELL";
       quantity: number;
       ordertype?: "MARKET" | "LIMIT" | "SL" | "SLM";
       price?: number;
-      producttype?: string;          // INTRADAY / LONGTERM / CNC etc.
-      duration?: string;             // DAY / IOC
-      symboltoken?: string;          // yahi instrumentId banega
+      producttype?: string;
+      duration?: string;
+      symboltoken?: string;
       triggerPrice?: number;
     }
   ) {
-    // 🔹 Map Product Types to Alice Blue format (MIS, CNC, NRML)
-    let product = (order.producttype || "INTRADAY").toUpperCase();
-    if (product === "INTRADAY") product = "MIS";
-    if (product === "DELIVERY" || product === "LONGTERM" || product === "CNC") product = "CNC";
-    if (product === "CARRYFORWARD" || product === "NRML") product = "NRML";
+    if (!config.aliceAllowServerExecution) {
+      log.error("[EXECUTION_BLOCKED] AliceBlueAdapter.placeOrder — ALICE_ALLOW_SERVER_EXECUTION=false");
+      throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+    }
 
-    // 🔹 Alice Blue V1 Open API Payload
-    const payload = {
-        complexity: "regular",
+    if (!order.symboltoken) {
+      throw new Error("Alice placeOrder requires symboltoken (instrumentId)");
+    }
+
+    let product = String(order.producttype || "INTRADAY").toUpperCase();
+    if (product === "MIS" || product === "INTRADAY") product = "INTRADAY";
+    else if (product === "CNC" || product === "DELIVERY" || product === "LONGTERM") product = "LONGTERM";
+    else if (product === "NRML" || product === "CARRYFORWARD") product = "CARRYFORWARD";
+
+    const orderType = String(order.ordertype || "MARKET").toUpperCase();
+    const payload = [
+      {
         exchange: order.exchange.toUpperCase(),
-        tradingsymbol: order.tradingsymbol,
-        symboltoken: order.symboltoken,
-        transactiontype: order.transactiontype.toUpperCase(),
-        quantity: String(order.quantity),
-        ordertype: order.ordertype || "MARKET",
-        producttype: product,
-        price: order.ordertype === "MARKET" ? "0" : String(order.price || "0"),
-        duration: order.duration || "DAY",
-        triggerPrice: String(order.triggerPrice || "0")
-    };
+        instrumentId: String(order.symboltoken),
+        transactionType: order.transactiontype.toUpperCase(),
+        quantity: Number(order.quantity),
+        product,
+        orderComplexity: "REGULAR",
+        orderType,
+        validity: String(order.duration || "DAY").toUpperCase(),
+        price: orderType === "MARKET" ? "0" : String(order.price ?? 0),
+        slTriggerPrice: String(order.triggerPrice ?? 0),
+      },
+    ];
 
-    // 🛡️ HARD GUARD
-    log.error("[EXECUTION_BLOCKED] AliceBlueAdapter.placeOrder called on server.");
-    throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+    log.info("[AliceBlue] Placing order via ANT API", {
+      exchange: payload[0].exchange,
+      instrumentId: payload[0].instrumentId,
+      transactionType: payload[0].transactionType,
+      quantity: payload[0].quantity,
+      path: this.placeOrderPath,
+    });
 
     return await this.authPost(sessionId, this.placeOrderPath, payload);
   }
 
-  async getOrderStatus(sessionId: string, _orderId: string) {
-    // /orders/book is a GET endpoint that returns the entire order book
-    return await this.authGet(sessionId, this.orderStatusPath);
+  async getOrderStatus(sessionId: string, orderId: string, symbolMatch?: string) {
+    const book = await this.authGet(sessionId, this.orderStatusPath);
+    const { findAliceOrderInBook } = require("../utils/aliceResponseParser");
+    const match = findAliceOrderInBook(book, orderId, symbolMatch);
+    return match ? { status: "Ok", result: [match], book } : { status: "Ok", result: [], book };
   }
 
 

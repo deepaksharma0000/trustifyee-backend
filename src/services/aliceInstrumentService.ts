@@ -33,24 +33,32 @@ export class AliceInstrumentService {
   }
 
   static async syncExchangeInstruments(params: {
-    clientcode: string;      // e.g. "LALIT_ALICE"
-    exchange: string;        // "NSE" | "NFO" | "MCX" etc.
+    clientcode?: string;
+    exchange: string;
   }) {
     const { clientcode, exchange } = params;
 
-    // const sessionId = await this.getSessionId(clientcode);
-         await this.getSessionId(clientcode); 
-         
-     const raw = await aliceAdapter.getContractMasterForExchange(exchange);
+    if (clientcode) {
+      try {
+        await this.getSessionId(clientcode);
+      } catch {
+        log.warn(
+          `[AliceInstrumentService] No session for ${clientcode}; continuing public contract master sync`
+        );
+      }
+    }
+
+    const raw = await aliceAdapter.getContractMasterForExchange(exchange);
 
 if (!Array.isArray(raw)) {
   throw new Error("Contract master adapter did not return an array");
 }
 
-console.log("Alice contract master raw response ===>");
-console.log(JSON.stringify(raw.slice(0, 3), null, 2));
+log.debug("[AliceInstrumentService] Contract master sample", {
+  exchange,
+  sample: raw.slice(0, 2),
+});
 
-// 🔹 unwrap: agar raw[0] khud ek array hai, use hi rows maan lo
 let rowsAny: any[] = raw;
 
 if (Array.isArray(raw[0])) {

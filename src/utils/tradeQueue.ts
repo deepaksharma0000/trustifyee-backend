@@ -39,6 +39,7 @@ export const TRADE_QUEUE_BY_BROKER: Record<string, string> = {
   ANGELONE: "trade-execution-angelone",
   ALICEBLUE: "trade-execution-aliceblue",
   UPSTOX: "trade-execution-upstox",
+  ZERODHA: "trade-execution-zerodha",
 };
 
 const queueCache = new Map<string, Queue>();

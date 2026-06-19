@@ -1134,5 +1134,29 @@
     "degradedFrequency": 0,
     "failureFrequency": 1,
     "integritySignature": "5d43711d96c53c5de2b5c635d3da581e056270a29bf1a604b5e46162d5079dc9"
+  },
+  {
+    "correlationId": "STARTUP-CID-18B6C9BC2F4733C6",
+    "timestamp": "2026-06-16T06:14:58.711Z",
+    "startupDurationMs": 1412,
+    "dependencyLatencyMs": {
+      "EnvValidation": 41,
+      "Timezone": 39,
+      "DiskWrite": 38,
+      "Redis": 228,
+      "BullMQ": 14,
+      "MongoDB": 385,
+      "WebSocket": 9,
+      "OMS": 5,
+      "RouteWhitelist": 652
+    },
+    "reconnectAttempts": 1,
+    "redisRttMs": 11,
+    "mongoRttMs": 286,
+    "status": "DEGRADED",
+    "failures": [],
+    "degradedFrequency": 1,
+    "failureFrequency": 0,
+    "integritySignature": "c6000ca09c965586310260e623e715896c98d77c73f839a3e021856399db0aee"
   }
 ]

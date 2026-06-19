@@ -43,6 +43,17 @@ export interface IUser extends Document {
     validated_pair_at?: Date;
     strategy_id_map?: Map<string, string>; // { 'Alpha': 'STRAT_001', 'IronCondor': 'STRAT_002' }
 
+    // Zerodha Kite Connect credentials & session details
+    zerodha_user_id?: string;
+    zerodha_api_key?: string;
+    zerodha_api_secret?: string;
+    zerodha_request_token?: string;
+    zerodha_access_token?: string;
+    zerodha_refresh_token?: string;
+    zerodha_token_expiry?: Date;
+    zerodha_connected?: boolean;
+    zerodha_verified?: boolean;
+
     created_at: Date;
     updated_at: Date;
 }
@@ -89,7 +100,18 @@ const UserSchema: Schema = new Schema({
     validated_api_key_fingerprint: { type: String },
     validated_route_ip: { type: String },
     validated_route_type: { type: String, enum: ['USER_STATIC_IP', 'SERVER_SHARED_IP', 'AGENT_ROUTE', 'UNKNOWN'] },
-    validated_pair_at: { type: Date }
+    validated_pair_at: { type: Date },
+
+    // Zerodha Kite Connect credentials & session details
+    zerodha_user_id: { type: String },
+    zerodha_api_key: { type: String },
+    zerodha_api_secret: { type: String },
+    zerodha_request_token: { type: String },
+    zerodha_access_token: { type: String },
+    zerodha_refresh_token: { type: String },
+    zerodha_token_expiry: { type: Date },
+    zerodha_connected: { type: Boolean, default: false },
+    zerodha_verified: { type: Boolean, default: false }
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 export default mongoose.model<IUser>('User', UserSchema);

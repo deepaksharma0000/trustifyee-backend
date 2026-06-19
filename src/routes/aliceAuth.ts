@@ -7,6 +7,10 @@ import { encrypt } from "../utils/encryption";
 import { config } from "../config";
 import { auth } from "../middleware/auth.middleware";
 import { findUserByClientCode } from "../utils/clientCodeLookup";
+import {
+  computeAliceSessionExpiry,
+  normalizeAliceClientCode,
+} from "../services/AliceSessionService";
 
 const router = express.Router();
 const aliceAdapter = new AliceBlueAdapter();
@@ -65,51 +69,41 @@ router.get("/auth/callback", async (req, res) => {
         .send(`Alice login failed: ${data.emsg || "Unknown error"}`);
     }
 
+    const clientcodeNormalized = normalizeAliceClientCode(clientcode || aliceUserId);
+
     const saved = await AliceTokensModel.findOneAndUpdate(
-      { clientcode },
+      { clientcode: clientcodeNormalized },
       {
         userId: mongoUserId ? (mongoUserId as any) : undefined,
-        clientcode,
-        // 🚀 Alice Blue Open API requires "Bearer <UserId> <UserSession>"
-        // Concatenate them before encrypting for the adapter to use
+        clientcode: clientcodeNormalized,
         sessionId: encrypt(`${data.userId || aliceUserId} ${data.userSession}`),
-        expiresAt: undefined
+        expiresAt: computeAliceSessionExpiry(),
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     ).lean();
 
-    // 🚀 [USER MODEL SYNC] - Reliable update using User ID
     const User = require("../models/User").default;
-    
+
+    const profileUpdate = {
+      broker: "AliceBlue",
+      broker_connected: true,
+      broker_verified: true,
+      is_online: true,
+      trading_paused: false,
+      consecutive_failures: 0,
+      client_key: encrypt(clientcodeNormalized),
+    };
+
     if (mongoUserId) {
-      await User.updateOne(
-        { _id: mongoUserId },
-        { 
-          broker: "AliceBlue",
-          broker_connected: true,
-          broker_verified: true,
-          is_online: true
-        }
-      );
+      await User.updateOne({ _id: mongoUserId }, profileUpdate);
     } else {
-      // Fallback (Legacy/Incomplete State)
-      const matchedUser = await findUserByClientCode(clientcode);
+      const matchedUser = await findUserByClientCode(clientcodeNormalized);
       if (matchedUser?._id) {
-        await User.updateOne(
-          { _id: matchedUser._id },
-          {
-            broker: "AliceBlue",
-            broker_connected: true,
-            broker_verified: true,
-            is_online: true,
-            trading_paused: false, // [FIX] Reset circuit breaker
-            consecutive_failures: 0 // [FIX] Reset failure count
-          }
-        );
+        await User.updateOne({ _id: matchedUser._id }, profileUpdate);
       }
     }
 
-    log.info(`[ALICE_AUTH] ✅ Saved Alice session and updated User profile for: ${clientcode}`);
+    log.info(`[ALICE_AUTH] ✅ Saved Alice session and updated User profile for: ${clientcodeNormalized}`);
 
     // Redirect back to frontend dashboard
     return res.redirect(`${config.frontendUrl}/dashboard?broker_login=success&broker=AliceBlue`);

@@ -10,6 +10,7 @@ import log from "../utils/logger";
 import { getAllTradeQueueNames } from "../utils/tradeQueue";
 import { config } from "../config";
 import { parseAngelOrderPlacement } from "../utils/angelResponseParser";
+import { parseAliceOrderPlacement } from "../utils/aliceResponseParser";
 import { broadcastToUser } from "../services/UserSocketService";
 
 const notifyUserExecution = (
@@ -67,8 +68,24 @@ const isNoRetryRejection = (message: string) => {
     m.includes("invalid order") ||
     m.includes("invalid product") ||
     m.includes("invalid app") ||
-    m.includes("ab1034")
+    m.includes("no active alice")
   );
+};
+
+const parseBrokerOrderPlacement = (broker: string, resp: any) => {
+  const b = String(broker || "").toUpperCase();
+  if (b === "ALICEBLUE" || b === "ALICE_BLUE") {
+    return parseAliceOrderPlacement(resp);
+  }
+  return parseAngelOrderPlacement(resp);
+};
+
+const brokerDisplayName = (broker: string) => {
+  const b = String(broker || "").toUpperCase();
+  if (b === "ALICEBLUE" || b === "ALICE_BLUE") return "Alice Blue";
+  if (b === "ZERODHA") return "Zerodha";
+  if (b === "UPSTOX") return "Upstox";
+  return "Angel One";
 };
 
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
@@ -362,7 +379,7 @@ export const initTradeExecutionWorker = () => {
         });
 
         const responseData = resp?.data || {};
-        const parsedOrder = parseAngelOrderPlacement(resp);
+        const parsedOrder = parseBrokerOrderPlacement(broker, resp);
         const responsePayload =
           responseData?.data && typeof responseData.data === "object" ? responseData.data : responseData;
         const orderId = parsedOrder.brokerOrderId || parsedOrder.uniqueOrderId || (parsedOrder.accepted ? clientOrderId : undefined);
@@ -493,7 +510,7 @@ export const initTradeExecutionWorker = () => {
           tradingsymbol: orderData?.tradingsymbol,
           side: orderData?.side,
           message: isBrokerSubmissionSuccess
-            ? `Order placed on Angel One — Order ID ${orderId}`
+            ? `Order placed on ${brokerDisplayName(broker)} — Order ID ${orderId}`
             : "Order executed in paper/demo mode",
           source: "ADMIN_SERVER_EXECUTION",
         });

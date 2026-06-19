@@ -2,6 +2,8 @@ import axios, { AxiosInstance } from "axios";
 import { config } from "../config";
 import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
+import { IBrokerAdapter } from "./IBrokerAdapter";
+import { IUser } from "../models/User";
 
 export interface UpstoxTokenResponse {
   access_token: string;
@@ -397,6 +399,117 @@ export class UpstoxAdapter {
 
     // yaha pe endpoint v2 baseURL pe relative hai
     return this.authGet(accessToken, "/market-quote/ltp", { instrument_key });
+  }
+
+  private async getAccessTokenForUser(user: IUser): Promise<string> {
+    const UpstoxTokensModel = require("../models/UpstoxTokens").default;
+    const tokenDoc = await UpstoxTokensModel.findOne({ userId: String(user._id) });
+    if (!tokenDoc || !tokenDoc.accessToken) {
+      throw new Error("No active Upstox session");
+    }
+    return decrypt(tokenDoc.accessToken);
+  }
+
+  async connect(user: IUser, authCodeOrCredentials: any): Promise<any> {
+    const code = typeof authCodeOrCredentials === "string" ? authCodeOrCredentials : authCodeOrCredentials.code;
+    if (!code) throw new Error("Missing Upstox auth code");
+    const tokenResp = await this.exchangeCodeForToken(code);
+    const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
+    
+    const UpstoxTokensModel = require("../models/UpstoxTokens").default;
+    const { encrypt } = require("../utils/encryption");
+    
+    await UpstoxTokensModel.findOneAndUpdate(
+      { userId: String(user._id) },
+      {
+        userId: String(user._id),
+        accessToken: encrypt(tokenResp.access_token),
+        extendedToken: tokenResp.extended_token ? encrypt(tokenResp.extended_token) : undefined,
+        refreshToken: tokenResp.refresh_token ? encrypt(tokenResp.refresh_token) : undefined,
+        email: tokenResp.email,
+        userName: tokenResp.user_name,
+        exchanges: tokenResp.exchanges,
+        products: tokenResp.products,
+        orderTypes: tokenResp.order_types,
+        expiresAt: expiresAt
+      },
+      { upsert: true, new: true }
+    );
+
+    const User = require("../models/User").default;
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          broker_connected: true,
+          broker_verified: true,
+          broker: "Upstox"
+        }
+      }
+    );
+    return tokenResp;
+  }
+
+  async refreshSession(user: IUser): Promise<any> {
+    const UpstoxTokensModel = require("../models/UpstoxTokens").default;
+    const tokenDoc = await UpstoxTokensModel.findOne({ userId: String(user._id) });
+    if (!tokenDoc || !tokenDoc.refreshToken) {
+      throw new Error("No refresh token available");
+    }
+    const tokenResp = await this.refreshAccessToken(tokenDoc.refreshToken);
+    const expiresAt = new Date(Date.now() + (24 * 60 * 60 * 1000));
+    const { encrypt } = require("../utils/encryption");
+    await UpstoxTokensModel.findOneAndUpdate(
+      { userId: String(user._id) },
+      {
+        accessToken: encrypt(tokenResp.access_token),
+        extendedToken: tokenResp.extended_token ? encrypt(tokenResp.extended_token) : undefined,
+        refreshToken: tokenResp.refresh_token ? encrypt(tokenResp.refresh_token) : undefined,
+        expiresAt: expiresAt
+      }
+    );
+    return tokenResp;
+  }
+
+  async modifyOrder(user: IUser, orderId: string, payload: any): Promise<any> {
+    log.error("[EXECUTION_BLOCKED] UpstoxAdapter.modifyOrder called on server.");
+    throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+  }
+
+  async cancelOrder(user: IUser, orderId: string, payload?: any): Promise<any> {
+    log.error("[EXECUTION_BLOCKED] UpstoxAdapter.cancelOrder called on server.");
+    throw new Error("SERVER_SIDE_EXECUTION_DISABLED");
+  }
+
+  async getPositions(user: IUser): Promise<any> {
+    const token = await this.getAccessTokenForUser(user);
+    return this.authGet(token, "/portfolio/short-term-positions");
+  }
+
+  async getHoldings(user: IUser): Promise<any> {
+    const token = await this.getAccessTokenForUser(user);
+    return this.authGet(token, "/portfolio/long-term-holdings");
+  }
+
+  async getFunds(user: IUser): Promise<any> {
+    const token = await this.getAccessTokenForUser(user);
+    return this.authGet(token, "/user/get-margin");
+  }
+
+  async getOrders(user: IUser): Promise<any> {
+    const token = await this.getAccessTokenForUser(user);
+    return this.authGet(token, "/order/retrieve-all");
+  }
+
+  async logout(user: IUser): Promise<any> {
+    const UpstoxTokensModel = require("../models/UpstoxTokens").default;
+    await UpstoxTokensModel.deleteOne({ userId: String(user._id) });
+    const User = require("../models/User").default;
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { broker_connected: false, broker_verified: false } }
+    );
+    return { status: true, message: "Logged out successfully" };
   }
 
 }

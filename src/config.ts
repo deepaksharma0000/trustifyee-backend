@@ -40,6 +40,12 @@ export const config = {
   upstoxBaseUrl: process.env.UPSTOX_BASE_URL || "https://api.upstox.com",
   upstoxHftBaseUrl: process.env.UPSTOX_HFT_BASE_URL || "https://api-hft.upstox.com",
 
+  // -------- ZERODHA ----------
+  zerodhaApiKey: process.env.ZERODHA_API_KEY || "",
+  zerodhaApiSecret: process.env.ZERODHA_API_SECRET || "",
+  zerodhaRedirectUri: process.env.ZERODHA_REDIRECT_URI || "http://localhost:4000/api/zerodha/callback",
+  zerodhaBaseUrl: process.env.ZERODHA_BASE_URL || "https://api.kite.trade",
+
   // -------- ALICE BLUE ----------
   aliceClientId: process.env.ALICE_CLIENT_ID || "",
   aliceAppCode: process.env.ALICE_APP_CODE || "",
@@ -47,13 +53,23 @@ export const config = {
   aliceRedirectUrl: process.env.ALICE_REDIRECT_URL || "http://localhost:3000/api/alice/auth/callback",
   aliceAuthBaseUrl: process.env.ALICE_AUTH_BASE_URL || "https://ant.aliceblueonline.com",
   aliceOrderBaseUrl: process.env.ALICE_ORDER_BASE_URL || "https://a3.aliceblueonline.com",
-  alicePlaceOrderPath: process.env.ALICE_PLACE_ORDER_PATH || "/open-api/od/v1/orders/place",
+  alicePlaceOrderPath: process.env.ALICE_PLACE_ORDER_PATH || "/open-api/od/v1/orders/placeorder",
   aliceOrderStatusPath: process.env.ALICE_ORDER_STATUS_PATH || "/open-api/od/v1/orders/book",
-  aliceContractMasterNseUrl: process.env.ALICE_CM_NSE_URL || "",
-  aliceContractMasterNfoUrl: process.env.ALICE_CM_NFO_URL || "",
-  aliceContractMasterIndicesUrl: process.env.ALICE_CM_INDICES_URL || "",
+  aliceContractMasterNseUrl:
+    process.env.ALICE_CM_NSE_URL ||
+    "https://v2api.aliceblueonline.com/restpy/static/contract_master/NSE.zip",
+  aliceContractMasterNfoUrl:
+    process.env.ALICE_CM_NFO_URL ||
+    "https://v2api.aliceblueonline.com/restpy/static/contract_master/NFO.zip",
+  aliceContractMasterIndicesUrl:
+    process.env.ALICE_CM_INDICES_URL ||
+    "https://v2api.aliceblueonline.com/restpy/static/contract_master/INDICES.zip",
   aliceGetUserDetailsPath: process.env.ALICE_GET_USER_DETAILS_PATH || "/open-api/od/v1/vendor/getUserDetails",
   aliceContractMasterPath: process.env.ALICE_CONTRACT_MASTER_PATH || "/open-api/market/v1/contractMaster",
+  aliceAllowServerExecution: process.env.ALICE_ALLOW_SERVER_EXECUTION !== "false",
+  aliceSessionTtlHours: Number(process.env.ALICE_SESSION_TTL_HOURS || 24),
+  aliceAutoSyncInstruments: process.env.ALICE_AUTO_SYNC_INSTRUMENTS === "true",
+  aliceStartupSyncNfo: process.env.ALICE_STARTUP_SYNC_NFO !== "false",
 
   encryptionKey: process.env.ENCRYPTION_SECRET || "",
   publicIp: process.env.PUBLIC_IP || "",
@@ -80,6 +96,10 @@ export const config = {
   dataTotpSecret: process.env.DATA_TOTP_SECRET || "",
   agentSecret: process.env.AGENT_SECRET || "default_agent_secret",
   circuitBreakerThreshold: process.env.CIRCUIT_BREAKER_THRESHOLD ? Number(process.env.CIRCUIT_BREAKER_THRESHOLD) : 100,
+
+  // -------- MCP (Model Context Protocol) — see src/mcp/ and docs/MCP_DEPLOYMENT.md ----------
+  mcpEnabled: process.env.MCP_ENABLED !== "false",
+  mcpApiKey: process.env.MCP_API_KEY || "",
 };
 
 // --- STARTUP VALIDATION ---

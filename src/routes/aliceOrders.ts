@@ -46,7 +46,7 @@ router.post("/place", auth, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/status/:clientcode/:orderId", async (req, res) => {
+router.get("/status/:clientcode/:orderId", auth, adminOnly, async (req, res) => {
   try {
     const { clientcode, orderId } = req.params;
     const resp = await getAliceOrderStatusForClient(clientcode, orderId);

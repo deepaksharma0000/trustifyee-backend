@@ -55,7 +55,7 @@ const extractRejectReason = (payload: any): string => {
 export const syncSignalExecutionStatuses = async () => {
   const lookback = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000);
   const rows = await SignalExecutionResult.find({
-    broker: { $regex: /^angelone$/i },
+    broker: { $regex: /^(angelone|zerodha|aliceblue)$/i },
     orderId: { $exists: true, $ne: "", $not: /^PAPER-/i },
     status: { $in: ["PENDING", "QUEUED", "SUCCESS"] },
     updatedAt: { $gte: lookback },

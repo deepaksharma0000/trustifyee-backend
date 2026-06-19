@@ -8,6 +8,7 @@
     "dev": "npx kill-port 4000 && ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc -p .",
     "start": "node dist/index.js",
+    "mcp:stdio": "node dist/mcp/standalone.js",
     "lint": "eslint . --ext .ts",
     "verify:broker": "ts-node src/scripts/verifyBrokerIsolation.ts"
   },
@@ -15,6 +16,7 @@
   "license": "MIT",
   "dependencies": {
     "@kalilinuxuser5/aliceblue": "^1.0.3",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/bcryptjs": "^3.0.0",
     "@types/crypto-js": "^4.2.2",
     "@types/jsonwebtoken": "^9.0.10",
@@ -45,7 +47,8 @@
     "speakeasy": "^2.0.0",
     "tough-cookie": "^6.0.0",
     "uuid": "^9.0.1",
-    "ws": "^8.16.0"
+    "ws": "^8.16.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cron": "^2.0.1",

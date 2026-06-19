@@ -43,44 +43,60 @@ export class TradeExecutionService {
       quantity: job.orderData?.quantity,
     });
 
+    const broker = String(job.orderData?.broker || "ANGELONE").toUpperCase();
+    const isAngelOne = broker === "ANGELONE" || broker === "ANGEL_ONE";
+
     let tokenAudit;
     try {
-      const previewSession = await getIsolatedAngelSession({
-        userId: job.userId,
-        clientcode: job.clientCode,
-        purpose: "trade_execution_precheck",
-        outgoingIp: job.outgoingIp,
-        agentUrl: job.agentUrl,
-        correlationId: job.correlationId,
-        clientOrderId: job.clientOrderId,
-      });
-
-      tokenAudit = buildTokenAudit(previewSession);
-
-      if (tokenAudit.tokenOwnerUserId !== job.userId) {
-        throw new Error(
-          `EXECUTION_ISOLATION_VIOLATION: token owner ${tokenAudit.tokenOwnerUserId} !== job userId ${job.userId}`
-        );
-      }
-
-      if (tokenAudit.sessionClientCode !== job.clientCode) {
-        throw new Error(
-          `EXECUTION_ISOLATION_VIOLATION: session client ${tokenAudit.sessionClientCode} !== job client ${job.clientCode}`
-        );
-      }
-
-      logOrderPayload(
-        ctx,
-        {
-          exchange: job.orderData.exchange,
-          tradingsymbol: job.orderData.tradingsymbol,
-          side: job.orderData.side,
-          quantity: job.orderData.quantity,
-          orderType: job.orderData.ordertype,
+      if (isAngelOne) {
+        const previewSession = await getIsolatedAngelSession({
+          userId: job.userId,
+          clientcode: job.clientCode,
+          purpose: "trade_execution_precheck",
+          outgoingIp: job.outgoingIp,
+          agentUrl: job.agentUrl,
+          correlationId: job.correlationId,
           clientOrderId: job.clientOrderId,
-        },
-        tokenAudit
-      );
+        });
+
+        tokenAudit = buildTokenAudit(previewSession);
+
+        if (tokenAudit.tokenOwnerUserId !== job.userId) {
+          throw new Error(
+            `EXECUTION_ISOLATION_VIOLATION: token owner ${tokenAudit.tokenOwnerUserId} !== job userId ${job.userId}`
+          );
+        }
+
+        if (tokenAudit.sessionClientCode !== job.clientCode) {
+          throw new Error(
+            `EXECUTION_ISOLATION_VIOLATION: session client ${tokenAudit.sessionClientCode} !== job client ${job.clientCode}`
+          );
+        }
+
+        logOrderPayload(
+          ctx,
+          {
+            exchange: job.orderData.exchange,
+            tradingsymbol: job.orderData.tradingsymbol,
+            side: job.orderData.side,
+            quantity: job.orderData.quantity,
+            orderType: job.orderData.ordertype,
+            clientOrderId: job.clientOrderId,
+          },
+          tokenAudit
+        );
+      } else {
+        tokenAudit = {
+          jwtLast8: "N/A",
+          refreshPresent: false,
+          feedPresent: false,
+          apiKeyFingerprint: "N/A",
+          apiKeyLast4: "N/A",
+          tokenOwnerUserId: job.userId,
+          sessionClientCode: job.clientCode,
+        };
+        log.info("[TradeExecutionService] Skipping Angel One session check for broker:", broker);
+      }
 
       const response = await placeOrderForClient(job.userId, job.clientCode, {
         ...job.orderData,
@@ -91,7 +107,11 @@ export class TradeExecutionService {
         correlationId: job.correlationId,
       } as PlaceOrderInput & { clientOrderId?: string });
 
-      logAngelResponse(ctx, response, tokenAudit);
+      if (isAngelOne) {
+        logAngelResponse(ctx, response, tokenAudit);
+      } else {
+        log.info("[TradeExecutionService] Order placed successfully for broker:", broker);
+      }
       logExecutionContext(ctx, "EXECUTION_COMPLETE");
 
       return response;

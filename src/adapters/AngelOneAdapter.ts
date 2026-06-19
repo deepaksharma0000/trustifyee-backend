@@ -6,6 +6,8 @@ import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { ipv4Agent } from "../utils/httpAgent";
 import { getAngelNetworkIdentity } from "../utils/angelNetworkIdentity";
+import { IBrokerAdapter } from "./IBrokerAdapter";
+import { IUser } from "../models/User";
 
 export type AngelSessionResp = {
   status?: boolean | string | number;
@@ -14,7 +16,7 @@ export type AngelSessionResp = {
   data?: any;
 };
 
-export class AngelOneAdapter {
+export class AngelOneAdapter implements IBrokerAdapter {
   private static shouldLogInit = process.env.LOG_ADAPTER_INIT === "true";
   private static localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
   private static bindAgentCache = new Map<string, https.Agent>();
@@ -301,126 +303,291 @@ export class AngelOneAdapter {
     });
   }
 
-  async placeOrder(jwtToken: string, payload: any) {
-    const isIpValid = Boolean(this.outgoingIp && String(this.outgoingIp).trim() !== "");
-    const hasAgent = Boolean(this.agentUrl && String(this.agentUrl).trim() !== "");
+  async connect(user: IUser, authCodeOrCredentials: any): Promise<any> {
+    const clientcode = authCodeOrCredentials.clientcode || user.broker_config?.clientCode;
+    const password = authCodeOrCredentials.password;
+    const totp = authCodeOrCredentials.totp;
+    const totp_secret = authCodeOrCredentials.totp_secret || authCodeOrCredentials.totpSecret;
 
-    if (hasAgent && this.agentUrl) {
-      const { safeDecrypt } = require("../utils/encryption");
-      const decApiKey = safeDecrypt(this.apiKey, "agent_routing");
-      const headerIdentity = this.resolveHeaderIdentity();
+    const resp = await this.generateSession({
+      clientcode,
+      password,
+      totp,
+      totp_secret
+    });
 
-      const agentPayload = {
-        secret: config.agentSecret,
-        jwtToken: decrypt(jwtToken, "agent_routing_jwt"),
-        apiKey: decApiKey,
-        orderPayload: payload,
-        clientPublicIp: headerIdentity.publicIp,
-        clientLocalIp: headerIdentity.localIp,
-        clientMacAddress: headerIdentity.macAddress,
-        sourceId: headerIdentity.sourceId,
-        userType: headerIdentity.userType,
+    if (resp && resp.data && resp.data.status === true) {
+      const tokenData = resp.data.data;
+      const { jwtToken, refreshToken, feedToken } = tokenData;
+
+      const AngelTokensModel = require("../models/AngelTokens").default;
+      const { encrypt } = require("../utils/encryption");
+
+      await AngelTokensModel.findOneAndUpdate(
+        { userId: user._id, clientcode },
+        {
+          userId: user._id,
+          clientcode,
+          jwtToken: encrypt(jwtToken),
+          refreshToken: encrypt(refreshToken),
+          feedToken: encrypt(feedToken),
+          apiKey: encrypt(this.apiKey),
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+        },
+        { upsert: true, new: true }
+      );
+
+      const User = require("../models/User").default;
+      const updateFields: any = {
+        broker_connected: true,
+        broker_verified: true,
+        trading_paused: false,
+        consecutive_failures: 0,
+        broker: "AngelOne"
       };
+      if (password) updateFields.broker_password = encrypt(password);
+      if (totp_secret) updateFields.broker_totp_secret = encrypt(totp_secret);
+      if (clientcode) updateFields.client_key = encrypt(clientcode);
+
+      await User.updateOne({ _id: user._id }, { $set: updateFields });
+    }
+    return resp;
+  }
+
+  async refreshSession(user: IUser): Promise<any> {
+    const AngelTokensModel = require("../models/AngelTokens").default;
+    const sessionDoc = await AngelTokensModel.findOne({ userId: user._id });
+    if (!sessionDoc) {
+      throw new Error("No Angel session found to refresh");
+    }
+    const { recoverSessionByRefreshOrLogin } = require("../services/AngelSessionLifecycleService");
+    return await recoverSessionByRefreshOrLogin(sessionDoc, "adapter_refresh");
+  }
+
+  async placeOrder(userOrToken: string | IUser, payload: any): Promise<any> {
+    if (typeof userOrToken === "string") {
+      const jwtToken = userOrToken;
+      const isIpValid = Boolean(this.outgoingIp && String(this.outgoingIp).trim() !== "");
+      const hasAgent = Boolean(this.agentUrl && String(this.agentUrl).trim() !== "");
+
+      if (hasAgent && this.agentUrl) {
+        const { safeDecrypt } = require("../utils/encryption");
+        const decApiKey = safeDecrypt(this.apiKey, "agent_routing");
+        const headerIdentity = this.resolveHeaderIdentity();
+
+        const agentPayload = {
+          secret: config.agentSecret,
+          jwtToken: decrypt(jwtToken, "agent_routing_jwt"),
+          apiKey: decApiKey,
+          orderPayload: payload,
+          clientPublicIp: headerIdentity.publicIp,
+          clientLocalIp: headerIdentity.localIp,
+          clientMacAddress: headerIdentity.macAddress,
+          sourceId: headerIdentity.sourceId,
+          userType: headerIdentity.userType,
+        };
+
+        try {
+          const response = await axios.post(`${this.agentUrl}/place-order`, agentPayload, { timeout: 15000 });
+          log.info("FULL_BROKER_RESPONSE", {
+            context: "angel_place_order_agent",
+            agentUrl: this.agentUrl,
+            response: JSON.stringify(response?.data ?? null, null, 2),
+          });
+          return response;
+        } catch (err: any) {
+          log.error("[AGENT_ERROR] Failed order routing to agent", {
+            agentUrl: this.agentUrl,
+            message: err?.message,
+            response: err?.response?.data,
+          });
+          throw err;
+        }
+      }
+
+      const shouldAttemptLocalBind = AngelOneAdapter.localBindingEnabled && isIpValid && this.outgoingIp;
+
+      if (shouldAttemptLocalBind && this.outgoingIp) {
+        const bindKey = this.outgoingIp.trim();
+        let bindingAgent = AngelOneAdapter.bindAgentCache.get(bindKey);
+
+        if (!bindingAgent) {
+          bindingAgent = new https.Agent({
+            family: 4,
+            localAddress: bindKey,
+            keepAlive: true,
+            timeout: 60000,
+          });
+          AngelOneAdapter.bindAgentCache.set(bindKey, bindingAgent);
+        }
+
+        try {
+          const response = await axios.post(
+            `${this.forcedBaseUrl}/rest/secure/angelbroking/order/v1/placeOrder`,
+            payload,
+            {
+              headers: this.baseHeaders(jwtToken),
+              httpsAgent: bindingAgent,
+              timeout: 60000,
+            }
+          );
+          log.info("FULL_BROKER_RESPONSE", {
+            context: "angel_place_order_local_bind",
+            outgoingIp: this.outgoingIp || "",
+            response: JSON.stringify(response?.data ?? null, null, 2),
+          });
+          return response;
+        } catch (err: any) {
+          const code = String(err?.code || "");
+          if (code !== "EADDRNOTAVAIL" && code !== "EINVAL") {
+            throw err;
+          }
+
+          log.warn("[DIRECT_BINDING_FALLBACK] Local IP bind failed. Retrying via default route.", {
+            outgoingIp: this.outgoingIp,
+            code,
+          });
+        }
+      }
+
+      if (!hasAgent && !this.isDataAccount && !AngelOneAdapter.localBindingEnabled) {
+        log.debug("[ORDER_NETWORK] Local address binding disabled. Using VPS default route.");
+      } else if (!isIpValid && !hasAgent && !this.isDataAccount) {
+        log.warn("[ORDER_NETWORK_FALLBACK] No dedicated IP/agent provided. Using server network route.");
+      }
 
       try {
-        const response = await axios.post(`${this.agentUrl}/place-order`, agentPayload, { timeout: 15000 });
+        const resp = await this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
         log.info("FULL_BROKER_RESPONSE", {
-          context: "angel_place_order_agent",
-          agentUrl: this.agentUrl,
-          response: JSON.stringify(response?.data ?? null, null, 2),
+          context: "angel_place_order",
+          response: JSON.stringify(resp?.data ?? null, null, 2),
         });
-        return response;
+        return resp;
       } catch (err: any) {
-        log.error("[AGENT_ERROR] Failed order routing to agent", {
-          agentUrl: this.agentUrl,
+        log.error("[ANGEL_PLACE_ORDER_FAILED]", {
           message: err?.message,
           response: err?.response?.data,
         });
         throw err;
       }
-    }
-
-    const shouldAttemptLocalBind = AngelOneAdapter.localBindingEnabled && isIpValid && this.outgoingIp;
-
-    if (shouldAttemptLocalBind && this.outgoingIp) {
-      const bindKey = this.outgoingIp.trim();
-      let bindingAgent = AngelOneAdapter.bindAgentCache.get(bindKey);
-
-      if (!bindingAgent) {
-        bindingAgent = new https.Agent({
-          family: 4,
-          localAddress: bindKey,
-          keepAlive: true,
-          timeout: 60000,
-        });
-        AngelOneAdapter.bindAgentCache.set(bindKey, bindingAgent);
-      }
-
-      try {
-        const response = await axios.post(
-          `${this.forcedBaseUrl}/rest/secure/angelbroking/order/v1/placeOrder`,
-          payload,
-          {
-            headers: this.baseHeaders(jwtToken),
-            httpsAgent: bindingAgent,
-            timeout: 60000,
-          }
-        );
-        log.info("FULL_BROKER_RESPONSE", {
-          context: "angel_place_order_local_bind",
-          outgoingIp: this.outgoingIp || "",
-          response: JSON.stringify(response?.data ?? null, null, 2),
-        });
-        return response;
-      } catch (err: any) {
-        const code = String(err?.code || "");
-        if (code !== "EADDRNOTAVAIL" && code !== "EINVAL") {
-          throw err;
-        }
-
-        log.warn("[DIRECT_BINDING_FALLBACK] Local IP bind failed. Retrying via default route.", {
-          outgoingIp: this.outgoingIp,
-          code,
-        });
-      }
-    }
-
-    if (!hasAgent && !this.isDataAccount && !AngelOneAdapter.localBindingEnabled) {
-      log.debug("[ORDER_NETWORK] Local address binding disabled. Using VPS default route.");
-    } else if (!isIpValid && !hasAgent && !this.isDataAccount) {
-      log.warn("[ORDER_NETWORK_FALLBACK] No dedicated IP/agent provided. Using server network route.");
-    }
-
-    try {
-      const resp = await this.authPost(jwtToken, "/rest/secure/angelbroking/order/v1/placeOrder", payload);
-      log.info("FULL_BROKER_RESPONSE", {
-        context: "angel_place_order",
-        response: JSON.stringify(resp?.data ?? null, null, 2),
+    } else {
+      const { getIsolatedAngelSession } = require("../services/AngelUserSessionManager");
+      const session = await getIsolatedAngelSession({
+        userId: String(userOrToken._id),
+        clientcode: userOrToken.broker_config?.clientCode || "",
+        purpose: "order_place"
       });
-      return resp;
-    } catch (err: any) {
-      log.error("[ANGEL_PLACE_ORDER_FAILED]", {
-        message: err?.message,
-        response: err?.response?.data,
-      });
-      throw err;
+      return this.placeOrder(session.jwtToken, payload);
     }
   }
 
-  async getPositions(jwtToken: string) {
-    try {
-      const resp = await this.authGet(jwtToken, "/rest/secure/angelbroking/order/v1/getPosition");
-      log.info("FULL_BROKER_RESPONSE", {
-        context: "angel_get_positions",
-        response: JSON.stringify(resp?.data ?? null, null, 2),
+  async modifyOrder(userOrToken: string | IUser, orderId: string, payload: any): Promise<any> {
+    if (typeof userOrToken === "string") {
+      const fullPayload = { ...payload, orderid: orderId };
+      return this.authPost(userOrToken, "/rest/secure/angelbroking/order/v1/modifyOrder", fullPayload);
+    } else {
+      const { getIsolatedAngelSession } = require("../services/AngelUserSessionManager");
+      const session = await getIsolatedAngelSession({
+        userId: String(userOrToken._id),
+        clientcode: userOrToken.broker_config?.clientCode || "",
+        purpose: "order_modify"
       });
-      return resp;
-    } catch (err: any) {
-      log.error("[ANGEL_GET_POSITIONS_FAILED]", {
-        message: err?.message,
-        response: err?.response?.data,
-      });
-      throw err;
+      return this.modifyOrder(session.jwtToken, orderId, payload);
     }
+  }
+
+  async cancelOrder(userOrToken: string | IUser, orderId: string, payload?: any): Promise<any> {
+    if (typeof userOrToken === "string") {
+      const fullPayload = { ...payload, orderid: orderId };
+      return this.authPost(userOrToken, "/rest/secure/angelbroking/order/v1/cancelOrder", fullPayload);
+    } else {
+      const { getIsolatedAngelSession } = require("../services/AngelUserSessionManager");
+      const session = await getIsolatedAngelSession({
+        userId: String(userOrToken._id),
+        clientcode: userOrToken.broker_config?.clientCode || "",
+        purpose: "order_cancel"
+      });
+      return this.cancelOrder(session.jwtToken, orderId, payload);
+    }
+  }
+
+  async getPositions(userOrToken: string | IUser): Promise<any> {
+    if (typeof userOrToken === "string") {
+      try {
+        const resp = await this.authGet(userOrToken, "/rest/secure/angelbroking/order/v1/getPosition");
+        log.info("FULL_BROKER_RESPONSE", {
+          context: "angel_get_positions",
+          response: JSON.stringify(resp?.data ?? null, null, 2),
+        });
+        return resp;
+      } catch (err: any) {
+        log.error("[ANGEL_GET_POSITIONS_FAILED]", {
+          message: err?.message,
+          response: err?.response?.data,
+        });
+        throw err;
+      }
+    } else {
+      const { getIsolatedAngelSession } = require("../services/AngelUserSessionManager");
+      const session = await getIsolatedAngelSession({
+        userId: String(userOrToken._id),
+        clientcode: userOrToken.broker_config?.clientCode || "",
+        purpose: "get_positions"
+      });
+      return this.getPositions(session.jwtToken);
+    }
+  }
+
+  async getHoldings(userOrToken: string | IUser): Promise<any> {
+    if (typeof userOrToken === "string") {
+      return this.authGet(userOrToken, "/rest/secure/angelbroking/portfolio/v1/getHolding");
+    } else {
+      const { getIsolatedAngelSession } = require("../services/AngelUserSessionManager");
+      const session = await getIsolatedAngelSession({
+        userId: String(userOrToken._id),
+        clientcode: userOrToken.broker_config?.clientCode || "",
+        purpose: "get_holdings"
+      });
+      return this.getHoldings(session.jwtToken);
+    }
+  }
+
+  async getFunds(userOrToken: string | IUser): Promise<any> {
+    if (typeof userOrToken === "string") {
+      return this.getRMS(userOrToken);
+    } else {
+      const { getIsolatedAngelSession } = require("../services/AngelUserSessionManager");
+      const session = await getIsolatedAngelSession({
+        userId: String(userOrToken._id),
+        clientcode: userOrToken.broker_config?.clientCode || "",
+        purpose: "get_funds"
+      });
+      return this.getRMS(session.jwtToken);
+    }
+  }
+
+  async getOrders(userOrToken: string | IUser): Promise<any> {
+    if (typeof userOrToken === "string") {
+      return this.getOrderBook(userOrToken);
+    } else {
+      const { getIsolatedAngelSession } = require("../services/AngelUserSessionManager");
+      const session = await getIsolatedAngelSession({
+        userId: String(userOrToken._id),
+        clientcode: userOrToken.broker_config?.clientCode || "",
+        purpose: "get_orders"
+      });
+      return this.getOrderBook(session.jwtToken);
+    }
+  }
+
+  async logout(user: IUser): Promise<any> {
+    const AngelTokensModel = require("../models/AngelTokens").default;
+    await AngelTokensModel.deleteOne({ userId: user._id });
+    const User = require("../models/User").default;
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { broker_connected: false, broker_verified: false } }
+    );
+    return { status: true, message: "Logged out successfully" };
   }
 }

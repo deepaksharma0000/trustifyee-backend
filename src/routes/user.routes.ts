@@ -25,6 +25,7 @@ router.post('/user/toggle-star-client/:id', adminAuth, checkPermission('edit_cli
 router.get('/user/risk-status/:id', commonAuth, getRiskStatus);
 router.post('/user/reactivate-trading/:id', commonAuth, reactivateTrading);
 router.post('/user/start-trading-day/:id', commonAuth, startTradingDay);
+router.get('/user/broker-session/:id', adminAuth, getBrokerSessionStatus);
 
 export default router;
 

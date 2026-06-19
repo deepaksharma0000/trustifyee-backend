@@ -100,11 +100,15 @@ async function checkAndManagePositions() {
                             producttype: (p.productType || "INTRADAY") as any
                         });
 
-                        if (aliceRes && aliceRes.status === 200) {
+                        if (aliceRes && (aliceRes.status === true || (aliceRes as any).status === 200)) {
                             p.status = "CLOSED";
                             p.exitPrice = ltp;
                             p.exitAt = new Date();
-                            p.exitOrderId = aliceRes.data?.orderid || "ALICE-EXIT";
+                            p.exitOrderId =
+                              aliceRes.data?.brokerOrderId ||
+                              aliceRes.data?.orderid ||
+                              aliceRes.data?.result?.[0]?.brokerOrderId ||
+                              "ALICE-EXIT";
                             await p.save();
                             log.info(`✅ Auto-Exit Success (Alice): ${p.tradingsymbol}`);
                         } else {

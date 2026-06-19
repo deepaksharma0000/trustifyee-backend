@@ -12,6 +12,7 @@ import { apiKeyFingerprint, resolveRouteBinding } from "../utils/apiKeyRouteBind
 import { buildIpWhitelistActionPlan } from "../utils/brokerHealthDiagnostics";
 import AgentModel from "../models/Agent";
 import { WebSocketAgentServer } from "./WebSocketAgentServer";
+import { AliceBlueBroadcastValidationService } from "./AliceBlueBroadcastValidationService";
 
 // Log the IP whitelist action plan once at startup so operators have immediate visibility
 // into whether the Angel One portal configuration is correct.
@@ -19,7 +20,7 @@ log.info("[SignalBroadcastService] IP whitelist status:\n" + buildIpWhitelistAct
 
 
 const BATCH_SIZE = 50;
-const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX"]);
+const SUPPORTED_BROKERS = new Set(["ANGELONE", "ALICEBLUE", "UPSTOX", "ZERODHA"]);
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 const STATIC_IP_REJECTION_REGEX =
   /(api key mismatch against app found with static ip in request|unregistered ip|register your ip before retrying)/i;
@@ -125,13 +126,17 @@ export class SignalBroadcastService {
     return map;
   }
 
-  private static buildReadinessEntry(user: any, latestResponse: any) {
+  private static buildReadinessEntry(user: any, latestResponse: any, aliceTokenDoc?: any) {
     const userId = String(user?._id || "");
     const broker = normalizeBroker(user?.broker);
     const dedicatedIpEnabled = Boolean(user?.dedicated_ip_enabled === true);
     const networkMeta = resolveUserNetworkMeta(user);
     const strictRoutePrecheck = process.env.STRICT_API_KEY_ROUTE_VALIDATION === "true";
-    const rawClientCode = user?.client_key ? decrypt(user.client_key) : "";
+    const rawClientCode = user?.client_key
+      ? decrypt(user.client_key)
+      : broker === "ZERODHA"
+      ? String(user?.zerodha_user_id || "")
+      : "";
     const hasApiKey = Boolean(String(user?.api_key || "").trim());
     let apiKey = hasApiKey ? decrypt(user.api_key || "") : "";
     
@@ -194,6 +199,30 @@ export class SignalBroadcastService {
     } else if (broker === "ANGELONE" && shouldBlockForRecentStaticRejection(latestResponse, networkMeta.usedIp)) {
       ready = false;
       reason = latestMessage || "Static IP mapping rejected by broker for this user API key";
+    } else if (broker === "ZERODHA") {
+      if (!user?.zerodha_connected || !user?.zerodha_verified) {
+        ready = false;
+        reason = "Zerodha not connected. User must complete Kite Connect login.";
+      } else if (user?.zerodha_token_expiry && new Date(user.zerodha_token_expiry).getTime() <= Date.now()) {
+        ready = false;
+        reason = "Zerodha session expired. User must reconnect via Kite Connect.";
+      } else if (!rawClientCode && !user?.zerodha_user_id) {
+        ready = false;
+        reason = "Zerodha user ID or client code missing";
+      }
+    } else if (broker === "ALICEBLUE") {
+      if (!aliceTokenDoc?.sessionId) {
+        ready = false;
+        reason = "Alice Blue session missing. User must reconnect via Profile → Broker Connect.";
+      } else if (aliceTokenDoc?.expiresAt && new Date(aliceTokenDoc.expiresAt).getTime() <= Date.now()) {
+        ready = false;
+        reason = "Alice Blue session expired. User must reconnect via OAuth login.";
+      } else if (!config.aliceAllowServerExecution) {
+        ready = false;
+        reason = "Alice Blue server-side execution is disabled (ALICE_ALLOW_SERVER_EXECUTION=false).";
+      } else {
+        reason = "READY: Alice Blue session valid for server copy-trading";
+      }
     }
 
     return {
@@ -223,14 +252,32 @@ export class SignalBroadcastService {
   private static async buildReadinessMap(users: any[]) {
     const userIds = users.map((u) => String(u?._id || "")).filter(Boolean);
     const latestByUser = await this.getLatestOrderResponseByUser(userIds);
+
+    const aliceUserIds = users
+      .filter((u) => normalizeBroker(u?.broker) === "ALICEBLUE")
+      .map((u) => String(u?._id || ""))
+      .filter(Boolean);
+
+    const aliceTokenByUserId = new Map<string, any>();
+    if (aliceUserIds.length) {
+      const AliceTokensModel = require("../models/AliceTokens").default;
+      const aliceTokens = await AliceTokensModel.find({ userId: { $in: aliceUserIds } }).lean();
+      for (const token of aliceTokens || []) {
+        aliceTokenByUserId.set(String(token.userId), token);
+      }
+    }
+
     const map = new Map<string, any>();
 
     for (const user of users) {
       const key = String(user?._id || "");
-      map.set(key, this.buildReadinessEntry(user, latestByUser.get(key)));
+      map.set(
+        key,
+        this.buildReadinessEntry(user, latestByUser.get(key), aliceTokenByUserId.get(key))
+      );
     }
 
-    return map;
+    return { map, aliceTokenByUserId };
   }
 
   static async getBroadcastReadinessReport(targetStrategy = "Manual") {
@@ -242,11 +289,11 @@ export class SignalBroadcastService {
       ...strategyQuery,
     })
       .select(
-        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login"
+        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry"
       )
       .lean();
 
-    const readinessMap = await this.buildReadinessMap(users as any[]);
+    const { map: readinessMap } = await this.buildReadinessMap(users as any[]);
     const details = Array.from(readinessMap.values());
     const readyUsers = details.filter((d: any) => d.ready === true).length;
     const blockedUsers = details.length - readyUsers;
@@ -336,13 +383,30 @@ export class SignalBroadcastService {
 
     const usersQuery = User.find(userFilter)
       .select(
-        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login"
+        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry trading_paused status trading_status broker_connected"
       )
       .lean();
 
     if (session) usersQuery.session(session);
     const users = await usersQuery;
-    const readinessMap = await this.buildReadinessMap(users as any[]);
+    const { map: readinessMap, aliceTokenByUserId } = await this.buildReadinessMap(users as any[]);
+
+    const aliceValidation = await AliceBlueBroadcastValidationService.applyToReadinessMap(
+      signal,
+      users as any[],
+      readinessMap,
+      aliceTokenByUserId
+    );
+
+    if (aliceValidation.summary.totalAliceUsers > 0) {
+      log.info("[SignalBroadcastService] Alice Blue pre-broadcast validation", {
+        signalId: String(signalId),
+        tradingsymbol: signal.tradingsymbol,
+        eligible: aliceValidation.summary.eligibleCount,
+        rejected: aliceValidation.summary.rejectedCount,
+        instrumentResolved: aliceValidation.instrumentResolved,
+      });
+    }
 
     if (users.length === 0) {
       await Signal.updateOne(
@@ -361,6 +425,14 @@ export class SignalBroadcastService {
         livePlaced: 0,
         demoPlaced: 0,
         executions: [],
+        aliceValidation:
+          aliceValidation.summary.totalAliceUsers > 0
+            ? {
+                eligible: aliceValidation.eligible,
+                rejected: aliceValidation.rejected,
+                summary: aliceValidation.summary,
+              }
+            : undefined,
       };
     }
 
@@ -495,7 +567,11 @@ export class SignalBroadcastService {
         return;
       }
 
-      const rawClientCode = user.client_key ? decrypt(user.client_key) : "";
+      const rawClientCode = user.client_key
+        ? decrypt(user.client_key)
+        : normalizeBroker(user.broker) === "ZERODHA"
+        ? String(user.zerodha_user_id || "")
+        : "";
       if (!rawClientCode || rawClientCode.trim().length < 3) {
         failedCount += 1;
         await markFailure(user, clientOrderId, correlationId, "Client code missing or invalid");
@@ -756,6 +832,16 @@ export class SignalBroadcastService {
       livePlaced: liveCount,
       demoPlaced: demoCount,
       executions,
+      aliceValidation:
+        aliceValidation.summary.totalAliceUsers > 0
+          ? {
+              eligible: aliceValidation.eligible,
+              rejected: aliceValidation.rejected,
+              summary: aliceValidation.summary,
+              instrumentResolved: aliceValidation.instrumentResolved,
+              instrumentToken: aliceValidation.instrumentToken,
+            }
+          : undefined,
     };
   }
 }

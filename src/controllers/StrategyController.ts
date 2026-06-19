@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import Strategy from '../models/Strategy';
+import User from '../models/User';
 import Joi from 'joi';
 
 const strategySchema = Joi.object({
@@ -16,10 +17,17 @@ export const addStrategy = async (req: Request, res: Response) => {
         const newStrategy = new Strategy(req.body);
         await newStrategy.save();
 
+        // Automatically assign this strategy to all active users
+        const updateResult = await User.updateMany(
+            { status: "active" },
+            { $addToSet: { strategies: newStrategy.strategy_name } }
+        );
+
         res.status(201).json({
             status: true,
-            message: "Strategy added successfully",
-            data: newStrategy
+            message: `Strategy added successfully and assigned to ${updateResult.modifiedCount} active users`,
+            data: newStrategy,
+            assignedUsersCount: updateResult.modifiedCount
         });
 
     } catch (err: any) {

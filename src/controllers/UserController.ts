@@ -247,13 +247,22 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
 
         const enrichedUsers = await Promise.all(
             users.map(async (u) => {
-                const base = {
+                const base: any = {
                     ...u.toObject(),
                     client_key: maskKey(u.client_key || ""),
                     api_key: maskKey(u.api_key || ""),
                     broker_session_active: false,
+                    broker_status: "disconnected",
                 };
-                if (u.licence === 'Live' && u.client_key) {
+                if (u.licence === 'Live') {
+                    const brokerName = String(u.broker || '').toLowerCase();
+                    if (brokerName === 'zerodha') {
+                        const { ZerodhaSessionService } = require('../services/ZerodhaSessionService');
+                        const zerodhaStatus = ZerodhaSessionService.getBrokerStatus(u);
+                        base.broker_session_active = zerodhaStatus.status === 'connected';
+                        base.broker_status = zerodhaStatus.status;
+                        base.broker_connected = zerodhaStatus.connected;
+                    } else if (u.client_key) {
                     try {
                         const clientcode = decrypt(u.client_key);
                         const now = new Date();
@@ -267,8 +276,11 @@ export const getUsersByEndDate = async (req: Request, res: Response) => {
                             expiresAt: { $gt: now }
                         }).lean() as any;
                         base.broker_session_active = !!(angelToken?.jwtToken || upstoxToken?.accessToken);
+                        base.broker_status = base.broker_session_active ? 'connected' : 'disconnected';
                     } catch (_e) {
                         base.broker_session_active = false;
+                        base.broker_status = 'disconnected';
+                    }
                     }
                 }
                 return base;
@@ -424,6 +436,38 @@ export const getBrokerSessionStatus = async (req: Request, res: Response) => {
                 broker_session_active: false,
                 reason: 'DEMO_USER',
                 message: 'Demo users do not have broker sessions.'
+            });
+        }
+
+        if (!user.client_key && String(user.broker || '').toLowerCase() !== 'zerodha') {
+            return res.status(200).json({
+                status: true,
+                broker_session_active: false,
+                reason: 'NO_CLIENT_CODE',
+                message: 'No broker client code configured for this user.'
+            });
+        }
+
+        const brokerName = String(user.broker || '').toLowerCase();
+
+        if (brokerName === 'zerodha') {
+            const { ZerodhaSessionService } = require('../services/ZerodhaSessionService');
+            const zerodhaStatus = ZerodhaSessionService.getBrokerStatus(user);
+            const active = zerodhaStatus.status === 'connected';
+
+            return res.status(200).json({
+                status: true,
+                broker_session_active: active,
+                broker: 'Zerodha',
+                broker_status: zerodhaStatus.status,
+                reason: active ? 'SESSION_FOUND' : zerodhaStatus.expired ? 'SESSION_EXPIRED' : 'NO_SESSION',
+                message: active
+                    ? 'Active Zerodha Kite Connect session found.'
+                    : zerodhaStatus.expired
+                    ? 'Zerodha session expired. User must reconnect.'
+                    : 'No active Zerodha session. User must login via Kite Connect.',
+                token_expiry: user.zerodha_token_expiry || null,
+                kite_user_id: user.zerodha_user_id || null,
             });
         }
 

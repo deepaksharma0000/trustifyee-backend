@@ -5,6 +5,9 @@ import mongoose from "mongoose";
 import cors from "cors";
 
 import { config, validateConfig } from "./config";
+import { validateMcpConfig } from "./mcp/config/mcpConfig";
+import { securityHeadersMiddleware } from "./mcp/middleware/securityHeaders.middleware";
+import mcpRoutes from "./mcp/routes/mcp.routes";
 import authRoutes from "./routes/auth";
 import User from "./models/User";
 import orderRoutes from "./routes/orders";
@@ -35,6 +38,9 @@ import subscriptionRoutes from "./routes/subscription.routes";
 import aliceAuthRoutes from "./routes/aliceAuth";
 import aliceOrderRoutes from "./routes/aliceOrders";
 import aliceInstrumentsRoutes from "./routes/aliceInstruments";
+import aliceHealthRoutes from "./routes/aliceHealth.routes";
+import zerodhaAuthRoutes from "./routes/zerodhaAuth";
+import { AliceInstrumentSyncService } from "./services/AliceInstrumentSyncService";
 import { syncPendingOrders } from "./jobs/orderSync.job";
 import { syncSignalExecutionStatuses } from "./jobs/signalStatusSync.job";
 import marketStatusRoutes from "./routes/marketStatus.routes";
@@ -149,6 +155,7 @@ async function start() {
 
     // Fail-fast on unsafe production config (prevents global fallback + leakage)
     validateConfig();
+    validateMcpConfig();
 
     // 1. Run all startup dependency checks (includes exponential Mongo retry & Redis compatibility validation)
     await StartupDiagnostics.runAllChecks();
@@ -207,6 +214,8 @@ async function start() {
       } catch (err: any) {
         log.error("[STARTUP] Failed to initialize realTimeRiskEngine:", err);
       }
+
+      AliceInstrumentSyncService.scheduleStartupSync();
     }
 
     // Recover EventSourcedOMS state and spawn the pending timeout watchdog
@@ -276,6 +285,8 @@ async function start() {
 
     const app = express();
 
+    app.use(securityHeadersMiddleware);
+
     app.use(
       cors({
         origin: (origin, callback) => {
@@ -303,6 +314,8 @@ async function start() {
           "x-access-token",
           "x-user-id",
           "x-correlation-id",
+          "x-mcp-api-key",
+          "x-user-token",
         ],
       })
     );
@@ -369,6 +382,7 @@ async function start() {
     app.use("/api/algo", algoRoutes);
     app.use("/api/strategy", strategyHelperRoutes);
     app.use("/api/alice", aliceAuthRoutes);
+    app.use("/api/alice", aliceHealthRoutes);
     app.use("/api/alice/orders", aliceOrderRoutes);
     app.use("/api/alice/ins", aliceInstrumentsRoutes);
     app.use("/api/help", helpRoutes);
@@ -377,6 +391,7 @@ async function start() {
     app.use("/api/product", productRoutes);
     app.use("/api/subscriptions", subscriptionRoutes);
     app.use("/api/angelone/auth", angeloneAuthRoutes);
+    app.use("/api/zerodha", zerodhaAuthRoutes);
 
     const messageRoutes = require("./routes/message.routes").default;
     const ticketRoutes = require("./routes/ticket.routes").default;
@@ -385,8 +400,17 @@ async function start() {
 
     app.get("/", (_req, res) => res.send("Algo Trading System Backend Active"));
 
-    app.get("/health", (_req, res) => {
+    app.use("/mcp", mcpRoutes);
+
+    app.get("/health", async (_req, res) => {
       const redisState = redisConnection.status;
+      let aliceInstruments: Record<string, unknown> | null = null;
+      try {
+        aliceInstruments = await AliceInstrumentSyncService.getHealthSnapshot();
+      } catch (err: any) {
+        log.warn("[HEALTH] Alice instrument snapshot failed", { message: err?.message });
+      }
+
       res.json({
         status: "ok",
         timestamp: new Date().toISOString(),
@@ -402,6 +426,7 @@ async function start() {
         temporalMetrics: clockDriftMonitor.getMetrics(),
         sessionMetrics: sessionAuthority.getMetrics(),
         sandboxStatus: "operational",
+        aliceInstruments,
       });
     });
 

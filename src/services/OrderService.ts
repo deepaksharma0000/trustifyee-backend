@@ -443,6 +443,7 @@ export async function placeOrderForClient(
   // );
   const user = await User.findById(userId).select(
   "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url " +
+  "+zerodha_access_token +zerodha_api_key +zerodha_api_secret +zerodha_user_id +zerodha_connected +zerodha_token_expiry " +
   "dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected " +
   "api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type validated_pair_at"
   );
@@ -637,7 +638,7 @@ export async function placeOrderForClient(
   // 2. [ALICEBLUE]
   if (user!.broker === "AliceBlue") {
     try {
-      const { placeAliceOrderForClient } = await import("./AliceOrderService");
+      const { placeAliceOrderForClient, parseAliceOrderPlacement } = await import("./AliceOrderService");
       const aliceResp = await placeAliceOrderForClient(clientcode, {
         exchange: orderInput.exchange,
         tradingsymbol: orderInput.tradingsymbol,
@@ -647,18 +648,29 @@ export async function placeOrderForClient(
         ordertype: orderInput.ordertype,
         price: orderInput.price,
         symboltoken: orderInput.symboltoken,
+        producttype: orderInput.producttype,
         triggerPrice: orderInput.triggerPrice,
-        outgoingIp: currentIp // [FIX 2] Pass IP
+        outgoingIp: currentIp,
+        userId: String(userId),
       });
 
-      if (aliceResp && (aliceResp.status === "Ok" || aliceResp.stat === "Ok")) {
+      const parsed = parseAliceOrderPlacement(aliceResp);
+      if (parsed.accepted) {
         user!.consecutive_failures = 0;
         await user!.save();
-        log.info(`PLACE_ORDER_ALICE_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
-        return { status: true, data: aliceResp };
-      } else {
-        throw new Error(aliceResp?.message || aliceResp?.emsg || "Alice Blue rejected order");
+        log.info(`PLACE_ORDER_ALICE_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`, {
+          brokerOrderId: parsed.brokerOrderId,
+        });
+        return {
+          status: true,
+          data: {
+            ...aliceResp,
+            brokerOrderId: parsed.brokerOrderId,
+            orderid: parsed.brokerOrderId,
+          },
+        };
       }
+      throw new Error(parsed.rejectionReason || parsed.brokerMessage || "Alice Blue rejected order");
     } catch (err: any) {
       log.error(`ALICE_ORDER_FAILURE: ${clientcode} - ${err.message}`);
       user!.consecutive_failures = (user!.consecutive_failures || 0) + 1;
@@ -668,6 +680,43 @@ export async function placeOrderForClient(
       await user!.save();
       return { status: false, message: err.message };
     }
+  }
+
+  // 3. [ZERODHA]
+  if (user!.broker === "Zerodha") {
+      try {
+          const { BrokerAdapterRegistry } = await import("../adapters/BrokerAdapterRegistry");
+          const adapter = BrokerAdapterRegistry.getAdapter("Zerodha", { user, outgoingIp: currentIp });
+          const txType = orderInput.side?.toUpperCase() as "BUY" | "SELL";
+          let product = orderInput.producttype || "MIS";
+          if (product === "INTRADAY") product = "MIS";
+          if (product === "DELIVERY") product = "CNC";
+          if (product === "CARRYFORWARD") product = "NRML";
+
+          const zerodhaPayload = {
+              variety: "regular",
+              exchange: orderInput.exchange || "NFO",
+              tradingsymbol: orderInput.tradingsymbol,
+              transaction_type: txType,
+              quantity: orderInput.quantity,
+              order_type: orderInput.ordertype || "MARKET",
+              product: product,
+              validity: "DAY",
+              price: orderInput.ordertype === "LIMIT" ? (orderInput.price || 0) : 0,
+              trigger_price: 0,
+              disclosed_quantity: 0
+          };
+
+          const response = await adapter.placeOrder(user, zerodhaPayload);
+
+          user!.consecutive_failures = 0;
+          await user!.save();
+          log.info(`PLACE_ORDER_ZERODHA_SUCCESS: ${clientcode} - ${orderInput.tradingsymbol}`);
+          return { status: true, data: response };
+      } catch (err: any) {
+          log.error(`ZERODHA_ORDER_FAILURE: ${clientcode} - ${err.message}`);
+          throw err;
+      }
   }
 
   // 😇 [DEFAULT / ANGELONE FLOW] - Unmodified production logic
@@ -1170,6 +1219,43 @@ export async function getOrderStatusForClient(
   outgoingIp?: string,
   symbolMatch?: string // Optional: Find by symbol if orderId is synthetic
 ) {
+  const user = await User.findById(userId).select(
+    "+zerodha_access_token +zerodha_api_key +zerodha_api_secret zerodha_user_id broker"
+  );
+  if (user && user.broker === "AliceBlue") {
+    try {
+      const { getAliceOrderStatusForClient } = await import("./AliceOrderService");
+      const { findAliceOrderInBook } = await import("../utils/aliceResponseParser");
+      const bookResp = await getAliceOrderStatusForClient(clientcode, orderId, symbolMatch, String(userId));
+      const order = findAliceOrderInBook(bookResp?.book || bookResp, orderId, symbolMatch);
+      if (order) {
+        return { status: true, data: order };
+      }
+      return { status: false, message: "Order not found in Alice Blue order book" };
+    } catch (err: any) {
+      log.error(`ALICE_ORDER_STATUS_FAILURE: ${err.message}`);
+      return { status: false, message: err.message };
+    }
+  }
+
+  if (user && user.broker === "Zerodha") {
+    try {
+      const { BrokerAdapterRegistry } = require("../adapters/BrokerAdapterRegistry");
+      const adapter = BrokerAdapterRegistry.getAdapter("Zerodha", { user, outgoingIp });
+      const ordersResp = await adapter.getOrders(user);
+      if (ordersResp && Array.isArray(ordersResp.data)) {
+        const order = ordersResp.data.find((o: any) => String(o.order_id) === String(orderId) || String(o.parent_order_id) === String(orderId));
+        if (order) {
+          return { status: true, data: { status: order.status, orderstatus: order.status, ...order } };
+        }
+      }
+      return { status: false, message: "Order not found in Zerodha orderbook" };
+    } catch (err: any) {
+      log.error(`ZERODHA_ORDER_STATUS_FAILURE: ${err.message}`);
+      return { status: false, message: err.message };
+    }
+  }
+
   const angelTokens = await findAngelTokensForUserClient(String(userId || ""), clientcode);
   if (angelTokens?.jwtToken) {
     const orderBookResp = await executeWithSessionRecovery(
