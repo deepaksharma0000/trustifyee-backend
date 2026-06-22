@@ -132,6 +132,15 @@ function extractSocketToken(req: any): SocketTokenMeta {
   return { token: "", source: "none" };
 }
 
+function getSignalConnectionMeta(req: any) {
+  const pathname = normalizePath(getSignalPath(req));
+  return {
+    pathname,
+    referer: String(req?.headers?.referer || req?.headers?.origin || ''),
+    userAgent: String(req?.headers?.['user-agent'] || ''),
+  };
+}
+
 export function startSignalStream(server: any): void {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -168,17 +177,21 @@ export function startSignalStream(server: any): void {
       log.warn("[SignalStream] Socket rejected: invalid token", {
         path: req?.url,
         tokenSource: tokenMeta.source,
+        ...getSignalConnectionMeta(req),
       });
       ws.send(JSON.stringify({ type: "error", message: "INVALID_TOKEN" }));
       ws.close();
       return;
     }
 
-    registerUserSocket(userId, ws);
+    const connectionMeta = getSignalConnectionMeta(req);
+
+    registerUserSocket(userId, ws, connectionMeta);
     log.info("[SignalStream] User socket connected", {
       userId,
       tokenSource: tokenMeta.source,
       path: req?.url,
+      ...connectionMeta,
     });
     ws.send(JSON.stringify({ type: "connected", userId, message: "Signal stream ready" }));
 

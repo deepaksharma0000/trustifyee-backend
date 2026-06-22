@@ -37,7 +37,11 @@ export function extractUserIdFromToken(token: string): string | null {
  * Register a WebSocket connection for a user.
  * Called when a user connects to /ws/signals.
  */
-export function registerUserSocket(userId: string, ws: WebSocket): void {
+export function registerUserSocket(
+  userId: string,
+  ws: WebSocket,
+  meta?: { pathname?: string; referer?: string; userAgent?: string }
+): void {
   const existing = userSockets.get(userId);
   if (existing && existing !== ws && existing.readyState === WebSocket.OPEN) {
     try {
@@ -54,7 +58,11 @@ export function registerUserSocket(userId: string, ws: WebSocket): void {
       message: err?.message || String(err),
     });
   });
-  log.info(`[UserSocket] User ${userId} connected. Total connected: ${userSockets.size}`);
+  log.info(`[UserSocket] User ${userId} connected. Total connected: ${userSockets.size}`, {
+    pathname: meta?.pathname || "/ws/signals",
+    referer: meta?.referer || "",
+    userAgent: meta?.userAgent || "",
+  });
 }
 
 /**
