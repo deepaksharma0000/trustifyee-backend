@@ -8,7 +8,7 @@ import { config } from "../config";
 import log from "../utils/logger";
 import { ensureEncrypted } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
-import { getOrCreateUserAngelAdapter, SYSTEM_DATA_SCOPE_USER_ID } from "./AngelAdapterRegistry";
+import { getOrCreateUserAngelAdapter, getSystemDataScopeUserId } from "./AngelAdapterRegistry";
 import { resolveAngelSessionContext } from "./AngelSessionContextService";
 import { validateInstrumentFromMaster } from "./InstrumentValidationService";
 
@@ -270,7 +270,7 @@ async function getLtpInternal(
     symbol: string,
     token: string,
     apiKey: string,
-    scopeUserId = SYSTEM_DATA_SCOPE_USER_ID
+    scopeUserId = getSystemDataScopeUserId()
 ) {
     const key = `${exchange}:${symbol}:${token}`;
     const dynamicAdapter = getOrCreateUserAngelAdapter(scopeUserId, apiKey);
@@ -610,7 +610,7 @@ export async function getInstrumentLtp(
                             }
                         } else {
                             const repairedToken = await attemptLiveTokenRepair(
-                                String(session?.userId || SYSTEM_DATA_SCOPE_USER_ID),
+                                String(session?.userId || getSystemDataScopeUserId()),
                                 sessionApiKey,
                                 jwtForRequest,
                                 normalizedExchange,
@@ -727,7 +727,7 @@ export async function getMultipleInstrumentsLtp(
                 const decJwtToken = await ensureEncrypted(session, 'jwtToken', 'batch_ltp_val');
                 
                 const dynamicAdapter = getOrCreateUserAngelAdapter(
-                    String(session?.userId || SYSTEM_DATA_SCOPE_USER_ID),
+                    String(session?.userId || getSystemDataScopeUserId()),
                     sessionApiKey
                 );
                 const resp = await throttledFetch('BATCH_LTP', () => dynamicAdapter.getMarketData(decJwtToken, "FULL", payload));

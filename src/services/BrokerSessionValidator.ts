@@ -1,15 +1,9 @@
-import AngelTokensModel from "../models/AngelTokens";
-import User from "../models/User";
 import { config } from "../config";
 import { apiKeyFingerprint } from "../utils/apiKeyRouteBinding";
 import { decrypt, ensureEncrypted, isMigrated } from "../utils/encryption";
 import { parseAngelResponse } from "../utils/angelResponseParser";
 import { StartupDiagnostics } from "../utils/startupDiagnostics";
 import log from "../utils/logger";
-import {
-  getPlatformAngelApiKey,
-  shouldUsePlatformAngelApiKey,
-} from "../utils/platformAngelApiKey";
 
 export type BrokerExecutionContext = {
   userId: string;
@@ -18,7 +12,7 @@ export type BrokerExecutionContext = {
   purpose: string;
   apiKeyLast4: string;
   apiKeyFingerprint: string;
-  apiKeySource: "TOKEN" | "PROFILE" | "PLATFORM" | "NONE";
+  apiKeySource: "TOKEN" | "PROFILE" | "NONE";
   requestIp: string;
   routeType: string;
   tokenOwner: string;
@@ -29,7 +23,7 @@ export type BrokerExecutionContext = {
 
 export type ResolvedApiKeyPair = {
   apiKey: string;
-  source: "TOKEN" | "PROFILE" | "PLATFORM";
+  source: "TOKEN" | "PROFILE";
   synced: boolean;
   mismatchDetected: boolean;
 };
@@ -106,18 +100,6 @@ export async function resolveConsistentApiKey(input: {
 }): Promise<ResolvedApiKeyPair> {
   const { angelTokens, profile, userId, clientcode } = input;
 
-  if (shouldUsePlatformAngelApiKey(profile)) {
-    const platformKey = getPlatformAngelApiKey();
-    if (platformKey) {
-      return {
-        apiKey: platformKey,
-        source: "PLATFORM",
-        synced: false,
-        mismatchDetected: false,
-      };
-    }
-  }
-
   const tokenApiKey = angelTokens?.apiKey
     ? await ensureEncrypted(angelTokens, "apiKey", `user_${userId}_session_api_${clientcode}`)
     : "";
@@ -130,19 +112,7 @@ export async function resolveConsistentApiKey(input: {
   }
 
   if (!tokenApiKey && profileApiKey) {
-    try {
-      const profileEncryptedKey = String(profile.api_key || "").trim();
-      if (profileEncryptedKey && angelTokens?._id) {
-        await AngelTokensModel.updateOne({ _id: angelTokens._id }, { $set: { apiKey: profileEncryptedKey } });
-        angelTokens.apiKey = profileEncryptedKey;
-      }
-    } catch (syncErr: any) {
-      log.warn("[BROKER_API_KEY_SYNC_WARN] Failed writing profile api_key to AngelTokens.", {
-        clientcode,
-        message: syncErr?.message,
-      });
-    }
-    return { apiKey: profileApiKey, source: "PROFILE", synced: true, mismatchDetected: false };
+    return { apiKey: profileApiKey, source: "PROFILE", synced: false, mismatchDetected: false };
   }
 
   if (tokenApiKey && !profileApiKey) {
@@ -153,41 +123,75 @@ export async function resolveConsistentApiKey(input: {
     return { apiKey: tokenApiKey, source: "TOKEN", synced: false, mismatchDetected: false };
   }
 
-  const tokenUpdatedAt = new Date(angelTokens?.updatedAt || 0).getTime();
-  const profileUpdatedAt = new Date(profile?.updated_at || profile?.updatedAt || 0).getTime();
-  const profileLooksNewer = profileUpdatedAt > tokenUpdatedAt + 1000;
-  const chosen = profileLooksNewer ? profileApiKey : tokenApiKey;
-  const source: "TOKEN" | "PROFILE" = profileLooksNewer ? "PROFILE" : "TOKEN";
-
-  log.warn("[BROKER_API_KEY_MISMATCH] Profile api_key differs from AngelTokens.apiKey.", {
+  log.error("[BROKER_API_KEY_MISMATCH] AngelTokens.apiKey !== User.api_key — reject execution.", {
     clientcode,
     tokenApiKey: apiKeyFingerprint(tokenApiKey),
     profileApiKey: apiKeyFingerprint(profileApiKey),
-    chosenSource: source,
   });
 
-  try {
-    if (profileLooksNewer) {
-      const profileEncryptedKey = String(profile.api_key || "").trim();
-      if (profileEncryptedKey && angelTokens?._id) {
-        await AngelTokensModel.updateOne({ _id: angelTokens._id }, { $set: { apiKey: profileEncryptedKey } });
-        angelTokens.apiKey = profileEncryptedKey;
-      }
-    } else {
-      const tokenEncryptedKey = String(angelTokens.apiKey || "").trim();
-      if (tokenEncryptedKey && profile?._id) {
-        await User.updateOne({ _id: profile._id }, { $set: { api_key: tokenEncryptedKey } });
-        profile.api_key = tokenEncryptedKey;
-      }
-    }
-  } catch (syncErr: any) {
-    log.warn("[BROKER_API_KEY_SYNC_WARN] Failed syncing mismatched api keys.", {
-      clientcode,
-      message: syncErr?.message,
-    });
+  return {
+    apiKey: tokenApiKey,
+    source: "TOKEN",
+    synced: false,
+    mismatchDetected: true,
+  };
+}
+
+/**
+ * Validates AngelTokens document belongs to the order user and matches profile client + api key.
+ */
+export async function assertAngelTokenOwnership(input: {
+  orderUserId: string;
+  clientcode: string;
+  angelTokens: any;
+  profile?: any;
+}): Promise<void> {
+  const { orderUserId, clientcode, angelTokens, profile } = input;
+
+  const tokenUserId = String(angelTokens?.userId || "").trim();
+  if (!tokenUserId || tokenUserId !== String(orderUserId).trim()) {
+    throw new Error(
+      `TOKEN_OWNERSHIP_VIOLATION: AngelTokens.userId (${tokenUserId || "MISSING"}) !== order.userId (${orderUserId})`
+    );
   }
 
-  return { apiKey: chosen, source, synced: true, mismatchDetected: true };
+  const tokenClient = String(angelTokens?.clientcode || "").trim().toUpperCase();
+  const expectedClient = String(clientcode || "").trim().toUpperCase();
+  if (!tokenClient || tokenClient !== expectedClient) {
+    throw new Error(
+      `TOKEN_OWNERSHIP_VIOLATION: AngelTokens.clientcode (${tokenClient || "MISSING"}) !== broker.clientCode (${expectedClient})`
+    );
+  }
+
+  if (profile?.client_key) {
+    const profileClient = (await ensureEncrypted(profile, "client_key", `ownership_${orderUserId}`))
+      .trim()
+      .toUpperCase();
+    if (profileClient && profileClient !== expectedClient) {
+      throw new Error(
+        `TOKEN_OWNERSHIP_VIOLATION: User.client_key (${profileClient}) !== order clientCode (${expectedClient})`
+      );
+    }
+  }
+
+  const tokenApiKey = angelTokens?.apiKey
+    ? await ensureEncrypted(angelTokens, "apiKey", `ownership_api_${orderUserId}_${clientcode}`)
+    : "";
+  const profileApiKey = profile?.api_key
+    ? await ensureEncrypted(profile, "api_key", `ownership_profile_${orderUserId}_${clientcode}`)
+    : "";
+
+  if (tokenApiKey && profileApiKey && tokenApiKey !== profileApiKey) {
+    throw new Error(
+      "TOKEN_OWNERSHIP_VIOLATION: AngelTokens.apiKey !== User.api_key. Reconnect broker from Profile."
+    );
+  }
+
+  if (!tokenApiKey && !profileApiKey) {
+    throw new Error(
+      "TOKEN_OWNERSHIP_VIOLATION: No SmartAPI Private Key on session or profile. Reconnect broker."
+    );
+  }
 }
 
 export function assertJwtMatchesClientCode(jwtToken: string, expectedClientCode: string): void {
@@ -234,8 +238,8 @@ export function buildIpWhitelistDiagnostics(input?: {
     dedicatedIpEnabled: Boolean(input?.dedicatedIpEnabled),
     userOutgoingIp: input?.userOutgoingIp || null,
     explanation:
-      "Server config match only verifies PUBLIC_IP env equals VPS egress. With USE_PLATFORM_ANGEL_API_KEY (default), all users share ANGEL_API_KEY — whitelist that app once. Otherwise each user SmartAPI app must whitelist the VPS IP.",
-    perUserPortalActionRequired: process.env.USE_PLATFORM_ANGEL_API_KEY === "false",
+      "Each user must register their own SmartAPI app and whitelist PUBLIC_IP on the Angel One developer portal.",
+    perUserPortalActionRequired: true,
   };
 }
 

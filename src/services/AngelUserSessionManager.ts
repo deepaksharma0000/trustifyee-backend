@@ -9,9 +9,9 @@ import {
   isAngelApiKeyError,
   logBrokerExecutionContext,
   resolveConsistentApiKey,
+  assertAngelTokenOwnership,
 } from "./BrokerSessionValidator";
 import { apiKeyFingerprint, resolveRouteBinding } from "../utils/apiKeyRouteBinding";
-import { getPlatformAngelApiKey, shouldUsePlatformAngelApiKey } from "../utils/platformAngelApiKey";
 import { getAngelNetworkIdentity } from "../utils/angelNetworkIdentity";
 import { config } from "../config";
 import { parseAngelResponse } from "../utils/angelResponseParser";
@@ -111,7 +111,13 @@ async function resolveApiKey(session: any, userId: string, purpose: string) {
     clientcode: String(session?.clientcode || ""),
   });
 
-  return { apiKey: resolved.apiKey, source: resolved.source, profile, loaded };
+  return {
+    apiKey: resolved.apiKey,
+    source: resolved.source,
+    mismatchDetected: resolved.mismatchDetected,
+    profile,
+    loaded,
+  };
 }
 
 function assertNoAdminSessionLeak(input: SessionInput, session: any) {
@@ -192,44 +198,17 @@ export async function getIsolatedAngelSession(input: SessionInput): Promise<Isol
   let apiKey = keyResolution.apiKey;
   const profile = keyResolution.profile;
 
-  // Re-login with platform SmartAPI key when an old per-user key session is still cached.
-  if (
-    shouldUsePlatformAngelApiKey(profile) &&
-    keyResolution.source === "PLATFORM" &&
-    apiKey
-  ) {
-    const tokenStoredKey = session.apiKey
-      ? await ensureEncrypted(session, "apiKey", `${input.purpose}_token_api_${clientcode}`)
-      : "";
-    const platformKey = getPlatformAngelApiKey();
-    if (tokenStoredKey && tokenStoredKey !== platformKey) {
-      log.warn("[ANGEL_PLATFORM_KEY_RESYNC] Session JWT was issued with a different API key. Re-authenticating with platform key.", {
-        userId,
-        clientcode,
-        purpose: input.purpose,
-      });
-      const recovered = await recoverSessionByRefreshOrLogin(session, `${input.purpose}_platform_key_resync`);
-      if (!recovered.ok) {
-        throw new Error(
-          `ANGEL_PLATFORM_KEY_RESYNC_FAILED: ${recovered.reason || "Reconnect broker from profile settings."}`
-        );
-      }
-      session = await AngelTokensModel.findById(session._id).lean();
-      if (!session) {
-        throw new Error("ANGEL_PLATFORM_KEY_RESYNC_FAILED: session missing after platform re-login");
-      }
-      jwtToken = session.jwtToken
-        ? await ensureEncrypted(session, "jwtToken", `${input.purpose}_jwt_resync_${clientcode}`)
-        : "";
-      feedToken = session.feedToken
-        ? await ensureEncrypted(session, "feedToken", `${input.purpose}_feed_resync_${clientcode}`)
-        : "";
-      refreshToken = session.refreshToken
-        ? await ensureEncrypted(session, "refreshToken", `${input.purpose}_refresh_resync_${clientcode}`)
-        : "";
-      keyResolution = await resolveApiKey(session, userId, input.purpose);
-      apiKey = keyResolution.apiKey;
-    }
+  await assertAngelTokenOwnership({
+    orderUserId: userId,
+    clientcode,
+    angelTokens: session,
+    profile,
+  });
+
+  if (keyResolution.mismatchDetected) {
+    throw new Error(
+      "BROKER_API_KEY_TOKEN_MISMATCH: User api_key does not match AngelTokens.api_key. Reconnect broker from Profile."
+    );
   }
 
   if (!clientcode || !jwtToken || !apiKey) {
@@ -266,7 +245,7 @@ export async function getIsolatedAngelSession(input: SessionInput): Promise<Isol
     purpose: input.purpose,
     apiKeyLast4: apiKey.slice(-4),
     apiKeyFingerprint: apiKeyFingerprint(apiKey),
-    apiKeySource: keyResolution.source === "PLATFORM" ? "PLATFORM" : "TOKEN",
+    apiKeySource: keyResolution.source === "PROFILE" ? "PROFILE" : "TOKEN",
     requestIp,
     routeType: adapterAgentUrl ? "AGENT_ROUTE" : dedicatedIpEnabled ? "DEDICATED" : "SERVER_SHARED_IP",
     tokenOwner: userId,

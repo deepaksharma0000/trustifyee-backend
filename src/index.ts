@@ -21,6 +21,7 @@ import appAuthRoutes from "./routes/appAuth.routes";
 import adminRoutes from "./routes/admin.routes";
 import userRoutes from "./routes/user.routes";
 import adminModuleRoutes from "./routes/admin_modules.routes";
+import adminAngelAuditRoutes from "./routes/adminAngelAudit.routes";
 import upstoxAuthRoutes from "./routes/upstoxAuth";
 import upstoxOrder from "./routes/upstoxOrders";
 import upstoxAlgoOrderRoutes from "./routes/upstoxAlgoOrderRoutes";
@@ -328,6 +329,7 @@ async function start() {
     app.use("/api", adminRoutes);
     app.use("/api", userRoutes);
     app.use("/api", adminModuleRoutes);
+    app.use("/api/admin", adminAngelAuditRoutes);
 
     app.use("/api/auth", authRoutes);
     app.use("/api/orders", orderRoutes);

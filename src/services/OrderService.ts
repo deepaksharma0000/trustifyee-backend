@@ -27,6 +27,7 @@ import {
   buildIpWhitelistDiagnostics,
   logBrokerExecutionContext,
   resolveConsistentApiKey,
+  assertAngelTokenOwnership,
 } from "./BrokerSessionValidator";
 
 
@@ -487,6 +488,12 @@ export async function placeOrderForClient(
     routeIp: user.validated_route_ip,
     routeType: user.validated_route_type
   });
+  if ((user as any).requiresReconnect === true) {
+    throw new Error(
+      "BROKER_RECONNECT_REQUIRED: Broker session invalidated by migration. Reconnect from Profile → Broker Connect."
+    );
+  }
+
   if (user.trading_paused) {
     log.warn(`TRADE_BLOCKED: Trading is paused for user ${user.user_name}`, {
       userId: String(userId),
@@ -762,7 +769,12 @@ export async function placeOrderForClient(
         throw new Error(`No Angel session for user ${userId} / client ${clientcode}. Reconnect broker.`);
       }
 
-
+      await assertAngelTokenOwnership({
+        orderUserId: String(userId),
+        clientcode,
+        angelTokens,
+        profile: user,
+      });
 
       // 🚀 [PRE-EXECUTION GUARD] - Fall fast if state is invalid
       const decJwtToken = await ensureEncrypted(angelTokens, 'jwtToken', `user_${userId}_order`);

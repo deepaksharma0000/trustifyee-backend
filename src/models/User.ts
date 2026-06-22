@@ -41,6 +41,7 @@ export interface IUser extends Document {
     validated_route_ip?: string; // verified effective route IP
     validated_route_type?: 'USER_STATIC_IP' | 'SERVER_SHARED_IP' | 'AGENT_ROUTE' | 'UNKNOWN';
     validated_pair_at?: Date;
+    requiresReconnect?: boolean;
     strategy_id_map?: Map<string, string>; // { 'Alpha': 'STRAT_001', 'IronCondor': 'STRAT_002' }
 
     // Zerodha Kite Connect credentials & session details
@@ -101,6 +102,7 @@ const UserSchema: Schema = new Schema({
     validated_route_ip: { type: String },
     validated_route_type: { type: String, enum: ['USER_STATIC_IP', 'SERVER_SHARED_IP', 'AGENT_ROUTE', 'UNKNOWN'] },
     validated_pair_at: { type: Date },
+    requiresReconnect: { type: Boolean, default: false },
 
     // Zerodha Kite Connect credentials & session details
     zerodha_user_id: { type: String },

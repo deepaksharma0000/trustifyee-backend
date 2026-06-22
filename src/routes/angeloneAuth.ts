@@ -15,7 +15,6 @@ import crypto from 'crypto';
 import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
 import { buildApiKeyRouteBinding } from '../utils/apiKeyRouteBinding';
 import { assertApiKeyJwtPair, buildIpWhitelistDiagnostics, validateApiKeyFormat } from '../services/BrokerSessionValidator';
-import { getPlatformAngelApiKey, shouldUsePlatformAngelApiKey } from '../utils/platformAngelApiKey';
 import { isMigrated } from '../utils/encryption';
 import {
     assertEncryptedRoundTrip,
@@ -115,17 +114,15 @@ router.post('/generate-session', auth, async (req: any, res) => {
             log.info(`[API_KEY_SOURCE] USER (masked) | Using provided key for ${client_code}`);
         }
         
-        const decryptedApiKey = resolvedApiKey; // For clarity with existing code
+        const decryptedApiKey = resolvedApiKey;
 
-        const usePlatformKey = userType !== 'admin' && shouldUsePlatformAngelApiKey(profile);
-        const sessionApiKey = usePlatformKey ? getPlatformAngelApiKey() : decryptedApiKey;
-        if (usePlatformKey) {
-            log.info(`[AUTH] Using platform SmartAPI key for shared VPS broker connect (${client_code})`);
-        }
+        // Per-user SmartAPI Private Key only (Working System A — no platform key substitution)
+        const sessionApiKey = decryptedApiKey;
+
         if (!sessionApiKey) {
             return res.status(400).json({
                 status: false,
-                error: 'Platform ANGEL_API_KEY is missing. Set ANGEL_API_KEY in server environment for shared VPS execution.',
+                error: 'AngelOne API Key is missing. Each user must provide their own SmartAPI Private Key.',
             });
         }
 
@@ -147,26 +144,36 @@ router.post('/generate-session', auth, async (req: any, res) => {
         // Step 5: Resolve TOTP (Request Body TOTP > Request Body Secret > Profile Secret)
         let totp: string = cleanCredentialInput(req.body.totp);
         let totp_secret: string = cleanCredentialInput(req.body.totp_secret || req.body.totpSecret).toUpperCase();
-        if (!totp && !totp_secret && profile.broker_totp_secret) {
-            totp_secret = await ensureEncrypted(profile, 'broker_totp_secret', `user_${userId}`);
-            log.info(`[AUTH] Smart Login: Using saved TOTP secret for ${client_code}`);
-        }
 
-        // Step 6: Validate required fields
+        // Step 6: Validate required fields (all mandatory for Live trading)
         if (!client_code) {
             return res.status(400).json({ status: false, error: 'Client Code is required. Please enter your AngelOne Client Code.' });
         }
         if (!password) {
             return res.status(400).json({ status: false, error: 'Password is required. Please enter your AngelOne password.' });
         }
-        if (!totp && !totp_secret) {
-            return res.status(400).json({ status: false, error: 'TOTP or TOTP Secret is required. Enter current 6-digit TOTP or your TOTP secret key.' });
-        }
-        if (!totp_secret && !profile.broker_totp_secret) {
+        if (!bodyApiKey && !profileApiKey) {
             return res.status(400).json({
                 status: false,
-                error: 'TOTP Secret Key is required for automated live trade execution. Manual TOTP alone cannot recover broker sessions for queued trades.'
+                error: 'SmartAPI Private Key (api_key) is required. Register your own Angel One developer app.',
             });
+        }
+        const hasTotpSecret = Boolean(
+            cleanCredentialInput(req.body.totp_secret || req.body.totpSecret) ||
+            profile.broker_totp_secret
+        );
+        if (!hasTotpSecret) {
+            return res.status(400).json({
+                status: false,
+                error: 'TOTP Secret Key is required for automated live trade execution and session recovery.',
+            });
+        }
+        if (!totp && !totp_secret && profile.broker_totp_secret) {
+            totp_secret = await ensureEncrypted(profile, 'broker_totp_secret', `user_${userId}`);
+            log.info(`[AUTH] Smart Login: Using saved TOTP secret for ${client_code}`);
+        }
+        if (!totp && !totp_secret) {
+            return res.status(400).json({ status: false, error: 'TOTP or TOTP Secret is required. Enter current 6-digit TOTP or your TOTP secret key.' });
         }
 
         // FIX: Force IPv4 validation and fallback
@@ -272,10 +279,11 @@ router.post('/generate-session', auth, async (req: any, res) => {
         const updatePayload: any = {
             broker_connected: true,
             broker_verified: true,
-            trading_paused: false, // [FIX] Reset circuit breaker
-            consecutive_failures: 0, // [FIX] Reset failure count
+            trading_paused: false,
+            consecutive_failures: 0,
             client_key: encryptedClientCode,
-            broker: 'AngelOne'
+            broker: 'AngelOne',
+            requiresReconnect: false,
         };
 
         if (userType !== 'admin') {

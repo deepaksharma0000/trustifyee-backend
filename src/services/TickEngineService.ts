@@ -2,10 +2,10 @@
 import { WebSocket } from "ws";
 import Redis from "ioredis";
 import AngelTokensModel from "../models/AngelTokens";
-import User from "../models/User";
 import { config } from "../config";
-import { decrypt } from "../utils/encryption";
+import { decrypt, encrypt } from "../utils/encryption";
 import { recoverSessionByRefreshOrLogin } from "./AngelSessionLifecycleService";
+import { getOrCreateUserAngelAdapter, getSystemDataScopeUserId } from "./AngelAdapterRegistry";
 import { redisBullConnection } from "../utils/redis";
 import log from "../utils/logger";
 import { clockDriftMonitor } from "./ClockDriftMonitor";
@@ -61,6 +61,7 @@ export class TickEngineService {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
   private lastMessageTime = 0;
+  private lastSessionRefreshAt: Date | null = null;
   private currentStreamUrl = "";
   private streamUrlCandidates: string[] = [];
 
@@ -113,6 +114,30 @@ export class TickEngineService {
   getMetrics(): TickMetrics {
     this.metrics.activeSubscriptionsCount = this.activeSubscriptions.size;
     return { ...this.metrics };
+  }
+
+  /** Admin audit snapshot for system market-data feed health. */
+  getSystemDataAuditSnapshot() {
+    const wsOpen = this.ws?.readyState === WebSocket.OPEN;
+    const staleMs = this.lastMessageTime ? Date.now() - this.lastMessageTime : null;
+    let marketFeedStatus: "CONNECTED" | "CONNECTING" | "DISCONNECTED" | "DEGRADED" = "DISCONNECTED";
+    if (wsOpen && !this.isDegraded) marketFeedStatus = "CONNECTED";
+    else if (this.isConnecting) marketFeedStatus = "CONNECTING";
+    else if (this.isDegraded) marketFeedStatus = "DEGRADED";
+
+    return {
+      websocketConnected: wsOpen,
+      isConnecting: this.isConnecting,
+      isStarted: this.isStarted,
+      isDegraded: this.isDegraded,
+      marketFeedStatus,
+      lastMessageAgeMs: staleMs,
+      reconnectAttempts: this.reconnectAttempts,
+      activeSubscriptions: this.activeSubscriptions.size,
+      currentStreamUrl: this.currentStreamUrl || null,
+      lastSessionRefresh: this.lastSessionRefreshAt ? this.lastSessionRefreshAt.toISOString() : null,
+      metrics: this.getMetrics(),
+    };
   }
 
   async updateSessionCredentials(newJwt: string) {
@@ -593,149 +618,153 @@ export class TickEngineService {
     });
   }
 
+  private assertDataScopeToken(tokenDoc: any, dataUserId: string, clientCode: string): void {
+    const owner = String(tokenDoc?.userId || "").trim();
+    const client = String(tokenDoc?.clientcode || "").trim().toUpperCase();
+    if (owner !== String(dataUserId).trim()) {
+      throw new Error(
+        `TickEngine TOKEN_SCOPE_VIOLATION: AngelTokens.userId (${owner || "MISSING"}) !== SYSTEM_DATA_SCOPE_USER_ID (${dataUserId})`
+      );
+    }
+    if (client !== clientCode.trim().toUpperCase()) {
+      throw new Error(
+        `TickEngine TOKEN_SCOPE_VIOLATION: AngelTokens.clientcode (${client || "MISSING"}) !== DATA_CLIENT_CODE (${clientCode})`
+      );
+    }
+  }
+
   private async getSystemSession() {
-    const clientCode = config.dataClientCode || "";
+    const clientCode = String(config.dataClientCode || "").trim();
+    const dataUserId = getSystemDataScopeUserId();
+    const dataApiKey = String(config.dataApiKey || "").trim();
+
     if (!clientCode) {
-      throw new Error("System DATA_CLIENT_CODE is not configured");
+      throw new Error("DATA_CLIENT_CODE is not configured");
+    }
+    if (!dataUserId) {
+      throw new Error("SYSTEM_DATA_SCOPE_USER_ID is not configured");
+    }
+    if (!dataApiKey || dataApiKey.length < 6) {
+      throw new Error("DATA_API_KEY is required for TickEngine (SmartAPI Private Key, min 6 chars)");
     }
 
-    // Prefer system DATA_CLIENT_CODE row keyed by clientcode; never use another user's JWT.
     let tokenDoc: any = await AngelTokensModel.findOne({
+      userId: dataUserId,
       clientcode: clientCode,
-      jwtToken: { $exists: true, $ne: "" },
     })
       .sort({ updatedAt: -1 })
       .lean();
-    const isEnvConfigured = Boolean(process.env.DATA_PASSWORD && process.env.DATA_TOTP_SECRET);
 
     if (!tokenDoc) {
-      const allUsers = await User.find({}).select("+client_key +broker_password +broker_totp_secret +api_key +clientcode").lean() as any[];
-      let matchingUser = allUsers.find((u) => {
-        const decryptedKey = u.client_key ? decrypt(u.client_key) : "";
-        return decryptedKey === clientCode || u.clientcode === clientCode;
+      log.info("[TickEngine] Creating scoped AngelTokens row for system data account", {
+        dataUserId,
+        clientCode,
       });
-
-      if (!matchingUser) {
-        const Admin = require("../models/Admin").default || require("../models/Admin");
-        const allAdmins = await Admin.find({}).select("+client_key +panel_client_key +broker_password +broker_totp_secret +api_key +clientcode").lean() as any[];
-        matchingUser = allAdmins.find((a: any) => {
-          const decryptedKey = a.client_key ? decrypt(a.client_key) : "";
-          const decryptedPanelKey = a.panel_client_key ? decrypt(a.panel_client_key) : "";
-          return decryptedKey === clientCode || decryptedPanelKey === clientCode || a.clientcode === clientCode;
-        });
-      }
-
-      if (!matchingUser && isEnvConfigured) {
-        const mongoose = require("mongoose");
-        log.warn(`[TickEngine] System client code ${clientCode} user profile not found in database. Using dummy System User context from ENV.`);
-        matchingUser = { 
-          _id: new mongoose.Types.ObjectId("000000000000000000000000"),
-          api_key: process.env.DATA_API_KEY || process.env.ANGEL_API_KEY || ""
-        };
-      }
-
-      if (matchingUser) {
-        log.info(`[TickEngine] Creating new AngelTokens record for system user/admin ${matchingUser._id}`);
-        tokenDoc = await AngelTokensModel.create({
-          userId: matchingUser._id,
-          clientcode: clientCode,
-          apiKey: matchingUser.api_key || process.env.DATA_API_KEY || process.env.ANGEL_API_KEY || "",
-        });
-        tokenDoc = (tokenDoc as any).toObject();
-      } else {
-        throw new Error(`System client code ${clientCode} user profile not found in database and ENV credentials missing.`);
-      }
+      const created = await AngelTokensModel.create({
+        userId: dataUserId,
+        clientcode: clientCode,
+        apiKey: encrypt(dataApiKey),
+      });
+      tokenDoc = (created as any).toObject();
     }
 
+    this.assertDataScopeToken(tokenDoc, dataUserId, clientCode);
+
+    const resolvedApiKey = dataApiKey;
     const context = "tick_engine_auth";
-    const apiKeyRaw = tokenDoc!.apiKey ? decrypt(tokenDoc!.apiKey) : (process.env.DATA_API_KEY || process.env.ANGEL_API_KEY || "");
-    const apiKeyToUse = apiKeyRaw || tokenDoc!.apiKey || "";
+    const isEnvConfigured = Boolean(config.dataPassword && config.dataTotpSecret);
 
     try {
-      const tokenOwnerUserId = tokenDoc?.userId ? String(tokenDoc.userId) : "";
-      if (!tokenOwnerUserId || tokenOwnerUserId === "000000000000000000000000") {
-        throw new Error("TickEngine session using dummy/missing userId");
-      }
-
       const validSession = await ensureValidSession({
-        userId: tokenOwnerUserId,
+        userId: dataUserId,
         clientcode: clientCode,
         purpose: context,
       });
 
+      this.lastSessionRefreshAt = new Date();
       return {
         jwtToken: validSession.jwtToken,
         feedToken: validSession.feedToken,
-        apiKey: validSession.apiKey,
+        apiKey: resolvedApiKey,
         clientCode,
+        dataUserId,
       };
     } catch (err: any) {
-      log.warn("[TickEngine] ensureValidSession failed or dummy user, falling back to recovery path", {
+      log.warn("[TickEngine] ensureValidSession failed, falling back to scoped recovery path", {
+        dataUserId,
         clientCode,
         message: err?.message,
       });
     }
 
-    const decryptedJwt = tokenDoc!.jwtToken ? decrypt(tokenDoc!.jwtToken) : "";
-    const decryptedFeed = tokenDoc!.feedToken ? decrypt(tokenDoc!.feedToken) : "";
+    const decryptedJwt = tokenDoc.jwtToken ? decrypt(String(tokenDoc.jwtToken)) : "";
+    const decryptedFeed = tokenDoc.feedToken ? decrypt(String(tokenDoc.feedToken)) : "";
 
     if (!decryptedJwt || !decryptedFeed) {
-      log.info(`[TickEngine] Tokens missing in session for ${clientCode}. Triggering recovery.`);
-      
+      log.info(`[TickEngine] Tokens missing for scoped data account ${clientCode}. Triggering recovery.`);
+
       if (isEnvConfigured) {
-        log.info(`[TickEngine] Using system environment credentials to authenticate data account.`);
-        const { getOrCreateUserAngelAdapter } = require("./AngelAdapterRegistry");
-        const adapter = getOrCreateUserAngelAdapter("system_data", apiKeyToUse, {});
+        log.info("[TickEngine] Authenticating system data account via DATA_* env credentials.");
+        const adapter = getOrCreateUserAngelAdapter(dataUserId, resolvedApiKey, { isDataAccount: true });
         const loginResponse = await adapter.generateSession({
-            clientcode: clientCode,
-            password: process.env.DATA_PASSWORD || "",
-            totp: "",
-            totp_secret: process.env.DATA_TOTP_SECRET || ""
+          clientcode: clientCode,
+          password: config.dataPassword,
+          totp: "",
+          totp_secret: config.dataTotpSecret,
         });
-        
+
         if (loginResponse && loginResponse.status && loginResponse.data) {
-            const jwtToken = loginResponse.data.jwtToken;
-            const feedToken = loginResponse.data.feedToken;
-            const refreshToken = loginResponse.data.refreshToken;
-            
-            const { encrypt } = require("../utils/encryption");
-            await AngelTokensModel.updateOne({ _id: tokenDoc._id }, {
-                $set: {
-                    jwtToken: encrypt(jwtToken),
-                    feedToken: encrypt(feedToken),
-                    refreshToken: encrypt(refreshToken),
-                    apiKey: encrypt(apiKeyToUse),
-                    updatedAt: new Date()
-                }
-            });
-            return {
-                jwtToken,
-                feedToken,
-                apiKey: apiKeyToUse,
-                clientCode
-            };
-        } else {
-            throw new Error(`Failed to recover system data session natively: ${loginResponse?.message || "Invalid credentials"}`);
+          const jwtToken = loginResponse.data.jwtToken;
+          const feedToken = loginResponse.data.feedToken;
+          const refreshToken = loginResponse.data.refreshToken;
+
+          await AngelTokensModel.updateOne(
+            { userId: dataUserId, clientcode: clientCode },
+            {
+              $set: {
+                jwtToken: encrypt(jwtToken),
+                feedToken: encrypt(feedToken),
+                refreshToken: encrypt(refreshToken),
+                apiKey: encrypt(resolvedApiKey),
+                updatedAt: new Date(),
+              },
+            }
+          );
+          this.lastSessionRefreshAt = new Date();
+          return {
+            jwtToken,
+            feedToken,
+            apiKey: resolvedApiKey,
+            clientCode,
+            dataUserId,
+          };
         }
+        throw new Error(
+          `Failed to recover system data session: ${(loginResponse as any)?.message || (loginResponse as any)?.data?.message || "Invalid DATA_* credentials"}`
+        );
       }
 
       const recovery = await recoverSessionByRefreshOrLogin(tokenDoc, context);
       if (!recovery.ok || !recovery.jwtToken || !recovery.feedToken) {
         throw new Error(`Failed to recover system session via DB: ${recovery.reason}`);
       }
+      this.lastSessionRefreshAt = new Date();
       return {
         jwtToken: recovery.jwtToken,
         feedToken: recovery.feedToken,
-        apiKey: apiKeyToUse,
+        apiKey: resolvedApiKey,
         clientCode,
+        dataUserId,
       };
     }
 
+    this.lastSessionRefreshAt = new Date();
     return {
       jwtToken: decryptedJwt,
       feedToken: decryptedFeed,
-      apiKey: apiKeyToUse,
+      apiKey: resolvedApiKey,
       clientCode,
+      dataUserId,
     };
   }
 }

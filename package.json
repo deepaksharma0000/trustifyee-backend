@@ -10,7 +10,9 @@
     "start": "node dist/index.js",
     "mcp:stdio": "node dist/mcp/standalone.js",
     "lint": "eslint . --ext .ts",
-    "verify:broker": "ts-node src/scripts/verifyBrokerIsolation.ts"
+    "verify:broker": "ts-node src/scripts/verifyBrokerIsolation.ts",
+    "go-live:resolve-data-user": "ts-node scripts/resolve-system-data-scope-user-id.ts",
+    "go-live:verify": "ts-node scripts/go-live-verify.ts"
   },
   "author": "you",
   "license": "MIT",

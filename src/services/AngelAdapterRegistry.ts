@@ -1,4 +1,5 @@
 import { AngelOneAdapter } from "../adapters/AngelOneAdapter";
+import { config } from "../config";
 import log from "../utils/logger";
 
 type AdapterEntry = {
@@ -13,8 +14,16 @@ const adapterCache = new Map<string, AdapterEntry>();
 
 const normalize = (value?: string) => (value || "").toString().trim();
 
-/** System-only scope for market data / admin tick feeds — never used for user order placement. */
-export const SYSTEM_DATA_SCOPE_USER_ID = "__SYSTEM_DATA__";
+/**
+ * MongoDB userId of the dedicated market-data account (from SYSTEM_DATA_SCOPE_USER_ID env).
+ * Never used for user order placement.
+ */
+export function getSystemDataScopeUserId(): string {
+  return String(config.systemDataScopeUserId || "").trim();
+}
+
+/** @deprecated Use getSystemDataScopeUserId() — reads SYSTEM_DATA_SCOPE_USER_ID from env. */
+export const SYSTEM_DATA_SCOPE_USER_ID = getSystemDataScopeUserId;
 
 export type UserAdapterOptions = {
   outgoingIp?: string;
@@ -111,7 +120,8 @@ export function getOrCreateAngelAdapter(
   apiKey: string,
   options?: UserAdapterOptions & { userId?: string }
 ) {
-  const userId = normalize(options?.userId) || (options?.isDataAccount ? SYSTEM_DATA_SCOPE_USER_ID : "");
+  const userId =
+    normalize(options?.userId) || (options?.isDataAccount ? getSystemDataScopeUserId() : "");
 
   if (!userId) {
     throw new Error(

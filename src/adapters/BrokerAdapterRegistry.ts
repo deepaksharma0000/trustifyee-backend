@@ -29,8 +29,9 @@ export class BrokerAdapterRegistry {
       }
 
       if (!apiKey) {
-        const { getPlatformAngelApiKey } = require("../utils/platformAngelApiKey");
-        apiKey = getPlatformAngelApiKey();
+        throw new Error(
+          "ANGEL_ADAPTER_SCOPE_ERROR: User SmartAPI Private Key is required. Reconnect broker from Profile."
+        );
       }
 
       if (userId && apiKey) {

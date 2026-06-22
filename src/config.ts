@@ -87,13 +87,15 @@ export const config = {
     : "SERVER_SHARED_IP"
   ),
   forceSharedVpsRoute: process.env.FORCE_SHARED_VPS_ROUTE !== "false",
-  usePlatformAngelApiKey: process.env.USE_PLATFORM_ANGEL_API_KEY !== "false",
+  usePlatformAngelApiKey: false, // Per-user SmartAPI keys only — see platformAngelApiKey.ts
 
-  // Dedicated Data Feed
+  // Dedicated market-data account (isolated from trading users)
   dataClientCode: process.env.DATA_CLIENT_CODE || "",
   dataApiKey: process.env.DATA_API_KEY || "",
   dataPassword: process.env.DATA_PASSWORD || "",
   dataTotpSecret: process.env.DATA_TOTP_SECRET || "",
+  /** MongoDB _id of the dedicated market-data User/Admin — never a trading account. */
+  systemDataScopeUserId: process.env.SYSTEM_DATA_SCOPE_USER_ID || "",
   agentSecret: process.env.AGENT_SECRET || "default_agent_secret",
   circuitBreakerThreshold: process.env.CIRCUIT_BREAKER_THRESHOLD ? Number(process.env.CIRCUIT_BREAKER_THRESHOLD) : 100,
 
@@ -139,11 +141,42 @@ export const validateConfig = () => {
     throw new Error("FATAL: ALLOW_GLOBAL_SESSION_FALLBACK must be false in production.");
   }
 
-  if (config.nodeEnv === "production" && config.forceSharedVpsRoute && config.usePlatformAngelApiKey) {
-    if (!String(config.angelApiKey || "").trim()) {
-      throw new Error("FATAL: ANGEL_API_KEY is required in production when USE_PLATFORM_ANGEL_API_KEY is enabled (default). Whitelist PUBLIC_IP on this SmartAPI app in Angel One.");
-    }
+  // ANGEL_API_KEY is optional — not used for user trading or TickEngine (DATA_API_KEY only).
+
+  validateSystemDataIsolation();
+};
+
+const OBJECT_ID_RE = /^[a-f0-9]{24}$/i;
+
+/** Fail-fast: market data account must be fully configured and isolated from trading. */
+export function validateSystemDataIsolation(): void {
+  const missing: string[] = [];
+  const dataApiKey = String(config.dataApiKey || "").trim();
+  const dataClientCode = String(config.dataClientCode || "").trim();
+  const dataScopeUserId = String(config.systemDataScopeUserId || "").trim();
+
+  if (!dataApiKey) missing.push("DATA_API_KEY");
+  if (!dataClientCode) missing.push("DATA_CLIENT_CODE");
+  if (!dataScopeUserId) missing.push("SYSTEM_DATA_SCOPE_USER_ID");
+
+  if (missing.length > 0) {
+    console.error(`FATAL: Market data isolation requires env vars: ${missing.join(", ")}`);
+    process.exit(1);
   }
 
-  // Notice: We don't throw for angelApiKey here because it should be per-user now.
-};
+  if (dataApiKey.length < 6) {
+    console.error("FATAL: DATA_API_KEY must be at least 6 characters (SmartAPI Private Key).");
+    process.exit(1);
+  }
+
+  if (!OBJECT_ID_RE.test(dataScopeUserId)) {
+    console.error("FATAL: SYSTEM_DATA_SCOPE_USER_ID must be a valid 24-character MongoDB ObjectId.");
+    process.exit(1);
+  }
+
+  console.log("[STARTUP] System Data Isolation Validation Passed", {
+    dataClientCode,
+    dataScopeUserId,
+    dataApiKeyConfigured: true,
+  });
+}

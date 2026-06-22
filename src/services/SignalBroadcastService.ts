@@ -139,14 +139,6 @@ export class SignalBroadcastService {
       : "";
     const hasApiKey = Boolean(String(user?.api_key || "").trim());
     let apiKey = hasApiKey ? decrypt(user.api_key || "") : "";
-    
-    // Apply platform key override logic mirroring connection
-    const { getPlatformAngelApiKey, shouldUsePlatformAngelApiKey } = require("../utils/platformAngelApiKey");
-    if (shouldUsePlatformAngelApiKey(user)) {
-       const pKey = getPlatformAngelApiKey();
-       if (pKey) apiKey = pKey;
-    }
-    
     const currentApiKeyFingerprint = apiKey ? apiKeyFingerprint(apiKey) : "EMPTY";
     const latestMessage = String(latestResponse?.message || "");
     const latestUsedIp = String(latestResponse?.usedIp || "") || networkMeta.usedIpLabel;
@@ -160,7 +152,10 @@ export class SignalBroadcastService {
     let ready = true;
     let reason = "READY";
 
-    if (!rawClientCode || rawClientCode.trim().length < 3) {
+    if ((user as any)?.requiresReconnect === true) {
+      ready = false;
+      reason = "Broker reconnect required after API key migration. Open Profile → Broker Connect.";
+    } else if (!rawClientCode || rawClientCode.trim().length < 3) {
       ready = false;
       reason = "Client code missing or invalid";
     } else if (broker === "ANGELONE" && !hasApiKey) {
