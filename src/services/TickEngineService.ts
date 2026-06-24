@@ -595,7 +595,6 @@ export class TickEngineService {
     const candidates = [
       String(config.angelSmartStreamUrl || "").trim(),
       "wss://smartapisocket.angelone.in/smart-stream",
-      "wss://smartapisecure.angelone.in/smart-stream",
     ].filter(Boolean);
 
     return Array.from(new Set(candidates));

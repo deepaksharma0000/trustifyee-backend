@@ -8,6 +8,7 @@ import { apiKeyFingerprint } from "../utils/apiKeyRouteBinding";
 import { config } from "../config";
 import { tickEngineService } from "../services/TickEngineService";
 import { getSystemDataScopeUserId } from "../services/AngelAdapterRegistry";
+import { runProductionGoLiveValidation } from "../services/ProductionGoLiveValidator";
 
 const router = express.Router();
 
@@ -31,7 +32,9 @@ router.get("/angel-audit", auth, adminAuth, async (_req, res) => {
   try {
     const users = await User.find({ broker: { $regex: /^angelone$/i } })
       .select(
-        "user_name email client_key api_key broker_connected broker_verified requiresReconnect updated_at created_at"
+        "user_name email client_key api_key broker_connected broker_verified requiresReconnect " +
+          "api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type validated_pair_at " +
+          "updated_at created_at"
       )
       .lean();
 
@@ -74,13 +77,46 @@ router.get("/angel-audit", auth, adminAuth, async (_req, res) => {
         const jwtPresent = Boolean(tokenDoc?.jwtToken);
         const feedPresent = Boolean(tokenDoc?.feedToken);
 
+        let tokenApiKeyFp = "EMPTY";
+        try {
+          if (tokenDoc?.apiKey) {
+            tokenApiKeyFp = apiKeyFingerprint(
+              await ensureEncrypted(tokenDoc as any, "apiKey", `audit_token_api_${userId}`)
+            );
+          }
+        } catch {
+          tokenApiKeyFp = "DECRYPT_ERROR";
+        }
+
+        const runtimeFp = apiKeyPlain ? apiKeyFingerprint(apiKeyPlain) : "EMPTY";
+        const validatedFp = String((user as any).validated_api_key_fingerprint || "").trim() || null;
+        const fingerprintMatch = Boolean(validatedFp && runtimeFp !== "EMPTY" && validatedFp === runtimeFp);
+        const platformFp = apiKeyFingerprint(config.angelApiKey || "");
+        const likelyPlatformEraFingerprint = Boolean(
+          validatedFp && validatedFp === platformFp && runtimeFp !== platformFp
+        );
+
         return {
           userId,
           userName: user.user_name || null,
           email: user.email || null,
           clientCode: clientCode || tokenDoc?.clientcode || null,
           apiKeyHash: hashApiKey(apiKeyPlain),
-          apiKeyFingerprint: apiKeyPlain ? apiKeyFingerprint(apiKeyPlain) : "EMPTY",
+          apiKeyFingerprint: runtimeFp,
+          tokenApiKeyFingerprint: tokenApiKeyFp,
+          validatedApiKeyFingerprint: validatedFp,
+          fingerprintMatch,
+          likelyPlatformEraFingerprint,
+          apiKeyIpPairVerified: Boolean((user as any).api_key_ip_pair_verified),
+          validatedRouteIp: (user as any).validated_route_ip || null,
+          validatedRouteType: (user as any).validated_route_type || null,
+          validatedPairAt: (user as any).validated_pair_at
+            ? new Date((user as any).validated_pair_at).toISOString()
+            : null,
+          precheckWouldPass:
+            fingerprintMatch &&
+            Boolean((user as any).api_key_ip_pair_verified) &&
+            Boolean((user as any).validated_route_ip),
           tokenAgeMinutes: ageMinutes(tokenUpdatedAt),
           refreshAgeMinutes: refreshPresent ? ageMinutes(tokenUpdatedAt) : null,
           feedTokenPresent: feedPresent,
@@ -149,6 +185,19 @@ router.get("/system-data-audit", auth, adminAuth, async (_req, res) => {
     });
   } catch (err: any) {
     return res.status(500).json({ status: false, error: err?.message || "System data audit failed" });
+  }
+});
+
+/**
+ * GET /api/admin/production-readiness
+ * Full go-live validation: code invariants, per-user fingerprint, stale session, IP whitelist, capacity.
+ */
+router.get("/production-readiness", auth, adminAuth, async (_req, res) => {
+  try {
+    const report = await runProductionGoLiveValidation();
+    return res.json({ status: true, ...report });
+  } catch (err: any) {
+    return res.status(500).json({ status: false, error: err?.message || "Production readiness check failed" });
   }
 });
 

@@ -13,9 +13,6 @@ export function getPlatformAngelApiKey(): string {
  * Returns false for all broker connect / order execution paths.
  */
 export function shouldUsePlatformAngelApiKey(_profile?: unknown): boolean {
-  if (process.env.USE_PLATFORM_ANGEL_API_KEY === "true") {
-    // Explicit opt-in via env is ignored for end-user trading — log once at startup via config validation.
-  }
   return false;
 }
 

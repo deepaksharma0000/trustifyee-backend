@@ -10,6 +10,7 @@ import AngelTokensModel from "../models/AngelTokens";
 import User from "../models/User";
 import { config } from "../config";
 import { decrypt } from "../utils/encryption";
+import { apiKeyFingerprint } from "../utils/apiKeyRouteBinding";
 import log from "../utils/logger";
 
 export type BrokerHealthResult = {
@@ -132,30 +133,69 @@ export async function checkBrokerHealthForUser(userId: string): Promise<BrokerHe
     });
   }
 
-  // CHECK 7: IP whitelist configuration (Angel One specific)
+  // CHECK 7: Per-user IP whitelist + route verification (Angel One)
   if (String(user.broker || "").toUpperCase() === "ANGELONE") {
     const serverIp = config.publicIp || process.env.ANGEL_CLIENT_PUBLIC_IP || "";
-    const usePlatformKey = process.env.USE_PLATFORM_ANGEL_API_KEY === "true";
+    const apiKeyIpVerified = Boolean((user as any).api_key_ip_pair_verified);
+    const validatedRouteIp = String((user as any).validated_route_ip || "").trim();
+    const validatedFp = String((user as any).validated_api_key_fingerprint || "").trim();
 
-    if (usePlatformKey) {
+    checks.push({
+      name: "IP_PAIR_VERIFIED",
+      passed: apiKeyIpVerified,
+      detail: apiKeyIpVerified
+        ? `API key/IP pair verified (route: ${validatedRouteIp || serverIp || "shared"})`
+        : `API key/IP pair not verified — user must whitelist server IP ${serverIp || "PUBLIC_IP"} on their own SmartAPI app and reconnect`,
+      severity: apiKeyIpVerified ? "INFO" : "WARNING",
+    });
+
+    if (serverIp && validatedRouteIp && validatedRouteIp !== serverIp && !(user as any).dedicated_ip_enabled) {
       checks.push({
-        name: "IP_WHITELIST_PLATFORM_KEY",
-        passed: Boolean(serverIp),
-        detail: serverIp
-          ? `Platform key mode: ensure IP ${serverIp} is whitelisted in Angel One SmartAPI portal for app key ${String(process.env.ANGEL_API_KEY || "").slice(-4).padStart(8, "*")}`
-          : "Server IP not configured — set PUBLIC_IP in .env",
-        severity: serverIp ? "WARNING" : "CRITICAL",
+        name: "ROUTE_IP_ALIGNED",
+        passed: false,
+        detail: `validated_route_ip=${validatedRouteIp} differs from PUBLIC_IP=${serverIp} — reconnect after whitelisting VPS IP`,
+        severity: "WARNING",
       });
-    } else {
-      const apiKeyIpVerified = Boolean((user as any).api_key_ip_pair_verified);
+    }
+
+    if (user.api_key && validatedFp) {
+      try {
+        const profileKey = decrypt(user.api_key);
+        const runtimeFp = apiKeyFingerprint(profileKey);
+        const fpMatch = runtimeFp === validatedFp;
+        checks.push({
+          name: "API_KEY_FINGERPRINT_MATCH",
+          passed: fpMatch,
+          detail: fpMatch
+            ? `Fingerprint match (${runtimeFp})`
+            : `Fingerprint mismatch validated=${validatedFp} runtime=${runtimeFp} — API_KEY_ROUTE_MISMATCH risk`,
+          severity: fpMatch ? "INFO" : "CRITICAL",
+        });
+        if (!fpMatch) {
+          criticalIssue = criticalIssue || "API_KEY_FINGERPRINT_MISMATCH";
+          actionRequired =
+            actionRequired ||
+            "User must reconnect via Profile → Broker Connect with their own SmartAPI Private Key.";
+        }
+      } catch {
+        checks.push({
+          name: "API_KEY_FINGERPRINT_MATCH",
+          passed: false,
+          detail: "Could not decrypt user api_key for fingerprint check",
+          severity: "CRITICAL",
+        });
+      }
+    }
+
+    if ((user as any).requiresReconnect === true) {
       checks.push({
-        name: "IP_PAIR_VERIFIED",
-        passed: apiKeyIpVerified,
-        detail: apiKeyIpVerified
-          ? `API key/IP pair verified (route: ${(user as any).validated_route_ip || "shared"})`
-          : "API key/IP pair not verified — user must reconnect broker once after whitelisting server IP",
-        severity: apiKeyIpVerified ? "INFO" : "WARNING",
+        name: "BROKER_RECONNECT_REQUIRED",
+        passed: false,
+        detail: "requiresReconnect flag set — user must reconnect after API key migration",
+        severity: "CRITICAL",
       });
+      criticalIssue = criticalIssue || "BROKER_RECONNECT_REQUIRED";
+      actionRequired = actionRequired || "User must reconnect broker from Profile → Broker Connect.";
     }
   }
 
@@ -211,25 +251,15 @@ export async function checkBrokerHealthBatch(
  */
 export function buildIpWhitelistActionPlan(): string {
   const serverIp = config.publicIp || process.env.ANGEL_CLIENT_PUBLIC_IP || "UNKNOWN";
-  const apiKey = process.env.ANGEL_API_KEY || "NOT_SET";
-  const usePlatformKey = process.env.USE_PLATFORM_ANGEL_API_KEY === "true";
 
   if (!serverIp || serverIp === "UNKNOWN") {
     return `[ACTION REQUIRED] PUBLIC_IP is not set in .env. Angel One requires X-ClientPublicIP header. Set PUBLIC_IP=<your VPS IP> in .env.`;
   }
 
-  if (usePlatformKey) {
-    return [
-      `[WHITELIST CHECK] Using platform Angel API key: ...${apiKey.slice(-4)}`,
-      `Server IP: ${serverIp}`,
-      `ACTION: Login to https://smartapi.angelone.in → My Apps → Find app with key ending ...${apiKey.slice(-4)} → Whitelist IP: ${serverIp}`,
-      `Once whitelisted, all users sharing this key will be able to execute trades.`,
-    ].join("\n");
-  }
-
   return [
-    `[WHITELIST CHECK] Per-user API key mode active.`,
-    `Server IP: ${serverIp}`,
-    `ACTION: Each user must whitelist IP ${serverIp} in their own SmartAPI app in the Angel One portal.`,
+    `[WHITELIST CHECK] Per-user SmartAPI Private Key mode (Working System A).`,
+    `Server egress IP: ${serverIp}`,
+    `ACTION: Each user must whitelist IP ${serverIp} on their own SmartAPI app at https://smartapi.angelone.in → My Apps.`,
+    `Then reconnect via Profile → Broker Connect so api_key_ip_pair_verified is set.`,
   ].join("\n");
 }

@@ -1,5 +1,5 @@
 /**
- * Automated checks for Trustifyee Angel One go-live checklist (Steps 3–4, partial 7).
+ * Automated production go-live validation.
  *
  * Usage:
  *   npx ts-node scripts/go-live-verify.ts
@@ -9,10 +9,7 @@ import dotenv from "dotenv";
 import mongoose from "mongoose";
 import axios from "axios";
 import { config, validateConfig } from "../src/config";
-import { tickEngineService } from "../src/services/TickEngineService";
-import AngelTokensModel from "../src/models/AngelTokens";
-import User from "../src/models/User";
-import { getSystemDataScopeUserId } from "../src/services/AngelAdapterRegistry";
+import { runProductionGoLiveValidation } from "../src/services/ProductionGoLiveValidator";
 
 dotenv.config();
 
@@ -31,98 +28,115 @@ function record(step: string, ok: boolean, detail: string) {
 }
 
 async function main() {
-  console.log("=== Trustifyee Angel One Go-Live Verification ===\n");
+  console.log("=== Trustifyee Angel One Production Go-Live Verification ===\n");
 
-  // Step 3 — startup validation
   try {
     validateConfig();
-    record("Step 3 — validateConfig", true, "System Data Isolation Validation Passed (no throw)");
+    record("validateConfig", true, "System Data Isolation Validation Passed");
   } catch (e: any) {
-    record("Step 3 — validateConfig", false, e?.message || "validateConfig failed");
+    record("validateConfig", false, e?.message || "validateConfig failed");
   }
-
-  record(
-    "Step 1 — SYSTEM_DATA_SCOPE_USER_ID",
-    Boolean(String(config.systemDataScopeUserId || "").trim()),
-    config.systemDataScopeUserId || "NOT SET"
-  );
 
   await mongoose.connect(config.mongoUri);
 
-  const dataUserId = getSystemDataScopeUserId();
-  const dataClient = String(config.dataClientCode || "").trim();
-  const dataToken = await AngelTokensModel.findOne({ userId: dataUserId, clientcode: dataClient }).lean();
+  const report = await runProductionGoLiveValidation();
 
   record(
-    "Step 4 — scoped AngelTokens row",
-    Boolean(dataToken),
-    dataToken ? `userId=${dataUserId} clientcode=${dataClient}` : "Missing — run backend to let TickEngine create row"
+    "code — shouldUsePlatformAngelApiKey=false",
+    report.codeInvariants.shouldUsePlatformAngelApiKeyAlwaysFalse === true,
+    "platformAngelApiKey.ts — user trading never uses platform key"
   );
 
-  const feed = tickEngineService.getSystemDataAuditSnapshot();
   record(
-    "Step 4 — marketFeedStatus (local snapshot)",
-    feed.marketFeedStatus === "CONNECTED" && feed.websocketConnected === true,
-    `marketFeedStatus=${feed.marketFeedStatus} websocketConnected=${feed.websocketConnected} (TickEngine must be running in this process for live WS)`
+    "code — perUserApiKeyMode",
+    report.perUserApiKeyMode && !report.platformKeyForUserTrading,
+    `perUserApiKeyMode=${report.perUserApiKeyMode} platformKeyForUserTrading=${report.platformKeyForUserTrading}`
   );
+
+  record(
+    "config — PUBLIC_IP",
+    Boolean(report.serverEgressIp),
+    report.serverEgressIp || "NOT SET"
+  );
+
+  record(
+    "users — live ready for trading",
+    report.userSummary.liveConnected === 0 || report.userSummary.readyForTrading === report.userSummary.liveConnected,
+    `${report.userSummary.readyForTrading}/${report.userSummary.liveConnected} connected Live users pass all prechecks`
+  );
+
+  record(
+    "users — fingerprint mismatch",
+    report.userSummary.fingerprintMismatch === 0,
+    report.userSummary.fingerprintMismatch === 0
+      ? "No fingerprint mismatches"
+      : `${report.userSummary.fingerprintMismatch} user(s) — run audit-api-key-route-mismatch.ts`
+  );
+
+  record(
+    "users — requiresReconnect",
+    report.userSummary.requiresReconnect === 0,
+    report.userSummary.requiresReconnect === 0
+      ? "No users flagged requiresReconnect"
+      : `${report.userSummary.requiresReconnect} user(s) — run force-broker-reconnect.ts`
+  );
+
+  record(
+    "users — platform-era fingerprint",
+    report.userSummary.likelyPlatformEra === 0,
+    report.userSummary.likelyPlatformEra === 0
+      ? "No legacy platform-key fingerprints"
+      : `${report.userSummary.likelyPlatformEra} user(s) need broker reconnect`
+  );
+
+  record(
+    "capacity — one VPS IP multi-user",
+    report.capacity.oneVpsIpMultiUser === true,
+    `serverEgressIp=${report.serverEgressIp} perUserSmartApiApps=${report.capacity.perUserSmartApiApps}`
+  );
+
+  console.log(`\n--- Production Readiness Score: ${report.productionReadinessScore}/100 ---`);
+  console.log(`--- Approval Status: ${report.approvalStatus} ---\n`);
+
+  if (report.blockers.length) {
+    console.log("Blockers:");
+    report.blockers.forEach((b) => console.log(`  - ${b}`));
+  }
+  if (report.requiredAdminActions.length) {
+    console.log("\nRequired admin actions:");
+    report.requiredAdminActions.forEach((a) => console.log(`  - ${a}`));
+  }
+  if (report.requiredUserActions.length) {
+    console.log("\nRequired user actions:");
+    report.requiredUserActions.slice(0, 20).forEach((a) => console.log(`  - ${a}`));
+    if (report.requiredUserActions.length > 20) {
+      console.log(`  ... and ${report.requiredUserActions.length - 20} more`);
+    }
+  }
 
   if (adminToken) {
     try {
-      const { data } = await axios.get(`${baseUrl}/api/admin/system-data-audit`, {
+      const { data } = await axios.get(`${baseUrl}/api/admin/production-readiness`, {
         headers: { Authorization: `Bearer ${adminToken}` },
-        timeout: 15000,
+        timeout: 60000,
       });
       record(
-        "Step 4 — GET /api/admin/system-data-audit",
-        data?.marketFeedStatus === "CONNECTED" && data?.websocketConnected === true,
-        `marketFeedStatus=${data?.marketFeedStatus} websocketConnected=${data?.websocketConnected}`
+        "HTTP — GET /api/admin/production-readiness",
+        data?.approvalStatus === "APPROVED",
+        `score=${data?.productionReadinessScore} status=${data?.approvalStatus}`
       );
     } catch (e: any) {
-      record("Step 4 — GET /api/admin/system-data-audit", false, e?.response?.data?.error || e?.message);
-    }
-
-    try {
-      const { data } = await axios.get(`${baseUrl}/api/admin/angel-audit`, {
-        headers: { Authorization: `Bearer ${adminToken}` },
-        timeout: 30000,
-      });
-      const users = Array.isArray(data?.users) ? data.users : [];
-      const connected = users.filter((u: any) => u.brokerConnected === true).length;
-      const needsReconnect = users.filter((u: any) => u.requiresReconnect === true).length;
-      record(
-        "Step 7 — GET /api/admin/angel-audit",
-        users.length === 0 || connected > 0,
-        `${connected}/${users.length} brokerConnected, ${needsReconnect} requiresReconnect`
-      );
-    } catch (e: any) {
-      record("Step 7 — GET /api/admin/angel-audit", false, e?.response?.data?.error || e?.message);
+      record("HTTP — GET /api/admin/production-readiness", false, e?.response?.data?.error || e?.message);
     }
   } else {
-    record("Step 4/7 — admin HTTP checks", false, "Skipped — pass --admin-token or set GO_LIVE_ADMIN_TOKEN");
+    record("HTTP — admin API", false, "Skipped — pass --admin-token or set GO_LIVE_ADMIN_TOKEN");
   }
-
-  const tradersNeedingReconnect = await User.countDocuments({
-    broker: { $regex: /^angelone$/i },
-    requiresReconnect: true,
-  });
-  record(
-    "Step 5 — migration (requiresReconnect)",
-    tradersNeedingReconnect === 0,
-    tradersNeedingReconnect === 0
-      ? "No Angel traders flagged requiresReconnect"
-      : `${tradersNeedingReconnect} trader(s) still require reconnect — run force-broker-reconnect or have users reconnect`
-  );
 
   await mongoose.disconnect();
 
   const failed = rows.filter((r) => !r.ok).length;
-  console.log(`\n=== Result: ${rows.length - failed}/${rows.length} passed ===`);
-  if (failed === 0) {
-    console.log("System Approved For Production Trading (automated checks only — complete Steps 8–11 manually).");
-  } else {
-    console.log("Fix failing checks before production approval.");
-  }
-  process.exit(failed > 0 ? 1 : 0);
+  console.log(`\n=== Result: ${rows.length - failed}/${rows.length} checks passed ===`);
+  process.exit(failed > 0 || report.approvalStatus === "BLOCKED" ? 1 : 0);
 }
 
 main().catch((err) => {
