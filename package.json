@@ -12,7 +12,8 @@
     "lint": "eslint . --ext .ts",
     "verify:broker": "ts-node src/scripts/verifyBrokerIsolation.ts",
     "go-live:resolve-data-user": "ts-node scripts/resolve-system-data-scope-user-id.ts",
-    "go-live:verify": "ts-node scripts/go-live-verify.ts"
+    "go-live:verify": "ts-node scripts/go-live-verify.ts",
+    "repair:migration-nulls": "ts-node scripts/repair-migration-null-fields.ts"
   },
   "author": "you",
   "license": "MIT",

@@ -286,7 +286,8 @@ export const loginUser = async (req: Request, res: Response) => {
 
         user.is_login = true;
         user.is_online = true;
-        await user.save();
+        // Partial update avoids re-validating unrelated fields (e.g. validated_route_type null from migration)
+        await User.updateOne({ _id: user._id }, { $set: { is_login: true, is_online: true } });
 
         console.log(`[LOGIN_SUCCESS] User: ${user.user_name}, Licence: ${user.licence}, ID: ${user._id}`);
 

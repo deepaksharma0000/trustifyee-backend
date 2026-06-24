@@ -103,8 +103,6 @@ const UserSchema: Schema = new Schema({
     validated_route_type: { type: String, enum: ['USER_STATIC_IP', 'SERVER_SHARED_IP', 'AGENT_ROUTE', 'UNKNOWN'] },
     validated_pair_at: { type: Date },
     requiresReconnect: { type: Boolean, default: false },
-
-    // Zerodha Kite Connect credentials & session details
     zerodha_user_id: { type: String },
     zerodha_api_key: { type: String },
     zerodha_api_secret: { type: String },
@@ -115,5 +113,21 @@ const UserSchema: Schema = new Schema({
     zerodha_connected: { type: Boolean, default: false },
     zerodha_verified: { type: Boolean, default: false }
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
+
+/** Migration scripts must $unset enum fields — null fails Mongoose enum validation on login/save. */
+UserSchema.pre('save', function (next) {
+    const doc = this as any;
+    for (const field of [
+        'validated_route_type',
+        'validated_route_ip',
+        'validated_api_key_fingerprint',
+        'validated_pair_at',
+    ]) {
+        if (doc.get(field) === null) {
+            doc.set(field, undefined);
+        }
+    }
+    next();
+});
 
 export default mongoose.model<IUser>('User', UserSchema);

@@ -42,10 +42,12 @@ async function main() {
       broker_connected: false,
       broker_verified: false,
       api_key_ip_pair_verified: false,
-      validated_api_key_fingerprint: null,
-      validated_route_ip: null,
-      validated_route_type: null,
-      validated_pair_at: null,
+    },
+    $unset: {
+      validated_api_key_fingerprint: "",
+      validated_route_ip: "",
+      validated_route_type: "",
+      validated_pair_at: "",
     },
   });
 
