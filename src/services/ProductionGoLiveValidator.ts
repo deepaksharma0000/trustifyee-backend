@@ -74,6 +74,7 @@ export type ProductionReadinessReport = {
     readyForTrading: number;
     fingerprintMismatch: number;
     requiresReconnect: number;
+    migrationPendingReconnect: number;
     staleSessions: number;
     ipNotVerified: number;
     likelyPlatformEra: number;
@@ -389,13 +390,23 @@ export async function runProductionGoLiveValidation(): Promise<ProductionReadine
   const readyForTrading = liveUsers.filter((u) => u.precheckWouldPass).length;
   const fingerprintMismatch = liveUsers.filter((u) => u.brokerConnected && !u.fingerprintMatch && Boolean(u.blockers.some((b) => b.includes("fingerprint")))).length;
   const requiresReconnectCount = liveUsers.filter((u) => u.requiresReconnect).length;
+  const migrationPendingReconnect = liveUsers.filter((u) => u.requiresReconnect && !u.brokerConnected);
+  const migrationPending =
+    requiresReconnectCount > 0 &&
+    migrationPendingReconnect.length === requiresReconnectCount;
   const staleSessions = liveUsers.filter((u) => u.sessionStale).length;
   const ipNotVerified = liveUsers.filter((u) => u.brokerConnected && !u.apiKeyIpPairVerified).length;
   const likelyPlatformEra = liveUsers.filter((u) => u.likelyPlatformEraFingerprint).length;
 
   if (requiresReconnectCount > 0) {
-    blockers.push(`${requiresReconnectCount} user(s) flagged requiresReconnect`);
-    requiredAdminActions.push("Run: npx ts-node scripts/force-broker-reconnect.ts then notify users to reconnect");
+    if (migrationPending) {
+      requiredUserActions.push(
+        `${requiresReconnectCount} user(s) must reconnect via Profile → Broker Connect (migration reset complete — expected until reconnect)`
+      );
+    } else {
+      blockers.push(`${requiresReconnectCount} user(s) flagged requiresReconnect while still broker_connected`);
+      requiredAdminActions.push("Investigate users with requiresReconnect=true and broker_connected=true");
+    }
   }
   if (likelyPlatformEra > 0) {
     blockers.push(`${likelyPlatformEra} user(s) have platform-era validated fingerprint`);
@@ -476,6 +487,7 @@ export async function runProductionGoLiveValidation(): Promise<ProductionReadine
       readyForTrading,
       fingerprintMismatch,
       requiresReconnect: requiresReconnectCount,
+      migrationPendingReconnect: migrationPendingReconnect.length,
       staleSessions,
       ipNotVerified,
       likelyPlatformEra,

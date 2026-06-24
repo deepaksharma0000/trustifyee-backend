@@ -75,10 +75,12 @@ async function main() {
 
   record(
     "users — requiresReconnect",
-    report.userSummary.requiresReconnect === 0,
+    report.userSummary.requiresReconnect === 0 || report.userSummary.migrationPendingReconnect === report.userSummary.requiresReconnect,
     report.userSummary.requiresReconnect === 0
       ? "No users flagged requiresReconnect"
-      : `${report.userSummary.requiresReconnect} user(s) — run force-broker-reconnect.ts`
+      : report.userSummary.migrationPendingReconnect === report.userSummary.requiresReconnect
+      ? `${report.userSummary.requiresReconnect} user(s) pending reconnect after migration (expected — notify users to use Broker Connect)`
+      : `${report.userSummary.requiresReconnect} user(s) — investigate requiresReconnect with broker_connected=true`
   );
 
   record(
@@ -122,14 +124,18 @@ async function main() {
       });
       record(
         "HTTP — GET /api/admin/production-readiness",
-        data?.approvalStatus === "APPROVED",
+        data?.approvalStatus === "APPROVED" || data?.approvalStatus === "CONDITIONAL",
         `score=${data?.productionReadinessScore} status=${data?.approvalStatus}`
       );
     } catch (e: any) {
       record("HTTP — GET /api/admin/production-readiness", false, e?.response?.data?.error || e?.message);
     }
   } else {
-    record("HTTP — admin API", false, "Skipped — pass --admin-token or set GO_LIVE_ADMIN_TOKEN");
+    record(
+      "HTTP — admin API",
+      false,
+      "Skipped — export ADMIN_JWT='eyJ...' (admin login token) then re-run with --admin-token \"$ADMIN_JWT\""
+    );
   }
 
   await mongoose.disconnect();

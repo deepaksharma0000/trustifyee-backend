@@ -89,6 +89,18 @@ async function main() {
   const runtimeFp = runtimeBinding.apiKeyFingerprint;
   const match = expectedFp === runtimeFp;
 
+  let profileApiKeyFp = "EMPTY";
+  let profileApiKeyLen = 0;
+  try {
+    if ((user as any).api_key) {
+      const plain = await ensureEncrypted(user as any, "api_key", `audit_profile_${userId}`);
+      profileApiKeyLen = plain.length;
+      profileApiKeyFp = apiKeyFingerprint(plain);
+    }
+  } catch {
+    profileApiKeyFp = "DECRYPT_ERROR";
+  }
+
   console.log("=== USER ===");
   console.log(JSON.stringify({
     userId,
@@ -103,6 +115,15 @@ async function main() {
     validated_pair_at: (user as any).validated_pair_at,
     updatedAt: (user as any).updatedAt,
     createdAt: (user as any).createdAt,
+  }, null, 2));
+
+  console.log("\n=== PROFILE API KEY (User.api_key) ===");
+  console.log(JSON.stringify({
+    profileApiKeyFingerprint: profileApiKeyFp,
+    profileApiKeyLength: profileApiKeyLen,
+    note: profileApiKeyLen === 0
+      ? "No api_key on profile — user MUST enter SmartAPI Private Key on reconnect"
+      : "Profile key exists but AngelTokens missing — reconnect will create new session",
   }, null, 2));
 
   console.log("\n=== FINGERPRINT COMPARISON ===");
@@ -162,9 +183,14 @@ async function main() {
 
   if (!match) {
     console.log("\n=== REMEDIATION ===");
-    console.log("1. User must reconnect: Dashboard → Broker Connect with THEIR SmartAPI Private Key + TOTP secret.");
-    console.log("2. Or admin: npx ts-node scripts/force-broker-reconnect.ts (all users) then user reconnects.");
-    console.log("3. After reconnect, re-run this script — expected and runtime fingerprints must match.");
+    if (!tokenDoc) {
+      console.log("AngelTokens were cleared (migration or first connect). User must reconnect.");
+    }
+    console.log("1. User: Dashboard → Broker Connect — enter THEIR SmartAPI Private Key + TOTP secret + client code AACE741181.");
+    console.log("2. User: Whitelist 147.93.18.15 on their SmartAPI app at https://smartapi.angelone.in");
+    console.log("3. Do NOT run force-broker-reconnect.ts again unless starting a new migration.");
+    console.log("4. Re-run: npx ts-node scripts/audit-api-key-route-mismatch.ts AACE741181");
+    console.log("   Expect: fingerprints_match=true, AngelTokens present, broker_connected=true");
   }
 
   await mongoose.disconnect();
