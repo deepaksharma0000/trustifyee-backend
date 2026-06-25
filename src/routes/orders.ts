@@ -394,8 +394,10 @@ router.post("/place-all", auth, adminOnly, async (req, res) => {
     if (readiness.readyUsers === 0) {
       const firstBlocked = blockedDetails[0] || null;
       const blockedReason =
-        String(firstBlocked?.reason || "").trim() ||
-        "No broker-ready users for this strategy. Broadcast skipped.";
+        readiness.totalUsers === 0
+          ? `No users with broker_connected=true for strategy "${targetStrategy}". Each subscriber must complete Profile → Broker Connect after migration.`
+          : String(firstBlocked?.reason || "").trim() ||
+            "No broker-ready users for this strategy. Broadcast skipped.";
 
       if (allowClientFallbackOnBlocked) {
         log.warn("[PLACE_ALL_CLIENT_FALLBACK]", {

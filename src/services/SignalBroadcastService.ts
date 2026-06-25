@@ -284,7 +284,7 @@ export class SignalBroadcastService {
       ...strategyQuery,
     })
       .select(
-        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry"
+        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type requiresReconnect is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry"
       )
       .lean();
 
