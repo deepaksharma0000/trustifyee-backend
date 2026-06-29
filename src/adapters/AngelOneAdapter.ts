@@ -263,7 +263,7 @@ export class AngelOneAdapter implements IBrokerAdapter {
 
   async getOrderBook(token: string) {
     try {
-      const resp = await this.authPost(token, "/rest/secure/angelbroking/order/v1/getOrderBook");
+      const resp = await this.authGet(token, "/rest/secure/angelbroking/order/v1/getOrderBook");
       log.info("FULL_BROKER_RESPONSE", {
         context: "angel_get_order_book",
         response: JSON.stringify(resp?.data ?? null, null, 2),
