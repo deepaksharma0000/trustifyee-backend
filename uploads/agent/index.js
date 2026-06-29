@@ -13,6 +13,7 @@ const ANGEL_CLIENT_CODE = process.env.ANGEL_CLIENT_CODE;
 const ANGEL_PASSWORD = process.env.ANGEL_PASSWORD;
 const ANGEL_API_KEY = process.env.ANGEL_API_KEY;
 const ANGEL_TOTP_SECRET = process.env.ANGEL_TOTP_SECRET;
+const ASSIGNED_EXECUTION_IP = process.env.AGENT_ASSIGNED_EXECUTION_IP || '';
 
 if (!AGENT_ID || !AGENT_SECRET || !BACKEND_WS_URL) {
   console.error("FATAL ERROR: AGENT_ID, AGENT_SECRET, and BACKEND_WS_URL are required in .env");
@@ -280,6 +281,7 @@ async function sendHeartbeat() {
     payload: {
       status: 'ONLINE',
       publicIp: publicIp,
+      assignedExecutionIp: ASSIGNED_EXECUTION_IP || undefined,
       pingMs: 5,
       metrics: {
         cpuPercent: 1.0,

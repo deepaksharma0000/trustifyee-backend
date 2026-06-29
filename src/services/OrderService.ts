@@ -22,6 +22,7 @@ import { normalizeFiniteNumber } from "../utils/price";
 import { parseAngelOrderPlacement, parseAngelRows } from "../utils/angelResponseParser";
 import { executeWithSessionRecovery, isAngelInvalidToken } from "./AngelSessionManager";
 import { findAngelTokensForUserClient } from "./AngelSessionContextService";
+import ExecutionRouter from "./ExecutionRouter";
 import {
   assertApiKeyJwtPair,
   buildIpWhitelistDiagnostics,
@@ -963,6 +964,65 @@ export async function placeOrderForClient(
         usedIp: currentIp || "SERVER_SHARED_IP",
         payload,
       });
+
+      if (String(user!.broker || "").toUpperCase() === "ANGELONE" && licence === "live") {
+        const routedResponse = await ExecutionRouter.routeOrderViaAssignedIp({
+          userId: String(userId),
+          clientcode,
+          clientOrderId,
+          correlationId,
+          signalId: (orderInput as any).signalId,
+          orderInput: {
+            exchange: orderInput.exchange,
+            tradingsymbol: orderInput.tradingsymbol,
+            side: orderInput.side,
+            transactiontype: orderInput.transactiontype,
+            quantity: orderInput.quantity,
+            ordertype: orderInput.ordertype,
+            price: orderInput.price,
+            producttype: orderInput.producttype,
+            duration: orderInput.duration,
+            symboltoken: orderInput.symboltoken,
+            strategyName: orderInput.strategyName,
+            strategy: orderInput.strategy,
+          },
+        });
+
+        if (routedResponse.status) {
+          await eventSourcedOMS.appendEvent(clientOrderId, routedResponse.data.brokerOrderId || "AGENT_ROUTED", "SUBMITTED", {
+            brokerOrderId: routedResponse.data.brokerOrderId || "AGENT_ROUTED",
+            assignedExecutionIp: routedResponse.data.assignedExecutionIp,
+          });
+          await eventSourcedOMS.appendEvent(clientOrderId, routedResponse.data.brokerOrderId || "AGENT_ROUTED", "ACKNOWLEDGED", {
+            brokerOrderId: routedResponse.data.brokerOrderId || "AGENT_ROUTED",
+            assignedExecutionIp: routedResponse.data.assignedExecutionIp,
+          });
+          await User.updateOne(
+            { _id: userId },
+            {
+              $set: {
+                consecutive_failures: 0,
+                trading_paused: false,
+              },
+            }
+          );
+          return {
+            status: true,
+            data: {
+              status: 200,
+              data: {
+                orderid: routedResponse.data.brokerOrderId || clientOrderId,
+                message: routedResponse.data.message,
+                agentId: routedResponse.data.agentId,
+                assignedExecutionIp: routedResponse.data.assignedExecutionIp,
+                brokerResponse: routedResponse.data.brokerResponse,
+              },
+            },
+          };
+        }
+
+        throw new Error(routedResponse.data.message || "EXECUTION_AGENT_DISPATCH_FAILED");
+      }
 
       // Use dynamic adapter instance with the correct API key and optional agent
       const resp = await executeWithSessionRecovery(

@@ -10,8 +10,8 @@ import { v4 as uuidv4 } from "uuid";
 import { config } from "../config";
 import { apiKeyFingerprint, resolveRouteBinding } from "../utils/apiKeyRouteBinding";
 import { buildIpWhitelistActionPlan } from "../utils/brokerHealthDiagnostics";
-import AgentModel from "../models/Agent";
 import { WebSocketAgentServer } from "./WebSocketAgentServer";
+import ExecutionAgentRegistry from "./ExecutionAgentRegistry";
 import { AliceBlueBroadcastValidationService } from "./AliceBlueBroadcastValidationService";
 
 // Log the IP whitelist action plan once at startup so operators have immediate visibility
@@ -593,15 +593,16 @@ export class SignalBroadcastService {
       }
       
       // if (normalizeBroker(user.broker) === "ANGELONE" && isLive) {
-      if (
-          normalizeBroker(user.broker) === "ANGELONE" &&
-          isLive &&
-          user.dedicated_ip_enabled === true
-        ) {
-        const agent = await AgentModel.findOne({ userId: user._id, status: "active" });
-        if (!agent) {
+      if (normalizeBroker(user.broker) === "ANGELONE" && isLive) {
+        const assignedExecutionIp = ExecutionAgentRegistry.normalizeExecutionIp(
+          (user as any)?.assignedExecutionIp || (user as any)?.outgoing_ip
+        );
+        const agentResolution = await ExecutionAgentRegistry.resolveBestAgent(assignedExecutionIp);
+        if (!agentResolution) {
           failedCount += 1;
-          const reason = "No active execution agent registered for this account. Angel One live trading requires an agent.";
+          const reason = assignedExecutionIp
+            ? `NO_EXECUTION_AGENT_FOR_ASSIGNED_IP: ${assignedExecutionIp}`
+            : "ASSIGNED_EXECUTION_IP_NOT_CONFIGURED";
           await markFailure(user, clientOrderId, correlationId, reason);
           executions.push({
             userName,
@@ -614,21 +615,7 @@ export class SignalBroadcastService {
           return;
         }
 
-        const isAgentOnline = WebSocketAgentServer.isAgentOnline(agent.agentId);
-        if (!isAgentOnline) {
-          failedCount += 1;
-          const reason = `Execution agent (ID: ${agent.agentId}) is offline. Start the agent daemon to execute trades.`;
-          await markFailure(user, clientOrderId, correlationId, reason);
-          executions.push({
-            userName,
-            licence: user.licence || "Live",
-            status: "FAILED",
-            message: reason,
-            usedIp: networkMeta.usedIpLabel,
-            networkRoute: networkMeta.networkRoute,
-          });
-          return;
-        }
+        const agent = agentResolution.agent;
 
         await SignalExecutionResult.findOneAndUpdate(
           { signalId, userId: user._id },
@@ -676,7 +663,7 @@ export class SignalBroadcastService {
           licence: user.licence || "Live",
           broker: "ANGELONE",
           online: true,
-          onlineMode: "AGENT_EDGE",
+          onlineMode: `AGENT_EDGE:${agentResolution.health.status}`,
           status: "PENDING",
           message: "Dispatched to user execution agent.",
           correlationId,

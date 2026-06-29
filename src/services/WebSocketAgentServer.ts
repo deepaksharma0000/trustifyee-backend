@@ -109,6 +109,17 @@ export class WebSocketAgentServer {
         latencyMs: payload.pingMs || 0,
         metrics: payload.metrics || { cpuPercent: 0, memFreeBytes: 0, uptimeSeconds: 0 }
       });
+      await AgentModel.updateOne(
+        { agentId },
+        {
+          $set: {
+            publicIp: payload.publicIp || "0.0.0.0",
+            lastHeartbeatAt: new Date(),
+            lastHeartbeatStatus: payload.status || "ONLINE",
+            assignedExecutionIp: payload.assignedExecutionIp || undefined,
+          },
+        }
+      );
       return;
     }
 

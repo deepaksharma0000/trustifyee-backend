@@ -12,6 +12,7 @@ export type BrokerConnectionMetadata = {
   apiKeyFingerprint: string;
   outgoingPublicIp: string | null;
   registeredRouteIp: string | null;
+  assignedExecutionIp: string | null;
   routeType: RouteType;
   dedicatedIpEnabled: boolean;
   agentUrl: string | null;
@@ -35,6 +36,7 @@ export function apiKeyFingerprint(key?: string): string {
 
 export function resolveRouteBinding(input: {
   outgoingIp?: string;
+  assignedExecutionIp?: string;
   agentUrl?: string;
   dedicatedIpEnabled?: boolean;
 }) {
@@ -148,6 +150,7 @@ export function buildBrokerConnectionMetadata(input: {
   apiKey: string;
   clientCode: string;
   outgoingIp?: string;
+  assignedExecutionIp?: string;
   agentUrl?: string;
   dedicatedIpEnabled?: boolean;
   brokerAppName?: unknown;
@@ -172,6 +175,7 @@ export function buildBrokerConnectionMetadata(input: {
     apiKeyFingerprint: binding.apiKeyFingerprint,
     outgoingPublicIp,
     registeredRouteIp,
+    assignedExecutionIp: normalizeIpv4(input.assignedExecutionIp) || null,
     routeType: binding.routeType,
     dedicatedIpEnabled: Boolean(input.dedicatedIpEnabled),
     agentUrl: binding.agentUrl || null,

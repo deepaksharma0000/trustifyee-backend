@@ -339,6 +339,7 @@ export class AngelOneAdapter implements IBrokerAdapter {
             apiKey: this.apiKey,
             clientCode: clientcode,
             outgoingIp: user.outgoing_ip,
+            assignedExecutionIp: (user as any).assignedExecutionIp || user.outgoing_ip,
             agentUrl: user.agent_url,
             dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true),
             brokerAppName:

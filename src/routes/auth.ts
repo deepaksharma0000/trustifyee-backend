@@ -194,6 +194,7 @@ router.post("/angel/login", auth, async (req: any, res) => {
           apiKey,
           clientCode: clientcode,
           outgoingIp: (user as any)?.outgoing_ip,
+          assignedExecutionIp: (user as any)?.assignedExecutionIp || (user as any)?.outgoing_ip,
           agentUrl: (user as any)?.agent_url,
           dedicatedIpEnabled: Boolean((user as any)?.dedicated_ip_enabled === true),
           brokerAppName: req.body.broker_app_name || req.body.app_name || req.body.appName,

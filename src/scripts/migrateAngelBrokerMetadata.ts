@@ -13,7 +13,7 @@ async function run() {
     broker: { $regex: /^angelone$/i },
   })
     .select(
-      "client_key api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified " +
+      "client_key api_key outgoing_ip assignedExecutionIp agent_url dedicated_ip_enabled api_key_ip_pair_verified " +
         "validated_api_key_fingerprint validated_route_ip validated_route_type validated_pair_at broker"
     )
     .lean();
@@ -41,6 +41,7 @@ async function run() {
       apiKey: apiKeyPlain,
       clientCode: clientcode,
       outgoingIp: user.outgoing_ip,
+      assignedExecutionIp: user.assignedExecutionIp || user.outgoing_ip || user.validated_route_ip,
       agentUrl: user.agent_url,
       dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true),
       verificationStatus: user.api_key_ip_pair_verified ? "VERIFIED" : "PENDING",
@@ -61,6 +62,7 @@ async function run() {
           outgoingPublicIp: tokenDoc.outgoingPublicIp || metadata.outgoingPublicIp,
           registeredRouteIp: tokenDoc.registeredRouteIp || metadata.registeredRouteIp,
           routeType: tokenDoc.routeType || metadata.routeType,
+          assignedExecutionIp: user.assignedExecutionIp || user.outgoing_ip || user.validated_route_ip || undefined,
           dedicatedIpEnabled:
             typeof tokenDoc.dedicatedIpEnabled === "boolean"
               ? tokenDoc.dedicatedIpEnabled

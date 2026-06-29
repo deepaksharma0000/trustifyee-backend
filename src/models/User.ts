@@ -35,6 +35,7 @@ export interface IUser extends Document {
     broker_totp_secret?: string; // [NEW] Added for automated TOTP generation
     broker_password?: string; // [NEW] Added for automated session re-sync
     outgoing_ip?: string; // Binding IP for requests
+    assignedExecutionIp?: string; // Authoritative per-user execution IP for routed agent execution
     agent_url?: string; // [NEW] VPS Agent URL for isolated routing
     dedicated_ip_enabled?: boolean; // Explicit opt-in for per-user static IP/agent routing
     api_key_ip_pair_verified?: boolean; // strict guard: key + route pair verified for live trading
@@ -95,6 +96,7 @@ const UserSchema: Schema = new Schema({
     broker_totp_secret: { type: String, select: false }, // [SECURE] Hidden by default
     broker_password: { type: String, select: false }, // [SECURE] Hidden by default
     outgoing_ip: { type: String }, // Static IPv4 assigned to this user
+    assignedExecutionIp: { type: String, index: true }, // Authoritative execution IP mapped to an execution agent
     agent_url: { type: String }, // URL of the VPS agent (e.g. http://ip:3001)
     strategy_id_map: { type: Map, of: String, default: {} },
     execution_node_id: { type: String }, // Docker container ID or Node name

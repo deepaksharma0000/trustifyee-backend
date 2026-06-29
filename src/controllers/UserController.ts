@@ -29,6 +29,7 @@ const updateUserSchema = Joi.object({
     is_login: Joi.boolean().optional(),
     is_star: Joi.boolean().optional(),
     outgoing_ip: Joi.string().allow('', null).optional(),
+    assignedExecutionIp: Joi.string().allow('', null).optional(),
     agent_url: Joi.string().uri().allow('', null).optional(),
     dedicated_ip_enabled: Joi.boolean().optional(),
     api_key_ip_pair_verified: Joi.boolean().optional(),
@@ -62,6 +63,7 @@ export const updateUser = async (req: any, res: Response) => {
         const shouldResetKeyIpValidation =
             Object.prototype.hasOwnProperty.call(req.body, "api_key") ||
             Object.prototype.hasOwnProperty.call(req.body, "outgoing_ip") ||
+            Object.prototype.hasOwnProperty.call(req.body, "assignedExecutionIp") ||
             Object.prototype.hasOwnProperty.call(req.body, "agent_url") ||
             Object.prototype.hasOwnProperty.call(req.body, "dedicated_ip_enabled");
 

@@ -12,6 +12,7 @@ export interface IAngelTokens extends Document {
   apiKeyFingerprint?: string;
   outgoingPublicIp?: string;
   registeredRouteIp?: string;
+  assignedExecutionIp?: string;
   routeType?: "USER_STATIC_IP" | "SERVER_SHARED_IP" | "AGENT_ROUTE" | "UNKNOWN";
   dedicatedIpEnabled?: boolean;
   agentUrl?: string;
@@ -34,6 +35,7 @@ const AngelTokensSchema = new Schema<IAngelTokens>(
     apiKeyFingerprint: String,
     outgoingPublicIp: String,
     registeredRouteIp: String,
+    assignedExecutionIp: String,
     routeType: { type: String, enum: ["USER_STATIC_IP", "SERVER_SHARED_IP", "AGENT_ROUTE", "UNKNOWN"] },
     dedicatedIpEnabled: { type: Boolean, default: false },
     agentUrl: String,

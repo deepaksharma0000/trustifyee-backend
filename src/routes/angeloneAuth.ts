@@ -272,6 +272,7 @@ router.post('/generate-session', auth, async (req: any, res) => {
                     apiKey: sessionApiKey,
                     clientCode: client_code,
                     outgoingIp: (profile as any).outgoing_ip,
+                    assignedExecutionIp: (profile as any).assignedExecutionIp || (profile as any).outgoing_ip,
                     agentUrl: (profile as any).agent_url,
                     dedicatedIpEnabled: Boolean((profile as any).dedicated_ip_enabled === true),
                     brokerAppName: req.body.broker_app_name || req.body.app_name || req.body.appName,
@@ -376,8 +377,10 @@ router.post('/generate-session', auth, async (req: any, res) => {
 router.get('/agent-status', auth, async (req: any, res) => {
     const userId = req.id;
     try {
+        const profile = await User.findById(userId).select("assignedExecutionIp outgoing_ip");
         let agent = await AgentModel.findOne({ userId });
         let justCreated = false;
+        const assignedExecutionIp = String((profile as any)?.assignedExecutionIp || (profile as any)?.outgoing_ip || "").trim();
         
         if (!agent) {
             // Auto-create agent registration for the user
@@ -390,11 +393,15 @@ router.get('/agent-status', auth, async (req: any, res) => {
                 agentId,
                 agentSecret: encryptedSecret,
                 status: "active",
+                assignedExecutionIp: assignedExecutionIp || undefined,
                 version: "1.0.0"
             });
             
             (agent as any)._rawSecret = rawSecret;
             justCreated = true;
+        } else if (assignedExecutionIp && agent.assignedExecutionIp !== assignedExecutionIp) {
+            agent.assignedExecutionIp = assignedExecutionIp;
+            await agent.save();
         }
         
         const isOnline = WebSocketAgentServer.isAgentOnline(agent.agentId);
@@ -415,6 +422,7 @@ router.get('/agent-status', auth, async (req: any, res) => {
             agentSecret: displaySecret,
             agentStatus: isOnline ? "ONLINE" : "OFFLINE",
             version: agent.version,
+            assignedExecutionIp: agent.assignedExecutionIp || assignedExecutionIp || null,
             lastHeartbeat: heartbeat ? heartbeat.timestamp : null,
             connectedIp: heartbeat ? heartbeat.publicIp : "N/A",
             justCreated,
