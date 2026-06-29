@@ -13,7 +13,7 @@ import Admin from "../models/Admin";
 import mongoose from "mongoose";
 import { loginUser, loginAdmin } from "../controllers/AuthController";
 import { invalidateAngelSessionCache } from "../services/AngelSessionContextService";
-import { buildApiKeyRouteBinding } from "../utils/apiKeyRouteBinding";
+import { buildApiKeyRouteBinding, buildBrokerConnectionMetadata } from "../utils/apiKeyRouteBinding";
 
 const router = express.Router();
 // Removed global adapter to prevent startup crash. Adapters are now created lazily per request.
@@ -188,7 +188,19 @@ router.post("/angel/login", auth, async (req: any, res) => {
         refreshToken: refreshToken ? encrypt(refreshToken) : undefined,
         apiKey: apiKey.startsWith('enc::') ? apiKey : encrypt(apiKey), // [FIX] Prevent double encryption
         feedToken: feedToken ? encrypt(feedToken) : undefined,
-        expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000)
+        expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000),
+        ...buildBrokerConnectionMetadata({
+          brokerName: "Angel One",
+          apiKey,
+          clientCode: clientcode,
+          outgoingIp: (user as any)?.outgoing_ip,
+          agentUrl: (user as any)?.agent_url,
+          dedicatedIpEnabled: Boolean((user as any)?.dedicated_ip_enabled === true),
+          brokerAppName: req.body.broker_app_name || req.body.app_name || req.body.appName,
+          verificationStatus: "VERIFIED",
+          connectionTimestamp: new Date(),
+          brokerLoginTimestamp: new Date(),
+        }),
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );

@@ -16,6 +16,7 @@ export interface IUser extends Document {
     broker_config?: {
         apiKey: string;
         clientCode: string;
+        appName?: string;
     };
     trading_status: 'enabled' | 'disabled';
     start_date?: Date;
@@ -74,7 +75,8 @@ const UserSchema: Schema = new Schema({
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     broker_config: {
         apiKey: { type: String },
-        clientCode: { type: String }
+        clientCode: { type: String },
+        appName: { type: String }
     },
     trading_status: { type: String, enum: ['enabled', 'disabled'], default: 'enabled' },
     start_date: { type: Date },

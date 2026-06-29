@@ -13,7 +13,7 @@ import { BrokerResponse as BrokerResponseModel } from '../models/BrokerResponse'
 import { WebSocketAgentServer } from '../services/WebSocketAgentServer';
 import crypto from 'crypto';
 import { invalidateAngelSessionCache } from '../services/AngelSessionContextService';
-import { buildApiKeyRouteBinding } from '../utils/apiKeyRouteBinding';
+import { buildApiKeyRouteBinding, buildBrokerConnectionMetadata } from '../utils/apiKeyRouteBinding';
 import { assertApiKeyJwtPair, buildIpWhitelistDiagnostics, validateApiKeyFormat } from '../services/BrokerSessionValidator';
 import { isMigrated } from '../utils/encryption';
 import {
@@ -266,7 +266,19 @@ router.post('/generate-session', auth, async (req: any, res) => {
                 refreshToken: encrypt(refreshToken),
                 feedToken: encrypt(feedToken),
                 apiKey: encryptedSessionApiKey,
-                expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
+                expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h
+                ...buildBrokerConnectionMetadata({
+                    brokerName: "Angel One",
+                    apiKey: sessionApiKey,
+                    clientCode: client_code,
+                    outgoingIp: (profile as any).outgoing_ip,
+                    agentUrl: (profile as any).agent_url,
+                    dedicatedIpEnabled: Boolean((profile as any).dedicated_ip_enabled === true),
+                    brokerAppName: req.body.broker_app_name || req.body.app_name || req.body.appName,
+                    verificationStatus: "VERIFIED",
+                    connectionTimestamp: new Date(),
+                    brokerLoginTimestamp: new Date(),
+                }),
             },
             { upsert: true, new: true }
         );

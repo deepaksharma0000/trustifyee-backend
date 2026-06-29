@@ -6,6 +6,7 @@ import log from "../utils/logger";
 import { decrypt } from "../utils/encryption";
 import { ipv4Agent } from "../utils/httpAgent";
 import { getAngelNetworkIdentity } from "../utils/angelNetworkIdentity";
+import { buildBrokerConnectionMetadata } from "../utils/apiKeyRouteBinding";
 import { IBrokerAdapter } from "./IBrokerAdapter";
 import { IUser } from "../models/User";
 
@@ -332,7 +333,23 @@ export class AngelOneAdapter implements IBrokerAdapter {
           refreshToken: encrypt(refreshToken),
           feedToken: encrypt(feedToken),
           apiKey: encrypt(this.apiKey),
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          ...buildBrokerConnectionMetadata({
+            brokerName: "Angel One",
+            apiKey: this.apiKey,
+            clientCode: clientcode,
+            outgoingIp: user.outgoing_ip,
+            agentUrl: user.agent_url,
+            dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true),
+            brokerAppName:
+              authCodeOrCredentials?.broker_app_name ||
+              authCodeOrCredentials?.app_name ||
+              authCodeOrCredentials?.appName ||
+              user.broker_config?.appName,
+            verificationStatus: "VERIFIED",
+            connectionTimestamp: new Date(),
+            brokerLoginTimestamp: new Date(),
+          }),
         },
         { upsert: true, new: true }
       );
