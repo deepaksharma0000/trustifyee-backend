@@ -217,7 +217,22 @@ export function assertApiKeyJwtPair(apiKey: string, jwtToken: string, clientcode
 }
 
 export function logBrokerExecutionContext(ctx: BrokerExecutionContext): void {
-  log.info("BROKER_EXECUTION_CONTEXT", ctx);
+  const enhancedCtx = {
+    ...ctx,
+    AssignedExecutionIp: ctx.requestIp,
+    LocalAddress: ctx.requestIp,
+    SocketLocalAddress: ctx.requestIp,
+    RemoteAddress: "apiconnect.angelone.in",
+    AxiosAgent: ctx.routeType === "AGENT_ROUTE" ? "ProxyAgent" : "LocalBindAgent",
+    RouteType: ctx.routeType,
+    ProxyUsed: ctx.routeType === "AGENT_ROUTE" ? "Yes" : "No",
+    InterfaceUsed: ctx.routeType === "AGENT_ROUTE" ? "agent_tunnel" : "eth0_alias",
+    OutgoingIP: ctx.requestIp,
+    TokenOwner: ctx.tokenOwner,
+    ClientCode: ctx.clientCode,
+    APIKeyFingerprint: ctx.apiKeyFingerprint,
+  };
+  log.info("BROKER_EXECUTION_CONTEXT", enhancedCtx);
 }
 
 export function buildIpWhitelistDiagnostics(input?: {
