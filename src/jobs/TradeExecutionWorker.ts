@@ -253,7 +253,7 @@ export const initTradeExecutionWorker = () => {
         );
 
         const userDoc = await User.findById(userId)
-          .select("+outgoing_ip +agent_url +broker_password +broker_totp_secret dedicated_ip_enabled")
+          .select("+outgoing_ip +assignedExecutionIp +agent_url +broker_password +broker_totp_secret dedicated_ip_enabled")
           .lean();
 
         if (!userDoc) {
@@ -263,14 +263,14 @@ export const initTradeExecutionWorker = () => {
         const requestedOutgoingIp =
           jobOutgoingIp && String(jobOutgoingIp).trim() !== ""
             ? String(jobOutgoingIp).trim()
-            : userDoc.outgoing_ip || undefined;
+            : userDoc.assignedExecutionIp || userDoc.outgoing_ip || undefined;
 
         const requestedAgentUrl =
           jobAgentUrl && String(jobAgentUrl).trim() !== ""
             ? String(jobAgentUrl).trim()
             : (userDoc as any).agent_url || undefined;
         const dedicatedIpEnabled =
-          Boolean(jobDedicatedIpEnabled) || Boolean((userDoc as any)?.dedicated_ip_enabled === true);
+          Boolean(jobDedicatedIpEnabled) || Boolean((userDoc as any)?.dedicated_ip_enabled === true) || Boolean(userDoc.assignedExecutionIp);
         const userLicence = String((userDoc as any)?.licence || "Live").toLowerCase();
         const requireLiveExecution = userLicence === "live";
 

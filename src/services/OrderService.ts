@@ -65,10 +65,10 @@ export type PlaceOrderInput = {
 function resolveNetworkRouting(orderInput: PlaceOrderInput, user: any) {
   const localBindingEnabled = process.env.ANGEL_ENABLE_LOCAL_BINDING === "true";
   const fromPayloadIp = typeof orderInput.outgoingIp === "string" ? orderInput.outgoingIp.trim() : "";
-  const fromProfileIp = typeof user?.outgoing_ip === "string" ? String(user.outgoing_ip).trim() : "";
+  const fromProfileIp = typeof user?.assignedExecutionIp === "string" ? String(user.assignedExecutionIp).trim() : (typeof user?.outgoing_ip === "string" ? String(user.outgoing_ip).trim() : "");
   const fromPayloadAgent = typeof orderInput.agentUrl === "string" ? orderInput.agentUrl.trim() : "";
   const fromProfileAgent = typeof user?.agent_url === "string" ? String(user.agent_url).trim() : "";
-  const dedicatedFromProfile = Boolean(user?.dedicated_ip_enabled === true);
+  const dedicatedFromProfile = Boolean(user?.dedicated_ip_enabled === true) || Boolean(user?.assignedExecutionIp);
   const dedicatedFromPayload = Boolean((orderInput as any)?.dedicatedIpEnabled === true);
   const dedicatedRoutingEnabled = dedicatedFromPayload || dedicatedFromProfile;
   const hasRouteHints = Boolean(fromPayloadIp || fromProfileIp || fromPayloadAgent || fromProfileAgent);
@@ -444,7 +444,7 @@ export async function placeOrderForClient(
   //   "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected"
   // );
   const user = await User.findById(userId).select(
-  "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +agent_url " +
+  "+broker_password +broker_totp_secret +client_key +api_key +outgoing_ip +assignedExecutionIp +agent_url " +
   "+zerodha_access_token +zerodha_api_key +zerodha_api_secret +zerodha_user_id +zerodha_connected +zerodha_token_expiry " +
   "dedicated_ip_enabled licence trading_paused consecutive_failures broker trading_status broker_connected " +
   "api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type validated_pair_at"

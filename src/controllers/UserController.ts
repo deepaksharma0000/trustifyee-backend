@@ -581,7 +581,9 @@ export const getRiskStatus = async (req: Request, res: Response) => {
                 margin_valid: margin.status,
                 margin_data: margin.data,
                 margin_message: margin.message,
-                risk_limit: 0.7
+                risk_limit: 0.7,
+                assignedExecutionIp: user.assignedExecutionIp || user.outgoing_ip || null,
+                dedicated_ip_enabled: user.dedicated_ip_enabled || false
             }
         });
     } catch (err: any) {

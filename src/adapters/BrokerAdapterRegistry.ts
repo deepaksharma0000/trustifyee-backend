@@ -21,9 +21,9 @@ export class BrokerAdapterRegistry {
           const userIdent = `user_${String(user._id)}`;
           apiKey = safeDecrypt(encKey, userIdent);
         }
-        const dedicatedIpEnabled = Boolean(user.dedicated_ip_enabled === true);
+        const dedicatedIpEnabled = Boolean(user.dedicated_ip_enabled === true) || Boolean(user.assignedExecutionIp);
         if (dedicatedIpEnabled) {
-          outgoingIp = user.outgoing_ip;
+          outgoingIp = user.assignedExecutionIp || user.outgoing_ip;
           agentUrl = user.agent_url;
         }
       }
@@ -43,22 +43,22 @@ export class BrokerAdapterRegistry {
     } else if (b === "UPSTOX") {
       const user = options?.user;
       let outgoingIp = options?.outgoingIp;
-      if (user && user.dedicated_ip_enabled) {
-        outgoingIp = user.outgoing_ip;
+      if (user && (user.dedicated_ip_enabled || user.assignedExecutionIp)) {
+        outgoingIp = user.assignedExecutionIp || user.outgoing_ip;
       }
       return new UpstoxAdapter(outgoingIp) as any as IBrokerAdapter;
     } else if (b === "ZERODHA") {
       const user = options?.user;
       let outgoingIp = options?.outgoingIp;
-      if (user && user.dedicated_ip_enabled) {
-        outgoingIp = user.outgoing_ip;
+      if (user && (user.dedicated_ip_enabled || user.assignedExecutionIp)) {
+        outgoingIp = user.assignedExecutionIp || user.outgoing_ip;
       }
       return new ZerodhaAdapter(outgoingIp);
     } else if (b === "ALICEBLUE" || b === "ALICE_BLUE") {
       const user = options?.user;
       let outgoingIp = options?.outgoingIp;
-      if (user && user.dedicated_ip_enabled) {
-        outgoingIp = user.outgoing_ip;
+      if (user && (user.dedicated_ip_enabled || user.assignedExecutionIp)) {
+        outgoingIp = user.assignedExecutionIp || user.outgoing_ip;
       }
       const { AliceBlueAdapter } = require("./AliceBlueAdapter");
       return new AliceBlueAdapter(outgoingIp) as any as IBrokerAdapter;

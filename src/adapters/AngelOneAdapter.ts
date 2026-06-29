@@ -44,10 +44,30 @@ export class AngelOneAdapter implements IBrokerAdapter {
       throw new Error("API key missing. Access Denied.");
     }
 
+    const isIpValid = Boolean(this.outgoingIp && String(this.outgoingIp).trim() !== "");
+    const shouldAttemptLocalBind = AngelOneAdapter.localBindingEnabled && isIpValid && this.outgoingIp;
+
+    let selectedAgent = ipv4Agent;
+    if (shouldAttemptLocalBind && this.outgoingIp) {
+      const bindKey = this.outgoingIp.trim();
+      let bindingAgent = AngelOneAdapter.bindAgentCache.get(bindKey);
+
+      if (!bindingAgent) {
+        bindingAgent = new https.Agent({
+          family: 4,
+          localAddress: bindKey,
+          keepAlive: true,
+          timeout: 60000,
+        });
+        AngelOneAdapter.bindAgentCache.set(bindKey, bindingAgent);
+      }
+      selectedAgent = bindingAgent;
+    }
+
     this.client = axios.create({
       baseURL: this.forcedBaseUrl,
       timeout: 60000,
-      httpsAgent: ipv4Agent,
+      httpsAgent: selectedAgent,
     });
 
     if (AngelOneAdapter.shouldLogInit) {

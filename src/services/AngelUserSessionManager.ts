@@ -89,12 +89,12 @@ function shouldRefresh(session: any, forceRefresh?: boolean) {
 
 async function loadProfile(userId: string): Promise<{ type: "user" | "admin"; profile: any } | null> {
   const user = await User.findById(userId)
-    .select("+client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +agent_url dedicated_ip_enabled")
+    .select("+client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +assignedExecutionIp +agent_url dedicated_ip_enabled")
     .lean();
   if (user) return { type: "user", profile: user };
 
   const admin = await Admin.findById(userId)
-    .select("+client_key +panel_client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +agent_url")
+    .select("+client_key +panel_client_key +broker_password +broker_totp_secret +api_key +outgoing_ip +assignedExecutionIp +agent_url")
     .lean();
   if (admin) return { type: "admin", profile: admin };
 
@@ -224,9 +224,9 @@ export async function getIsolatedAngelSession(input: SessionInput): Promise<Isol
     );
   }
 
-  const dedicatedIpEnabled = Boolean(profile?.dedicated_ip_enabled === true);
+  const dedicatedIpEnabled = Boolean(profile?.dedicated_ip_enabled === true) || Boolean(profile?.assignedExecutionIp);
   const routeBinding = resolveRouteBinding({
-    outgoingIp: profile?.outgoing_ip,
+    outgoingIp: profile?.assignedExecutionIp || profile?.outgoing_ip,
     agentUrl: profile?.agent_url,
     dedicatedIpEnabled,
   });

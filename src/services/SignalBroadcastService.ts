@@ -39,9 +39,9 @@ function normalizeIpv4(value?: string) {
 }
 
 function resolveUserNetworkMeta(user: any) {
-  const dedicatedIpEnabled = Boolean(user?.dedicated_ip_enabled === true);
+  const dedicatedIpEnabled = Boolean(user?.dedicated_ip_enabled === true) || Boolean(user?.assignedExecutionIp);
   const route = resolveRouteBinding({
-    outgoingIp: user?.outgoing_ip,
+    outgoingIp: user?.assignedExecutionIp || user?.outgoing_ip,
     agentUrl: user?.agent_url,
     dedicatedIpEnabled,
   });
@@ -284,7 +284,7 @@ export class SignalBroadcastService {
       ...strategyQuery,
     })
       .select(
-        "user_name email client_key licence broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type requiresReconnect is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry"
+        "user_name email client_key licence broker api_key outgoing_ip assignedExecutionIp agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type requiresReconnect is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry"
       )
       .lean();
 
@@ -378,7 +378,7 @@ export class SignalBroadcastService {
 
     const usersQuery = User.find(userFilter)
       .select(
-        "user_name email client_key licence end_date broker api_key outgoing_ip agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry trading_paused status trading_status broker_connected"
+        "user_name email client_key licence end_date broker api_key outgoing_ip assignedExecutionIp agent_url dedicated_ip_enabled api_key_ip_pair_verified validated_api_key_fingerprint validated_route_ip validated_route_type is_online is_login zerodha_connected zerodha_verified zerodha_user_id zerodha_token_expiry trading_paused status trading_status broker_connected"
       )
       .lean();
 
@@ -700,9 +700,9 @@ export class SignalBroadcastService {
                 signalId: String(signalId),
                 clientOrderId,
                 clientCode: rawClientCode,
-                outgoingIp: Boolean(user.dedicated_ip_enabled) ? (user.outgoing_ip || undefined) : undefined,
-                agentUrl: Boolean(user.dedicated_ip_enabled) ? (user.agent_url || undefined) : undefined,
-                dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true),
+                outgoingIp: (user.dedicated_ip_enabled || user.assignedExecutionIp) ? (user.assignedExecutionIp || user.outgoing_ip || undefined) : undefined,
+                agentUrl: (user.dedicated_ip_enabled || user.assignedExecutionIp) ? (user.agent_url || undefined) : undefined,
+                dedicatedIpEnabled: Boolean(user.dedicated_ip_enabled === true) || Boolean(user.assignedExecutionIp),
                 orderData: {
                   exchange: signal.exchange || "NFO",
                   tradingsymbol: signal.tradingsymbol,
